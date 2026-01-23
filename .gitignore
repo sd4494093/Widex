@@ -95,3 +95,7 @@ __pycache__/
 # widex api switcher local secrets
 widex-custom/features/api-switchover/api_config.yaml
 widex-custom/features/api-switchover/*.local.yaml
+
+# Local Codex homes (avoid committing API keys / auth state if CODEX_HOME is set inside the repo)
+.codex/
+.widex-codex/
