@@ -24,14 +24,22 @@ export CODEX_HOME="${CODEX_HOME:-${CODEX_HOME_DEFAULT}}"
 export WIDEX_API_SWITCHER_CONFIG="${WIDEX_API_SWITCHER_CONFIG:-${CODEX_HOME}/api_switchover.yaml}"
 
 BIN_RELEASE="${REPO_ROOT}/codex-rs/target/release/codex"
-BIN_DEBUG="${REPO_ROOT}/codex-rs/target/debug/codex"
+BUILD_DIR="${REPO_ROOT}/codex-rs"
+
+if [[ ! -x "${BIN_RELEASE}" ]]; then
+  if ! command -v cargo >/dev/null 2>&1; then
+    echo "widex: missing release binary and cargo is not available on PATH." >&2
+    echo "widex: install Rust (rustup) and rerun." >&2
+    exit 1
+  fi
+
+  echo "widex: building release codex binary..." >&2
+  (cd "${BUILD_DIR}" && cargo build -p codex-cli --bin codex --release)
+fi
 
 if [[ -x "${BIN_RELEASE}" ]]; then
   exec "${BIN_RELEASE}" "$@"
-elif [[ -x "${BIN_DEBUG}" ]]; then
-  exec "${BIN_DEBUG}" "$@"
 else
-  echo "widex: codex binary not found. Build it with:" >&2
-  echo "  cd ${REPO_ROOT}/codex-rs && cargo build -p codex-cli --bin codex" >&2
+  echo "widex: expected release binary at ${BIN_RELEASE}, but it is missing or not executable." >&2
   exit 1
 fi
