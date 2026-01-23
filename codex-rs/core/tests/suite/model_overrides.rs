@@ -41,6 +41,8 @@ async fn override_turn_context_does_not_persist_when_config_exists() {
             model_provider_id: None,
             effort: Some(Some(ReasoningEffort::High)),
             summary: None,
+            collaboration_mode: None,
+            personality: None,
         })
         .await
         .expect("submit override");
@@ -84,6 +86,8 @@ async fn override_turn_context_does_not_create_config_file() {
             model_provider_id: None,
             effort: Some(Some(ReasoningEffort::Medium)),
             summary: None,
+            collaboration_mode: None,
+            personality: None,
         })
         .await
         .expect("submit override");

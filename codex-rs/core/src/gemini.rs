@@ -59,7 +59,7 @@ pub(crate) async fn stream_gemini(
         base_url.trim_end_matches('/')
     );
 
-    let instructions = prompt.get_full_instructions(model_info).into_owned();
+    let instructions = prompt.base_instructions.text.clone();
     let system_instruction = (!instructions.trim().is_empty()).then(|| GeminiContentRequest {
         role: None,
         parts: vec![GeminiPartRequest {
@@ -803,6 +803,7 @@ async fn process_gemini_sse<S>(
                                 id: None,
                                 role: "assistant".to_string(),
                                 content: vec![],
+                                end_turn: None,
                             };
                             if tx_event
                                 .send(Ok(ResponseEvent::OutputItemAdded(item)))
@@ -879,6 +880,7 @@ async fn process_gemini_sse<S>(
                 id: None,
                 role: "assistant".to_string(),
                 content,
+                end_turn: None,
             };
             let _ = tx_event.send(Ok(ResponseEvent::OutputItemDone(item))).await;
         }
