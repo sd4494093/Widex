@@ -155,6 +155,7 @@ impl<'a> ChatRequestBuilder<'a> {
                     let mut text = String::new();
                     let mut items: Vec<Value> = Vec::new();
                     let mut saw_image = false;
+                    let mut image_urls: Vec<&str> = Vec::new();
 
                     for c in content {
                         match c {
@@ -165,6 +166,7 @@ impl<'a> ChatRequestBuilder<'a> {
                             }
                             ContentItem::InputImage { image_url } => {
                                 saw_image = true;
+                                image_urls.push(image_url);
                                 items.push(
                                     json!({"type":"image_url","image_url": {"url": image_url}}),
                                 );
@@ -182,6 +184,20 @@ impl<'a> ChatRequestBuilder<'a> {
                     }
 
                     let content_value = if role == "assistant" {
+                        json!(text)
+                    } else if saw_image && self.model.starts_with("grok-") {
+                        // VectorEngine's Grok Chat Completions endpoint currently ignores
+                        // `content: [{type:"image_url", ...}]` payloads (text-only). Preserve
+                        // a best-effort textual hint so the model can at least see that an image
+                        // existed, without dropping the user's message entirely.
+                        for url in image_urls {
+                            if !text.is_empty() {
+                                text.push('\n');
+                            }
+                            text.push_str("[image_url: ");
+                            text.push_str(url);
+                            text.push(']');
+                        }
                         json!(text)
                     } else if saw_image {
                         json!(items)
@@ -291,12 +307,17 @@ impl<'a> ChatRequestBuilder<'a> {
             }
         }
 
-        let payload = json!({
+        let mut payload = json!({
             "model": self.model,
             "messages": messages,
             "stream": true,
             "tools": self.tools,
         });
+        if !self.tools.is_empty()
+            && let Some(obj) = payload.as_object_mut()
+        {
+            obj.insert("tool_choice".to_string(), json!("auto"));
+        }
 
         let mut headers = build_conversation_headers(self.conversation_id);
         if let Some(subagent) = subagent_header(&self.session_source) {
@@ -491,5 +512,107 @@ mod tests {
         assert_eq!(messages[4]["tool_call_id"], "call-b");
         assert_eq!(messages[5]["role"], "tool");
         assert_eq!(messages[5]["tool_call_id"], "call-c");
+    }
+
+    #[test]
+    fn sets_tool_choice_auto_when_tools_present() {
+        let prompt_input = vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "hi".to_string(),
+            }],
+            end_turn: None,
+        }];
+        let tools = vec![json!({
+            "type": "function",
+            "function": {
+                "name": "add",
+                "description": "Add two integers",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "a": {"type": "integer"},
+                        "b": {"type": "integer"},
+                    },
+                    "required": ["a", "b"],
+                    "additionalProperties": false,
+                }
+            }
+        })];
+
+        let req = ChatRequestBuilder::new("gpt-test", "inst", &prompt_input, &tools)
+            .build(&provider())
+            .expect("request");
+
+        assert_eq!(req.body["tool_choice"], "auto");
+        assert_eq!(req.body["tools"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn grok_user_images_fall_back_to_text_placeholders() {
+        let prompt_input = vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![
+                ContentItem::InputText {
+                    text: "hi".to_string(),
+                },
+                ContentItem::InputImage {
+                    image_url: "https://example.com/image.png".to_string(),
+                },
+            ],
+            end_turn: None,
+        }];
+
+        let req = ChatRequestBuilder::new("grok-4.1", "inst", &prompt_input, &[])
+            .build(&provider())
+            .expect("request");
+
+        let messages = req
+            .body
+            .get("messages")
+            .and_then(|v| v.as_array())
+            .expect("messages array");
+        assert_eq!(messages[1]["role"], "user");
+        assert_eq!(
+            messages[1]["content"],
+            json!("hi\n[image_url: https://example.com/image.png]")
+        );
+    }
+
+    #[test]
+    fn non_grok_user_images_use_multimodal_message_format() {
+        let prompt_input = vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![
+                ContentItem::InputText {
+                    text: "hi".to_string(),
+                },
+                ContentItem::InputImage {
+                    image_url: "https://example.com/image.png".to_string(),
+                },
+            ],
+            end_turn: None,
+        }];
+
+        let req = ChatRequestBuilder::new("gpt-test", "inst", &prompt_input, &[])
+            .build(&provider())
+            .expect("request");
+
+        let messages = req
+            .body
+            .get("messages")
+            .and_then(|v| v.as_array())
+            .expect("messages array");
+        assert_eq!(messages[1]["role"], "user");
+        assert_eq!(
+            messages[1]["content"],
+            json!([
+                {"type": "text", "text": "hi"},
+                {"type": "image_url", "image_url": {"url": "https://example.com/image.png"}},
+            ])
+        );
     }
 }
