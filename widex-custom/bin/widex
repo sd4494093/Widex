@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Run the widex fork of codex (Rust) without interfering with the npm `codex`.
+#
+# - Official npm codex uses:   $HOME/.codex
+# - Widex codex uses:          $HOME/.widex-codex
+#
+# This prevents config/schema mismatches (e.g. wire_api = "gemini") from
+# breaking the npm CLI.
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
+
+CODEX_HOME_DEFAULT="${HOME}/.widex-codex"
+export CODEX_HOME="${CODEX_HOME:-${CODEX_HOME_DEFAULT}}"
+
+# Hint the TUI switchover integration where to find the YAML.
+export WIDEX_API_SWITCHER_CONFIG="${WIDEX_API_SWITCHER_CONFIG:-${CODEX_HOME}/api_switchover.yaml}"
+
+BIN_RELEASE="${REPO_ROOT}/codex-rs/target/release/codex"
+BIN_DEBUG="${REPO_ROOT}/codex-rs/target/debug/codex"
+
+if [[ -x "${BIN_RELEASE}" ]]; then
+  exec "${BIN_RELEASE}" "$@"
+elif [[ -x "${BIN_DEBUG}" ]]; then
+  exec "${BIN_DEBUG}" "$@"
+else
+  echo "widex: codex binary not found. Build it with:" >&2
+  echo "  cd ${REPO_ROOT}/codex-rs && cargo build -p codex-cli --bin codex" >&2
+  exit 1
+fi
