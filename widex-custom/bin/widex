@@ -9,7 +9,12 @@ set -euo pipefail
 # This prevents config/schema mismatches (e.g. wire_api = "gemini") from
 # breaking the npm CLI.
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_PATH="$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || true)"
+if [[ -z "${SCRIPT_PATH}" ]]; then
+  SCRIPT_PATH="${BASH_SOURCE[0]}"
+fi
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${SCRIPT_PATH}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 
 CODEX_HOME_DEFAULT="${HOME}/.widex-codex"
