@@ -154,6 +154,7 @@ use crate::diff_render::display_path_for;
 use crate::exec_cell::CommandOutput;
 use crate::exec_cell::ExecCell;
 use crate::exec_cell::new_active_exec_command;
+use crate::exec_command::escape_command;
 use crate::exec_command::strip_bash_lc_and_escape;
 use crate::get_git_diff::get_git_diff;
 use crate::history_cell;
@@ -2370,6 +2371,9 @@ impl ChatWidget {
                 self.clear_token_usage();
                 self.app_event_tx.send(AppEvent::CodexOp(Op::Compact));
             }
+            SlashCommand::RalphWidex => {
+                self.run_ralph_widex(Vec::new());
+            }
             SlashCommand::Review => {
                 self.open_review_popup();
             }
@@ -2551,6 +2555,12 @@ impl ChatWidget {
                 if self.collaboration_modes_enabled() {
                     self.open_collaboration_modes_popup();
                 }
+            }
+            SlashCommand::RalphWidex => {
+                let argv = shlex::split(trimmed)
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or_else(|| vec![trimmed.to_string()]);
+                self.run_ralph_widex(argv);
             }
             SlashCommand::Review if !trimmed.is_empty() => {
                 self.submit_op(Op::Review {
@@ -3068,6 +3078,28 @@ impl ChatWidget {
             .map(|process| process.command_display.clone())
             .collect();
         self.add_to_history(history_cell::new_unified_exec_processes_output(processes));
+    }
+
+    fn run_ralph_widex(&mut self, argv: Vec<String>) {
+        let install_dir = match crate::ralph_widex::ensure_installed(&self.config.codex_home) {
+            Ok(dir) => dir,
+            Err(err) => {
+                self.add_error_message(format!("Failed to install ralph-widex: {err}"));
+                return;
+            }
+        };
+
+        let bin = install_dir.join("bin").join("ralph-widex");
+        let mut cmd: Vec<String> = Vec::new();
+        cmd.push("env".to_string());
+        if let Ok(exe) = std::env::current_exe() {
+            cmd.push(format!("CODEX_CMD={}", exe.display()));
+        }
+        cmd.push(bin.display().to_string());
+        cmd.extend(argv);
+
+        let command = escape_command(&cmd);
+        self.submit_op(Op::RunUserShellCommand { command });
     }
 
     fn stop_rate_limit_poller(&mut self) {

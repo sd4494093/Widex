@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+STATUS_FILE=".ralph/status.json"
+LOG_FILE=".ralph/logs/ralph.log"
+PROGRESS_FILE=".ralph/progress.json"
+REFRESH_INTERVAL=2
+
+cleanup() {
+  printf "\nralph-widex-monitor stopped.\n"
+}
+trap cleanup SIGINT SIGTERM
+
+get_json_field() {
+  local file=$1
+  local jq_expr=$2
+  if [[ ! -f "$file" ]]; then
+    return 1
+  fi
+  jq -r "$jq_expr" "$file" 2>/dev/null
+}
+
+while true; do
+  clear
+  echo "ralph-widex-monitor"
+  echo "=================="
+  echo
+
+  if [[ -f "$STATUS_FILE" ]]; then
+    loop_count=$(get_json_field "$STATUS_FILE" ".loop_count // 0" || echo 0)
+    status=$(get_json_field "$STATUS_FILE" ".status // \"unknown\"" || echo unknown)
+    last_action=$(get_json_field "$STATUS_FILE" ".last_action // \"\"" || echo "")
+    calls_made=$(get_json_field "$STATUS_FILE" ".calls_made_this_hour // 0" || echo 0)
+    max_calls=$(get_json_field "$STATUS_FILE" ".max_calls_per_hour // 0" || echo 0)
+    next_reset=$(get_json_field "$STATUS_FILE" ".next_reset // \"\"" || echo "")
+
+    echo "Status:     $status"
+    echo "Loop:       $loop_count"
+    echo "Calls:      $calls_made/$max_calls (next reset: $next_reset)"
+    if [[ -n "$last_action" ]]; then
+      echo "Last:       $last_action"
+    fi
+  else
+    echo "Status file not found: $STATUS_FILE"
+    echo "(Is ralph-widex running in this repo?)"
+  fi
+
+  if [[ -f "$PROGRESS_FILE" ]]; then
+    progress_status=$(get_json_field "$PROGRESS_FILE" ".status // \"\"" || echo "")
+    if [[ "$progress_status" == "executing" ]]; then
+      elapsed=$(get_json_field "$PROGRESS_FILE" ".elapsed_seconds // 0" || echo 0)
+      last_output=$(get_json_field "$PROGRESS_FILE" ".last_output // \"\"" || echo "")
+      echo
+      echo "Codex exec: running (${elapsed}s elapsed)"
+      if [[ -n "$last_output" ]]; then
+        echo "Output:     ${last_output}"
+      fi
+    fi
+  fi
+
+  echo
+  echo "Recent activity:"
+  echo "----------------"
+  if [[ -f "$LOG_FILE" ]]; then
+    tail -n 12 "$LOG_FILE" || true
+  else
+    echo "No log file found: $LOG_FILE"
+  fi
+
+  echo
+  echo "(refresh every ${REFRESH_INTERVAL}s)  $(date "+%H:%M:%S")"
+  sleep "$REFRESH_INTERVAL"
+done

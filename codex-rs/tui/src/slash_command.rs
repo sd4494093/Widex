@@ -25,6 +25,7 @@ pub enum SlashCommand {
     Fork,
     Init,
     Compact,
+    RalphWidex,
     Collab,
     // Undo,
     Diff,
@@ -48,6 +49,7 @@ impl SlashCommand {
             SlashCommand::New => "start a new chat during a conversation",
             SlashCommand::Init => "create an AGENTS.md file with instructions for Codex",
             SlashCommand::Compact => "summarize conversation to prevent hitting the context limit",
+            SlashCommand::RalphWidex => "start an autonomous loop (Ralph) using codex exec",
             SlashCommand::Review => "review my current changes and find issues",
             SlashCommand::Resume => "resume a saved chat",
             SlashCommand::Fork => "fork the current chat",
@@ -85,6 +87,7 @@ impl SlashCommand {
             | SlashCommand::Fork
             | SlashCommand::Init
             | SlashCommand::Compact
+            | SlashCommand::RalphWidex
             // | SlashCommand::Undo
             | SlashCommand::Model
             | SlashCommand::Approvals

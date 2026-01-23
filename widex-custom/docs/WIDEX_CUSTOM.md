@@ -89,6 +89,18 @@ git push origin widex
 2) 切换成功后 unset env
 3) 之后依然可以在 widex 内来回切模型/provider，不会丢失之前保存的 key
 
+### 3.2 Ralph for Widex（/ralph-widex）
+
+目录：`widex-custom/features/ralph-widex/`
+
+用途：
+
+- 在 TUI 内通过 `/ralph-widex` 启动一个“自主开发循环”（Ralph loop），底层会反复调用 `codex exec`
+  并使用当前 repo 的 `.ralph/PROMPT.md` 作为提示词。
+- 支持 `/ralph-widex init` 初始化当前目录的 `.ralph/` 结构（模板位于 feature 目录，会自动安装到
+  `${CODEX_HOME}/features/ralph-widex`）。
+- 支持 `/ralph-widex monitor` 在终端查看 `.ralph/status.json` 的实时状态面板。
+
 
 ## 4) Gemini 集成（新增 Wire API）
 

@@ -1,0 +1,573 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+FEATURE_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+
+# shellcheck source=/dev/null
+source "${FEATURE_ROOT}/lib/date_utils.sh"
+# shellcheck source=/dev/null
+source "${FEATURE_ROOT}/lib/timeout_utils.sh"
+# shellcheck source=/dev/null
+source "${FEATURE_ROOT}/lib/response_analyzer.sh"
+# shellcheck source=/dev/null
+source "${FEATURE_ROOT}/lib/circuit_breaker.sh"
+
+RALPH_DIR=".ralph"
+PROMPT_FILE="${RALPH_DIR}/PROMPT.md"
+LOG_DIR="${RALPH_DIR}/logs"
+DOCS_DIR="${RALPH_DIR}/docs/generated"
+STATUS_FILE="${RALPH_DIR}/status.json"
+PROGRESS_FILE="${RALPH_DIR}/progress.json"
+
+CALL_COUNT_FILE="${RALPH_DIR}/.call_count"
+TIMESTAMP_FILE="${RALPH_DIR}/.last_reset"
+SESSION_FILE="${RALPH_DIR}/.widex_session.json"
+
+EXIT_SIGNALS_FILE="${RALPH_DIR}/.exit_signals"
+RESPONSE_ANALYSIS_FILE="${RALPH_DIR}/.response_analysis"
+
+CODEX_CMD="${CODEX_CMD:-codex}"
+MAX_CALLS_PER_HOUR=100
+VERBOSE_PROGRESS=false
+CODEX_TIMEOUT_MINUTES=15
+USE_CONTINUE=true
+SESSION_EXPIRY_HOURS="${SESSION_EXPIRY_HOURS:-24}"
+SKIP_GIT_REPO_CHECK=false
+FULL_AUTO=true
+
+usage() {
+  cat <<USAGEEOF
+Ralph for Widex (Codex)
+
+Usage:
+  ralph-widex [command] [options]
+
+Commands:
+  init                 Initialize .ralph/ in the current directory
+  setup <project>      Create a new project directory and initialize .ralph/
+  monitor              Run a status monitor (reads .ralph/status.json)
+  run                  Run the autonomous loop (default)
+
+Options (run):
+  --calls N                Max calls per hour (default: ${MAX_CALLS_PER_HOUR})
+  --prompt PATH            Prompt file (default: .ralph/PROMPT.md)
+  --timeout-minutes N      Timeout per codex exec call (default: ${CODEX_TIMEOUT_MINUTES})
+  --no-continue            Disable session continuity
+  --session-expiry-hours N Session expiry in hours (default: ${SESSION_EXPIRY_HOURS})
+  --skip-git-repo-check    Allow running outside a git repo
+  --no-full-auto           Do not pass --full-auto to codex exec
+  --verbose                Verbose analysis logging
+  -h, --help               Show help
+
+Environment:
+  CODEX_CMD               Codex/Widex binary to execute (default: codex)
+  SESSION_EXPIRY_HOURS    Default session expiry in hours
+
+USAGEEOF
+}
+
+require_deps() {
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "Error: jq is required." >&2
+    exit 1
+  fi
+}
+
+log_status() {
+  local level=$1
+  local message=$2
+  local ts
+  ts="$(date "+%Y-%m-%d %H:%M:%S")"
+  mkdir -p "${LOG_DIR}"
+  echo "[${ts}] [${level}] ${message}" | tee -a "${LOG_DIR}/ralph.log" >/dev/null
+}
+
+update_status() {
+  local loop_count=$1
+  local calls_made=$2
+  local last_action=$3
+  local status=$4
+  local exit_reason=${5:-""}
+
+  cat > "${STATUS_FILE}" <<STATUSEOF
+{
+  "timestamp": "$(get_iso_timestamp)",
+  "loop_count": ${loop_count},
+  "calls_made_this_hour": ${calls_made},
+  "max_calls_per_hour": ${MAX_CALLS_PER_HOUR},
+  "last_action": "${last_action}",
+  "status": "${status}",
+  "exit_reason": "${exit_reason}",
+  "next_reset": "$(get_next_hour_time)"
+}
+STATUSEOF
+}
+
+init_call_tracking() {
+  mkdir -p "${LOG_DIR}" "${DOCS_DIR}"
+
+  local current_hour
+  current_hour="$(date +%Y%m%d%H)"
+  local last_reset_hour=""
+  if [[ -f "${TIMESTAMP_FILE}" ]]; then
+    last_reset_hour="$(cat "${TIMESTAMP_FILE}")"
+  fi
+
+  if [[ "${current_hour}" != "${last_reset_hour}" ]]; then
+    echo "0" > "${CALL_COUNT_FILE}"
+    echo "${current_hour}" > "${TIMESTAMP_FILE}"
+    log_status INFO "Call counter reset for new hour: ${current_hour}"
+  fi
+
+  if [[ ! -f "${EXIT_SIGNALS_FILE}" ]]; then
+    echo '{"test_only_loops": [], "done_signals": [], "completion_indicators": []}' > "${EXIT_SIGNALS_FILE}"
+  fi
+
+  init_circuit_breaker
+}
+
+can_make_call() {
+  local calls_made=0
+  if [[ -f "${CALL_COUNT_FILE}" ]]; then
+    calls_made="$(cat "${CALL_COUNT_FILE}")"
+  fi
+
+  if [[ ${calls_made} -ge ${MAX_CALLS_PER_HOUR} ]]; then
+    return 1
+  fi
+  return 0
+}
+
+increment_call_counter() {
+  local calls_made=0
+  if [[ -f "${CALL_COUNT_FILE}" ]]; then
+    calls_made="$(cat "${CALL_COUNT_FILE}")"
+  fi
+  calls_made=$((calls_made + 1))
+  echo "${calls_made}" > "${CALL_COUNT_FILE}"
+  echo "${calls_made}"
+}
+
+wait_for_reset() {
+  local calls_made
+  calls_made="$(cat "${CALL_COUNT_FILE}" 2>/dev/null || echo "0")"
+  log_status WARN "Rate limit reached (${calls_made}/${MAX_CALLS_PER_HOUR}). Waiting for reset..."
+
+  local current_minute
+  current_minute="$(date +%M)"
+  local current_second
+  current_second="$(date +%S)"
+  local wait_time
+  wait_time=$(((60 - current_minute - 1) * 60 + (60 - current_second)))
+
+  log_status INFO "Sleeping for ${wait_time}s until next hour..."
+  sleep "${wait_time}"
+
+  init_call_tracking
+}
+
+session_read_id() {
+  if [[ ! -f "${SESSION_FILE}" ]]; then
+    echo ""
+    return 0
+  fi
+
+  if ! jq empty "${SESSION_FILE}" 2>/dev/null; then
+    echo ""
+    return 0
+  fi
+
+  jq -r '.session_id // ""' "${SESSION_FILE}" 2>/dev/null || echo ""
+}
+
+session_is_expired() {
+  if [[ ! -f "${SESSION_FILE}" ]]; then
+    return 0
+  fi
+
+  if ! jq empty "${SESSION_FILE}" 2>/dev/null; then
+    return 0
+  fi
+
+  local now
+  now="$(get_epoch_seconds)"
+  local expires_at
+  expires_at="$(jq -r '.expires_at_epoch // 0' "${SESSION_FILE}" 2>/dev/null || echo 0)"
+
+  if [[ ${expires_at} -le 0 ]]; then
+    return 0
+  fi
+
+  if [[ ${now} -ge ${expires_at} ]]; then
+    return 0
+  fi
+
+  return 1
+}
+
+session_write() {
+  local session_id=$1
+  local reset_reason=${2:-""}
+
+  local now
+  now="$(get_epoch_seconds)"
+  local expires
+  expires=$((now + (SESSION_EXPIRY_HOURS * 3600)))
+
+  jq -n \
+    --arg session_id "${session_id}" \
+    --arg created_at "$(get_iso_timestamp)" \
+    --arg last_used "$(get_iso_timestamp)" \
+    --arg reset_reason "${reset_reason}" \
+    --argjson created_at_epoch "${now}" \
+    --argjson last_used_epoch "${now}" \
+    --argjson expires_at_epoch "${expires}" \
+    '{
+      session_id: $session_id,
+      created_at: $created_at,
+      last_used: $last_used,
+      reset_reason: $reset_reason,
+      created_at_epoch: $created_at_epoch,
+      last_used_epoch: $last_used_epoch,
+      expires_at_epoch: $expires_at_epoch
+    }' > "${SESSION_FILE}"
+}
+
+session_touch_last_used() {
+  if [[ ! -f "${SESSION_FILE}" ]]; then
+    return 0
+  fi
+
+  if ! jq empty "${SESSION_FILE}" 2>/dev/null; then
+    return 0
+  fi
+
+  local now
+  now="$(get_epoch_seconds)"
+
+  local updated
+  updated="$(jq \
+    --arg last_used "$(get_iso_timestamp)" \
+    --argjson last_used_epoch "${now}" \
+    '.last_used = $last_used | .last_used_epoch = $last_used_epoch' \
+    "${SESSION_FILE}" 2>/dev/null || echo "")"
+
+  if [[ -n "${updated}" ]]; then
+    echo "${updated}" > "${SESSION_FILE}"
+  fi
+}
+
+parse_session_id_from_output() {
+  local output_file=$1
+  sed -n -E 's/^[[:space:]]*session id:[[:space:]]*([0-9a-fA-F-]{36}).*/\1/p' "${output_file}" | tail -n 1
+}
+
+write_progress() {
+  local elapsed=$1
+  local last_output=$2
+
+  jq -n \
+    --arg status "executing" \
+    --argjson elapsed_seconds "${elapsed}" \
+    --arg last_output "${last_output}" \
+    '{
+      status: $status,
+      elapsed_seconds: $elapsed_seconds,
+      last_output: $last_output
+    }' > "${PROGRESS_FILE}"
+}
+
+clear_progress() {
+  rm -f "${PROGRESS_FILE}" 2>/dev/null || true
+}
+
+codex_exec_once() {
+  local loop_count=$1
+
+  local timestamp
+  timestamp="$(date "+%Y-%m-%d_%H-%M-%S")"
+  local output_file="${LOG_DIR}/codex_output_${timestamp}.log"
+
+  local timeout_seconds
+  timeout_seconds=$((CODEX_TIMEOUT_MINUTES * 60))
+
+  local session_id=""
+  if [[ "${USE_CONTINUE}" == "true" ]]; then
+    if session_is_expired; then
+      log_status WARN "Session expired (or missing); starting a new session."
+      session_id=""
+    else
+      session_id="$(session_read_id)"
+    fi
+  fi
+
+  local -a cmd
+  cmd=("${CODEX_CMD}" exec)
+  if [[ "${SKIP_GIT_REPO_CHECK}" == "true" ]]; then
+    cmd+=("--skip-git-repo-check")
+  fi
+  if [[ "${FULL_AUTO}" == "true" ]]; then
+    cmd+=("--full-auto")
+  fi
+  if [[ -n "${session_id}" ]]; then
+    cmd+=(resume "${session_id}")
+  fi
+
+  # Explicitly use stdin for the prompt to avoid argument length limits.
+  cmd+=("-")
+
+  log_status LOOP "Running: ${CODEX_CMD} exec (timeout: ${CODEX_TIMEOUT_MINUTES}m)"
+
+  portable_timeout "${timeout_seconds}s" "${cmd[@]}" < "${PROMPT_FILE}" > "${output_file}" 2>&1 &
+  local pid=$!
+
+  local start
+  start="$(get_epoch_seconds)"
+
+  while kill -0 "${pid}" 2>/dev/null; do
+    local now
+    now="$(get_epoch_seconds)"
+    local elapsed
+    elapsed=$((now - start))
+
+    local last_line
+    last_line="$(tail -n 1 "${output_file}" 2>/dev/null | head -c 200 || true)"
+
+    write_progress "${elapsed}" "${last_line}"
+    sleep 1
+  done
+
+  local exit_code=0
+  if ! wait "${pid}"; then
+    exit_code=$?
+  fi
+
+  clear_progress
+
+  local new_session_id
+  new_session_id="$(parse_session_id_from_output "${output_file}")"
+  if [[ -n "${new_session_id}" && "${USE_CONTINUE}" == "true" ]]; then
+    if [[ -z "${session_id}" ]]; then
+      session_write "${new_session_id}" "created"
+      log_status INFO "Captured new session id: ${new_session_id}"
+    else
+      session_touch_last_used
+    fi
+  fi
+
+  echo "${output_file} ${exit_code}"
+}
+
+init_in_place() {
+  mkdir -p "${RALPH_DIR}/specs/stdlib" "${RALPH_DIR}/examples" "${LOG_DIR}" "${DOCS_DIR}" src
+
+  local templates_dir="${FEATURE_ROOT}/templates"
+  if [[ ! -f "${templates_dir}/PROMPT.md" ]]; then
+    echo "Error: templates missing at ${templates_dir}" >&2
+    exit 1
+  fi
+
+  if [[ -f "${PROMPT_FILE}" ]]; then
+    echo "${PROMPT_FILE} already exists; refusing to overwrite." >&2
+    exit 1
+  fi
+
+  cp "${templates_dir}/PROMPT.md" "${PROMPT_FILE}"
+  cp "${templates_dir}/fix_plan.md" "${RALPH_DIR}/@fix_plan.md"
+  cp "${templates_dir}/AGENT.md" "${RALPH_DIR}/@AGENT.md"
+
+  if [[ -d "${templates_dir}/specs" ]]; then
+    cp -R "${templates_dir}/specs"/* "${RALPH_DIR}/specs/" 2>/dev/null || true
+  fi
+
+  echo "Initialized ${RALPH_DIR}/ in $(pwd)"
+  echo "Next: edit ${PROMPT_FILE} and ${RALPH_DIR}/@fix_plan.md then run: ralph-widex"
+}
+
+setup_project() {
+  local project_name=$1
+
+  mkdir -p "${project_name}"
+  pushd "${project_name}" >/dev/null
+
+  init_in_place
+
+  if command -v git >/dev/null 2>&1; then
+    if [[ ! -d .git ]]; then
+      git init >/dev/null 2>&1 || true
+      echo "# ${project_name}" > README.md
+      git add . >/dev/null 2>&1 || true
+      git commit -m "Initial ralph-widex project setup" >/dev/null 2>&1 || true
+    fi
+  fi
+
+  popd >/dev/null
+
+  echo "Project created: ${project_name}"
+  echo "cd ${project_name} && ralph-widex"
+}
+
+run_loop() {
+  require_deps
+
+  if [[ ! -f "${PROMPT_FILE}" ]]; then
+    echo "Error: ${PROMPT_FILE} not found." >&2
+    echo "Run: ralph-widex init" >&2
+    exit 1
+  fi
+
+  mkdir -p "${LOG_DIR}" "${DOCS_DIR}"
+  init_call_tracking
+
+  local loop_count=0
+
+  while true; do
+    loop_count=$((loop_count + 1))
+    init_call_tracking
+
+    local calls_made
+    calls_made="$(cat "${CALL_COUNT_FILE}" 2>/dev/null || echo "0")"
+
+    if ! can_make_call; then
+      update_status "${loop_count}" "${calls_made}" "rate_limited" "waiting"
+      wait_for_reset
+      continue
+    fi
+
+    if ! can_execute; then
+      local reason
+      reason="$(jq -r '.reason // "circuit breaker open"' "${RALPH_DIR}/.circuit_breaker_state" 2>/dev/null || echo "circuit breaker open")"
+      update_status "${loop_count}" "${calls_made}" "circuit_breaker" "exited" "${reason}"
+      log_status ERROR "Circuit breaker open: ${reason}"
+      exit 2
+    fi
+
+    calls_made="$(increment_call_counter)"
+    update_status "${loop_count}" "${calls_made}" "codex_exec" "running"
+
+    log_status LOOP "Loop #${loop_count} (call ${calls_made}/${MAX_CALLS_PER_HOUR})"
+
+    local output_file exit_code
+    read -r output_file exit_code < <(codex_exec_once "${loop_count}")
+    log_status INFO "codex exec exit code: ${exit_code}"
+
+    analyze_response "${output_file}" "${loop_count}" "${RESPONSE_ANALYSIS_FILE}" >/dev/null
+    update_exit_signals "${RESPONSE_ANALYSIS_FILE}" "${EXIT_SIGNALS_FILE}" >/dev/null
+
+    if [[ "${VERBOSE_PROGRESS}" == "true" ]]; then
+      log_analysis_summary "${RESPONSE_ANALYSIS_FILE}" || true
+    fi
+
+    local exit_signal has_completion_signal files_modified is_stuck output_length
+    exit_signal="$(jq -r '.analysis.exit_signal // false' "${RESPONSE_ANALYSIS_FILE}" 2>/dev/null || echo false)"
+    has_completion_signal="$(jq -r '.analysis.has_completion_signal // false' "${RESPONSE_ANALYSIS_FILE}" 2>/dev/null || echo false)"
+    files_modified="$(jq -r '.analysis.files_modified // 0' "${RESPONSE_ANALYSIS_FILE}" 2>/dev/null || echo 0)"
+    is_stuck="$(jq -r '.analysis.is_stuck // false' "${RESPONSE_ANALYSIS_FILE}" 2>/dev/null || echo false)"
+    output_length="$(jq -r '.analysis.output_length // 0' "${RESPONSE_ANALYSIS_FILE}" 2>/dev/null || echo 0)"
+
+    if ! record_loop_result "${loop_count}" "${files_modified}" "${is_stuck}" "${output_length}"; then
+      local reason
+      reason="$(jq -r '.reason // "circuit breaker opened"' "${RALPH_DIR}/.circuit_breaker_state" 2>/dev/null || echo "circuit breaker opened")"
+      update_status "${loop_count}" "${calls_made}" "circuit_breaker" "exited" "${reason}"
+      log_status ERROR "Stopping: ${reason}"
+      exit 2
+    fi
+
+    if [[ "${exit_signal}" == "true" && "${has_completion_signal}" == "true" ]]; then
+      update_status "${loop_count}" "${calls_made}" "complete" "completed" "EXIT_SIGNAL gate satisfied"
+      log_status SUCCESS "Exit conditions met; stopping loop."
+      exit 0
+    fi
+
+    update_status "${loop_count}" "${calls_made}" "continue" "running"
+    sleep 1
+  done
+}
+
+main() {
+  local cmd="run"
+  if [[ $# -gt 0 ]]; then
+    case "$1" in
+      -h | --help)
+        usage
+        exit 0
+        ;;
+      init | setup | monitor | run)
+        cmd="$1"
+        shift
+        ;;
+    esac
+  fi
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --calls)
+        MAX_CALLS_PER_HOUR="$2"
+        shift 2
+        ;;
+      --prompt)
+        PROMPT_FILE="$2"
+        shift 2
+        ;;
+      --timeout-minutes)
+        CODEX_TIMEOUT_MINUTES="$2"
+        shift 2
+        ;;
+      --no-continue)
+        USE_CONTINUE=false
+        shift
+        ;;
+      --session-expiry-hours)
+        SESSION_EXPIRY_HOURS="$2"
+        shift 2
+        ;;
+      --skip-git-repo-check)
+        SKIP_GIT_REPO_CHECK=true
+        shift
+        ;;
+      --no-full-auto)
+        FULL_AUTO=false
+        shift
+        ;;
+      --verbose)
+        VERBOSE_PROGRESS=true
+        shift
+        ;;
+      -h | --help)
+        usage
+        exit 0
+        ;;
+      *)
+        echo "Unknown argument: $1" >&2
+        usage >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  case "${cmd}" in
+    init)
+      init_in_place
+      ;;
+    setup)
+      if [[ $# -lt 1 ]]; then
+        echo "setup requires a project name" >&2
+        exit 1
+      fi
+      setup_project "$1"
+      ;;
+    monitor)
+      exec "${FEATURE_ROOT}/bin/ralph-widex-monitor"
+      ;;
+    run)
+      run_loop
+      ;;
+    *)
+      echo "Unknown command: ${cmd}" >&2
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"
