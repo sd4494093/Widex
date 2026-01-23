@@ -502,7 +502,8 @@ impl SessionConfiguration {
             // the new slug clearly belongs to the other family.
             //
             // This logic is intentionally conservative: it only auto-switches between
-            // "openai"/"openai-proxy" and "gemini", leaving third-party providers untouched.
+            // "openai"/"openai-proxy" and select built-in providers ("gemini", "grok-vectorengine"),
+            // leaving third-party providers untouched.
             //
             // Explicit `model_provider_id` overrides always take precedence over this.
             if updates.model_provider_id.is_none() {
@@ -516,8 +517,11 @@ impl SessionConfiguration {
                 let is_current_openai_like =
                     matches!(current_provider_id, Some("openai") | Some("openai-proxy"));
 
-                if next_model.starts_with("gemini-") && current_provider_id != Some("gemini") {
-                    if is_current_openai_like
+                let next_is_gemini = next_model.starts_with("gemini-");
+                let next_is_grok = next_model.starts_with("grok-");
+
+                if next_is_gemini && current_provider_id != Some("gemini")
+                    && is_current_openai_like
                         && let Some(gemini) = self
                             .original_config_do_not_use
                             .model_providers
@@ -525,8 +529,19 @@ impl SessionConfiguration {
                     {
                         next_configuration.provider = gemini.clone();
                     }
-                } else if old_model.starts_with("gemini-")
-                    && !next_model.starts_with("gemini-")
+
+                if next_is_grok && current_provider_id != Some("grok-vectorengine")
+                    && is_current_openai_like
+                        && let Some(grok) = self
+                            .original_config_do_not_use
+                            .model_providers
+                            .get("grok-vectorengine")
+                    {
+                        next_configuration.provider = grok.clone();
+                    }
+
+                if old_model.starts_with("gemini-")
+                    && !next_is_gemini
                     && current_provider_id == Some("gemini")
                 {
                     let next = if let Some(proxy) = self
@@ -540,6 +555,28 @@ impl SessionConfiguration {
                             .model_providers
                             .get("openai")
                     };
+
+                    if let Some(provider) = next {
+                        next_configuration.provider = provider.clone();
+                    }
+                }
+
+                if old_model.starts_with("grok-")
+                    && !next_is_grok
+                    && current_provider_id == Some("grok-vectorengine")
+                {
+                    let next = if let Some(proxy) = self
+                        .original_config_do_not_use
+                        .model_providers
+                        .get("openai-proxy")
+                    {
+                        Some(proxy)
+                    } else {
+                        self.original_config_do_not_use
+                            .model_providers
+                            .get("openai")
+                    };
+
                     if let Some(provider) = next {
                         next_configuration.provider = provider.clone();
                     }

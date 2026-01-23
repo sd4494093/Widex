@@ -65,6 +65,9 @@ fn expected_models_for_api_key() -> Vec<ModelPreset> {
         gemini_3_pro_preview_codex(),
         gemini_3_flash_preview(),
         gemini_3_pro_image_preview(),
+        grok_4_1(),
+        grok_4_1_fast_reasoning(),
+        grok_4_1_fast_non_reasoning(),
     ]
 }
 
@@ -127,6 +130,82 @@ fn gemini_3_pro_image_preview() -> ModelPreset {
             ReasoningEffort::Medium,
             "Default Gemini reasoning behaviour for image workflows.",
         )],
+        is_default: false,
+        upgrade: None,
+        show_in_picker: true,
+        supported_in_api: true,
+    }
+}
+
+fn grok_4_1() -> ModelPreset {
+    ModelPreset {
+        id: "grok-4.1".to_string(),
+        model: "grok-4.1".to_string(),
+        display_name: "grok-4.1".to_string(),
+        description: "Grok 4.1 (via Chat Completions wire API).".to_string(),
+        default_reasoning_effort: ReasoningEffort::High,
+        supported_reasoning_efforts: vec![
+            effort(
+                ReasoningEffort::Low,
+                "Faster responses with lighter reasoning",
+            ),
+            effort(ReasoningEffort::Medium, "Balanced reasoning depth"),
+            effort(
+                ReasoningEffort::High,
+                "Higher-quality reasoning for complex problems",
+            ),
+        ],
+        is_default: false,
+        upgrade: None,
+        show_in_picker: true,
+        supported_in_api: true,
+    }
+}
+
+fn grok_4_1_fast_reasoning() -> ModelPreset {
+    ModelPreset {
+        id: "grok-4-1-fast-reasoning".to_string(),
+        model: "grok-4-1-fast-reasoning".to_string(),
+        display_name: "grok-4-1-fast-reasoning".to_string(),
+        description: "Grok 4.1 fast reasoning variant (via Chat Completions wire API).".to_string(),
+        default_reasoning_effort: ReasoningEffort::Medium,
+        supported_reasoning_efforts: vec![
+            effort(
+                ReasoningEffort::Low,
+                "Faster responses with lighter reasoning",
+            ),
+            effort(ReasoningEffort::Medium, "Balanced reasoning depth"),
+            effort(
+                ReasoningEffort::High,
+                "Higher-quality reasoning for complex problems",
+            ),
+        ],
+        is_default: false,
+        upgrade: None,
+        show_in_picker: true,
+        supported_in_api: true,
+    }
+}
+
+fn grok_4_1_fast_non_reasoning() -> ModelPreset {
+    ModelPreset {
+        id: "grok-4-1-fast-non-reasoning".to_string(),
+        model: "grok-4-1-fast-non-reasoning".to_string(),
+        display_name: "grok-4-1-fast-non-reasoning".to_string(),
+        description: "Grok 4.1 fast non-reasoning variant (via Chat Completions wire API)."
+            .to_string(),
+        default_reasoning_effort: ReasoningEffort::Low,
+        supported_reasoning_efforts: vec![
+            effort(
+                ReasoningEffort::Low,
+                "Faster responses with lighter reasoning",
+            ),
+            effort(ReasoningEffort::Medium, "Balanced reasoning depth"),
+            effort(
+                ReasoningEffort::High,
+                "Higher-quality reasoning for complex problems",
+            ),
+        ],
         is_default: false,
         upgrade: None,
         show_in_picker: true,

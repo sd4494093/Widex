@@ -151,6 +151,15 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             supports_reasoning_summaries: false,
             context_window: Some(16_385),
         )
+    } else if slug.starts_with("grok-") {
+        model_info!(
+            slug,
+            base_instructions: BASE_INSTRUCTIONS_WITH_APPLY_PATCH.to_string(),
+            supports_reasoning_summaries: false,
+            supports_parallel_tool_calls: false,
+            shell_type: ConfigShellToolType::ShellCommand,
+            context_window: Some(128_000),
+        )
     } else if slug.starts_with("gemini-") {
         model_info!(
             slug,

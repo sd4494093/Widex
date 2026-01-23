@@ -43,3 +43,6 @@ export GEMINI_API_KEY='...'
 - This is intentionally conservative today: it only writes `OPENAI_API_KEY` and `GEMINI_API_KEY`.
   Future providers (e.g. Grok / Sonnet) should extend core auth/config in the same layered way
   as the Gemini integration.
+
+- Grok (via VectorEngine) uses an OpenAI-compatible Chat Completions endpoint (`/v1/chat/completions`).
+  In the switcher YAML, configure Grok profiles using `auth.openai_api_key` (recommended from `GROK_API_KEY` env).

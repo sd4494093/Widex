@@ -17,6 +17,14 @@ codex:
         gemini_api_key:
           env: GEMINI_API_KEY
 
+    grok-vectorengine:
+      name: Grok (VectorEngine)
+      provider_id: grok-vectorengine
+      auth:
+        # VectorEngine's Grok endpoint is OpenAI Chat Completions compatible, so use openai_api_key.
+        openai_api_key:
+          env: GROK_API_KEY
+
     # Example: switch to a user-defined proxy provider.
     # This provider_id must exist under `[model_providers]` in config.toml.
     # openai-proxy:
@@ -35,9 +43,11 @@ codex:
         prefix: "gemini-"
       use: gemini-official
     - match:
+        prefix: "grok-"
+      use: grok-vectorengine
+    - match:
         prefix: "gpt-"
       use: openai-official
 
   # Fallback when nothing matches.
   default_profile: openai-official
-

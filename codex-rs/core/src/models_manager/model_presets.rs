@@ -371,6 +371,83 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             show_in_picker: true,
             supported_in_api: true,
         },
+        ModelPreset {
+            id: "grok-4.1".to_string(),
+            model: "grok-4.1".to_string(),
+            display_name: "grok-4.1".to_string(),
+            description: "Grok 4.1 (via Chat Completions wire API).".to_string(),
+            default_reasoning_effort: ReasoningEffort::High,
+            supported_reasoning_efforts: vec![
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Low,
+                    description: "Faster responses with lighter reasoning".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Medium,
+                    description: "Balanced reasoning depth".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::High,
+                    description: "Higher-quality reasoning for complex problems".to_string(),
+                },
+            ],
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+        },
+        ModelPreset {
+            id: "grok-4-1-fast-reasoning".to_string(),
+            model: "grok-4-1-fast-reasoning".to_string(),
+            display_name: "grok-4-1-fast-reasoning".to_string(),
+            description: "Grok 4.1 fast reasoning variant (via Chat Completions wire API)."
+                .to_string(),
+            default_reasoning_effort: ReasoningEffort::Medium,
+            supported_reasoning_efforts: vec![
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Low,
+                    description: "Faster responses with lighter reasoning".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Medium,
+                    description: "Balanced reasoning depth".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::High,
+                    description: "Higher-quality reasoning for complex problems".to_string(),
+                },
+            ],
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+        },
+        ModelPreset {
+            id: "grok-4-1-fast-non-reasoning".to_string(),
+            model: "grok-4-1-fast-non-reasoning".to_string(),
+            display_name: "grok-4-1-fast-non-reasoning".to_string(),
+            description: "Grok 4.1 fast non-reasoning variant (via Chat Completions wire API)."
+                .to_string(),
+            default_reasoning_effort: ReasoningEffort::Low,
+            supported_reasoning_efforts: vec![
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Low,
+                    description: "Faster responses with lighter reasoning".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Medium,
+                    description: "Balanced reasoning depth".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::High,
+                    description: "Higher-quality reasoning for complex problems".to_string(),
+                },
+            ],
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+        },
     ]
 });
 

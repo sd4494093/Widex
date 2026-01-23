@@ -76,6 +76,7 @@ async fn run_codex_cli(
     let mut output_rx = spawned.output_rx;
     let mut exit_rx = spawned.exit_rx;
     let writer_tx = spawned.session.writer_sender();
+    let mut sent_continue = false;
     let exit_code_result = timeout(Duration::from_secs(10), async {
         // Read PTY output until the process exits while replying to cursor
         // position queries so the TUI can initialize without a real terminal.
@@ -87,6 +88,11 @@ async fn run_codex_cli(
                         // Respond with a valid position to unblock startup.
                         if chunk.windows(4).any(|window| window == b"\x1b[6n") {
                             let _ = writer_tx.send(b"\x1b[1;1R".to_vec()).await;
+                        }
+                        if !sent_continue {
+                            // Ensure the startup splash screen can proceed.
+                            let _ = writer_tx.send(b"\n".to_vec()).await;
+                            sent_continue = true;
                         }
                         output.extend_from_slice(&chunk);
                     }

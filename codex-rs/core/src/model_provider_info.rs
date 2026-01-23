@@ -289,6 +289,24 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
     [
         ("openai", P::create_openai_provider()),
         (
+            "grok-vectorengine",
+            P {
+                name: "Grok (VectorEngine)".into(),
+                base_url: Some("https://api.vectorengine.ai/v1".into()),
+                env_key: None,
+                env_key_instructions: None,
+                experimental_bearer_token: None,
+                wire_api: WireApi::Chat,
+                query_params: None,
+                http_headers: None,
+                env_http_headers: None,
+                request_max_retries: None,
+                stream_max_retries: None,
+                stream_idle_timeout_ms: None,
+                requires_openai_auth: true,
+            },
+        ),
+        (
             "gemini",
             P {
                 name: "Gemini".into(),

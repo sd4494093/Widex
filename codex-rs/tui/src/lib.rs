@@ -101,6 +101,8 @@ pub mod test_backend;
 use crate::onboarding::TrustDirectorySelection;
 use crate::onboarding::onboarding_screen::OnboardingScreenArgs;
 use crate::onboarding::onboarding_screen::run_onboarding_app;
+use crate::onboarding::startup_splash::StartupSplashOutcome;
+use crate::onboarding::startup_splash::run_startup_splash;
 use crate::tui::Tui;
 pub use cli::Cli;
 pub use markdown_render::render_markdown_text;
@@ -391,6 +393,21 @@ async fn run_ratatui_app(
 
     // Initialize high-fidelity session event logging if enabled.
     session_log::maybe_init(&initial_config);
+
+    match run_startup_splash(&mut tui, initial_config.animations).await? {
+        StartupSplashOutcome::Continue => {}
+        StartupSplashOutcome::Exit => {
+            restore();
+            session_log::log_session_end();
+            let _ = tui.terminal.clear();
+            return Ok(AppExitInfo {
+                token_usage: codex_core::protocol::TokenUsage::default(),
+                thread_id: None,
+                update_action: None,
+                exit_reason: ExitReason::UserRequested,
+            });
+        }
+    }
 
     let auth_manager = AuthManager::shared(
         initial_config.codex_home.clone(),
