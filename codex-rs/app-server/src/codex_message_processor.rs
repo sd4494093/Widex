@@ -3287,6 +3287,7 @@ impl CodexMessageProcessor {
                     approval_policy: params.approval_policy.map(AskForApproval::to_core),
                     sandbox_policy: params.sandbox_policy.map(|p| p.to_core()),
                     model: params.model,
+                    model_provider_id: None,
                     effort: params.effort.map(Some),
                     summary: params.summary,
                 })

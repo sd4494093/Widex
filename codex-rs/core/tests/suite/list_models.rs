@@ -60,6 +60,9 @@ fn expected_models_for_api_key() -> Vec<ModelPreset> {
         gpt_5_1_codex(),
         gpt_5(),
         gpt_5_1(),
+        gemini_3_pro_preview_codex(),
+        gemini_3_flash_preview(),
+        gemini_3_pro_image_preview(),
     ]
 }
 
@@ -78,7 +81,72 @@ fn expected_models_for_chatgpt() -> Vec<ModelPreset> {
         gpt_5_1_codex(),
         gpt_5(),
         gpt_5_1(),
+        gemini_3_pro_preview_codex(),
+        gemini_3_flash_preview(),
+        gemini_3_pro_image_preview(),
     ]
+}
+
+fn gemini_3_pro_preview_codex() -> ModelPreset {
+    ModelPreset {
+        id: "gemini-3-pro-preview-codex".to_string(),
+        model: "gemini-3-pro-preview-codex".to_string(),
+        display_name: "gemini-3-pro-preview-codex".to_string(),
+        description: "Gemini 3 Pro preview (via Gemini wire API).".to_string(),
+        default_reasoning_effort: ReasoningEffort::High,
+        supported_reasoning_efforts: vec![
+            effort(ReasoningEffort::Low, "Lower-cost reasoning"),
+            effort(ReasoningEffort::Medium, "Balanced reasoning depth"),
+            effort(
+                ReasoningEffort::High,
+                "Higher-quality reasoning for complex problems",
+            ),
+        ],
+        is_default: false,
+        upgrade: None,
+        show_in_picker: true,
+        supported_in_api: true,
+    }
+}
+
+fn gemini_3_flash_preview() -> ModelPreset {
+    ModelPreset {
+        id: "gemini-3-flash-preview".to_string(),
+        model: "gemini-3-flash-preview".to_string(),
+        display_name: "gemini-3-flash-preview".to_string(),
+        description: "Gemini 3 Flash preview (via Gemini wire API).".to_string(),
+        default_reasoning_effort: ReasoningEffort::High,
+        supported_reasoning_efforts: vec![
+            effort(ReasoningEffort::Low, "Lower-cost reasoning"),
+            effort(ReasoningEffort::Medium, "Balanced reasoning depth"),
+            effort(
+                ReasoningEffort::High,
+                "Higher-quality reasoning for complex problems",
+            ),
+        ],
+        is_default: false,
+        upgrade: None,
+        show_in_picker: true,
+        supported_in_api: true,
+    }
+}
+
+fn gemini_3_pro_image_preview() -> ModelPreset {
+    ModelPreset {
+        id: "gemini-3-pro-image-preview".to_string(),
+        model: "gemini-3-pro-image-preview".to_string(),
+        display_name: "gemini-3-pro-image-preview".to_string(),
+        description: "Gemini 3 Pro image preview (multimodal).".to_string(),
+        default_reasoning_effort: ReasoningEffort::Medium,
+        supported_reasoning_efforts: vec![effort(
+            ReasoningEffort::Medium,
+            "Default Gemini reasoning behaviour for image workflows.",
+        )],
+        is_default: false,
+        upgrade: None,
+        show_in_picker: true,
+        supported_in_api: true,
+    }
 }
 
 fn gpt_52_codex() -> ModelPreset {

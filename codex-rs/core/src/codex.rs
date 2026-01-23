@@ -461,8 +461,77 @@ pub(crate) struct SessionConfiguration {
 impl SessionConfiguration {
     pub(crate) fn apply(&self, updates: &SessionSettingsUpdate) -> ConstraintResult<Self> {
         let mut next_configuration = self.clone();
-        if let Some(model) = updates.model.clone() {
-            next_configuration.model = model;
+        if let Some(model) = updates.model.as_ref() {
+            let old_model = self.model.as_str();
+            next_configuration.model = model.clone();
+
+            // When the model changes, switch between built-in OpenAI and Gemini
+            // providers if the new slug clearly belongs to the other family.
+            //
+            // This logic is intentionally conservative: it only auto-switches
+            // between "openai"/"openai-proxy" and "gemini", leaving third-party
+            // providers untouched.
+            let current_provider_id = self
+                .original_config_do_not_use
+                .model_providers
+                .iter()
+                .find(|(_, provider)| *provider == &self.provider)
+                .map(|(id, _)| id.as_str());
+
+            let is_current_openai_like =
+                matches!(current_provider_id, Some("openai") | Some("openai-proxy"));
+
+            if model.starts_with("gemini-") && current_provider_id != Some("gemini") {
+                if is_current_openai_like
+                    && let Some(gemini) = self
+                        .original_config_do_not_use
+                        .model_providers
+                        .get("gemini")
+                {
+                    next_configuration.provider = gemini.clone();
+                }
+            } else if old_model.starts_with("gemini-")
+                && !model.starts_with("gemini-")
+                && current_provider_id == Some("gemini")
+            {
+                let next = if let Some(proxy) = self
+                    .original_config_do_not_use
+                    .model_providers
+                    .get("openai-proxy")
+                {
+                    Some(proxy)
+                } else {
+                    self.original_config_do_not_use
+                        .model_providers
+                        .get("openai")
+                };
+                if let Some(provider) = next {
+                    next_configuration.provider = provider.clone();
+                }
+            }
+        }
+        if let Some(provider_id) = updates.model_provider_id.as_deref() {
+            if let Some(provider) = self
+                .original_config_do_not_use
+                .model_providers
+                .get(provider_id)
+            {
+                next_configuration.provider = provider.clone();
+            } else {
+                let mut providers: Vec<String> = self
+                    .original_config_do_not_use
+                    .model_providers
+                    .keys()
+                    .cloned()
+                    .collect();
+                providers.sort();
+                return Err(crate::config::ConstraintError::InvalidValue {
+                    field_name: "model_provider",
+                    candidate: provider_id.to_string(),
+                    allowed: format!("{providers:?}"),
+                    requirement_source: crate::config_loader::RequirementSource::Unknown,
+                });
+            }
         }
         if let Some(effort) = updates.reasoning_effort {
             next_configuration.model_reasoning_effort = effort;
@@ -489,6 +558,7 @@ pub(crate) struct SessionSettingsUpdate {
     pub(crate) approval_policy: Option<AskForApproval>,
     pub(crate) sandbox_policy: Option<SandboxPolicy>,
     pub(crate) model: Option<String>,
+    pub(crate) model_provider_id: Option<String>,
     pub(crate) reasoning_effort: Option<Option<ReasoningEffortConfig>>,
     pub(crate) reasoning_summary: Option<ReasoningSummaryConfig>,
     pub(crate) final_output_json_schema: Option<Option<Value>>,
@@ -903,8 +973,12 @@ impl Session {
     ) -> ConstraintResult<()> {
         let mut state = self.state.lock().await;
 
+        let old_model = state.session_configuration.model.clone();
         match state.session_configuration.apply(&updates) {
             Ok(updated) => {
+                if old_model.starts_with("gemini-") && !updated.model.starts_with("gemini-") {
+                    state.history.replace_all_images("Image omitted");
+                }
                 state.session_configuration = updated;
                 Ok(())
             }
@@ -922,8 +996,12 @@ impl Session {
     ) -> ConstraintResult<Arc<TurnContext>> {
         let (session_configuration, sandbox_policy_changed) = {
             let mut state = self.state.lock().await;
+            let old_model = state.session_configuration.model.clone();
             match state.session_configuration.clone().apply(&updates) {
                 Ok(next) => {
+                    if old_model.starts_with("gemini-") && !next.model.starts_with("gemini-") {
+                        state.history.replace_all_images("Image omitted");
+                    }
                     let sandbox_policy_changed =
                         state.session_configuration.sandbox_policy != next.sandbox_policy;
                     state.session_configuration = next.clone();
@@ -1824,6 +1902,7 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                 approval_policy,
                 sandbox_policy,
                 model,
+                model_provider_id,
                 effort,
                 summary,
             } => {
@@ -1835,6 +1914,7 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                         approval_policy,
                         sandbox_policy,
                         model,
+                        model_provider_id,
                         reasoning_effort: effort,
                         reasoning_summary: summary,
                         ..Default::default()
@@ -1996,6 +2076,7 @@ mod handlers {
                     approval_policy: Some(approval_policy),
                     sandbox_policy: Some(sandbox_policy),
                     model: Some(model),
+                    model_provider_id: None,
                     reasoning_effort: Some(effort),
                     reasoning_summary: Some(summary),
                     final_output_json_schema: Some(final_output_json_schema),

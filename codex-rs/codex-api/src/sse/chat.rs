@@ -309,6 +309,7 @@ pub async fn process_chat_sse<S>(
                         name,
                         arguments,
                         call_id: id.unwrap_or_else(|| format!("tool-call-{index}")),
+                        thought_signature: None,
                     };
                     let _ = tx_event.send(Ok(ResponseEvent::OutputItemDone(item))).await;
                 }

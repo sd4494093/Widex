@@ -44,8 +44,12 @@ use crate::tui::scrolling::ScrollUpdate;
 use crate::tui::scrolling::TranscriptScroll;
 use crate::update_action::UpdateAction;
 use codex_ansi_escape::ansi_escape_line;
+use codex_api_switchover::ApiSwitchoverConfig;
 use codex_core::AuthManager;
 use codex_core::ThreadManager;
+use codex_core::auth::AuthDotJson;
+use codex_core::auth::load_auth_dot_json;
+use codex_core::auth::save_auth;
 use codex_core::config::Config;
 use codex_core::config::edit::ConfigEditsBuilder;
 #[cfg(target_os = "windows")]
@@ -424,6 +428,32 @@ impl App {
             self.chat_widget.submit_op(Op::Shutdown);
             self.server.remove_thread(&conversation_id).await;
         }
+    }
+
+    fn api_switchover_config_path(&self) -> Option<PathBuf> {
+        if let Ok(path) = std::env::var("CODEX_API_SWITCHER_CONFIG") {
+            let trimmed = path.trim();
+            if !trimmed.is_empty() {
+                return Some(PathBuf::from(trimmed));
+            }
+        }
+        if let Ok(path) = std::env::var("WIDEX_API_SWITCHER_CONFIG") {
+            let trimmed = path.trim();
+            if !trimmed.is_empty() {
+                return Some(PathBuf::from(trimmed));
+            }
+        }
+
+        let codex_home_path = self.config.codex_home.join("api_switchover.yaml");
+        if codex_home_path.exists() {
+            return Some(codex_home_path);
+        }
+
+        let repo_path = self
+            .config
+            .cwd
+            .join("widex-custom/features/api-switchover/api_config.yaml");
+        repo_path.exists().then_some(repo_path)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1686,6 +1716,138 @@ impl App {
             AppEvent::UpdateReasoningEffort(effort) => {
                 self.on_update_reasoning_effort(effort);
             }
+            AppEvent::ApplyModelSelection { model, effort } => {
+                let mut provider_id: Option<String> = None;
+                let mut switchover_profile: Option<String> = None;
+
+                if let Some(config_path) = self.api_switchover_config_path() {
+                    match ApiSwitchoverConfig::load_from_path(&config_path) {
+                        Ok(cfg) => match cfg.resolve_codex_plan_for_model(&model) {
+                            Ok(Some(plan)) => {
+                                switchover_profile = Some(plan.profile_id.clone());
+
+                                if let Some(next_provider_id) = plan.provider_id.clone() {
+                                    if let Some(provider) =
+                                        self.config.model_providers.get(&next_provider_id)
+                                    {
+                                        provider_id = Some(next_provider_id.clone());
+                                        self.config.model_provider_id = next_provider_id.clone();
+                                        self.config.model_provider = provider.clone();
+                                        self.chat_widget
+                                            .set_model_provider(next_provider_id, provider.clone());
+                                    } else {
+                                        self.chat_widget.add_error_message(format!(
+                                            "API switchover profile `{}` references provider `{next_provider_id}`, but it is not present in config.toml `model_providers`.",
+                                            plan.profile_id
+                                        ));
+                                    }
+                                }
+
+                                if plan.auth.openai_api_key.is_some()
+                                    || plan.auth.gemini_api_key.is_some()
+                                {
+                                    let mut auth = load_auth_dot_json(
+                                        &self.config.codex_home,
+                                        self.config.cli_auth_credentials_store_mode,
+                                    )
+                                    .unwrap_or(None)
+                                    .unwrap_or(AuthDotJson {
+                                        openai_api_key: None,
+                                        gemini_api_key: None,
+                                        tokens: None,
+                                        last_refresh: None,
+                                    });
+
+                                    let mut changed = false;
+                                    if let Some(key) = plan.auth.openai_api_key
+                                        && auth.openai_api_key.as_deref() != Some(key.as_str())
+                                    {
+                                        auth.openai_api_key = Some(key);
+                                        changed = true;
+                                    }
+                                    if let Some(key) = plan.auth.gemini_api_key
+                                        && auth.gemini_api_key.as_deref() != Some(key.as_str())
+                                    {
+                                        auth.gemini_api_key = Some(key);
+                                        changed = true;
+                                    }
+                                    if changed {
+                                        if let Err(err) = save_auth(
+                                            &self.config.codex_home,
+                                            &auth,
+                                            self.config.cli_auth_credentials_store_mode,
+                                        ) {
+                                            self.chat_widget.add_error_message(format!(
+                                                "Failed to persist auth.json updates from api switchover: {err}"
+                                            ));
+                                        } else {
+                                            self.auth_manager.reload();
+                                        }
+                                    }
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(err) => {
+                                self.chat_widget.add_error_message(format!(
+                                    "Failed to resolve api switchover for model `{model}`: {err}"
+                                ));
+                            }
+                        },
+                        Err(err) => {
+                            self.chat_widget.add_error_message(format!(
+                                "Failed to load api switchover config at {}: {err}",
+                                config_path.display()
+                            ));
+                        }
+                    }
+                }
+
+                self.chat_widget.submit_op(Op::OverrideTurnContext {
+                    cwd: None,
+                    approval_policy: None,
+                    sandbox_policy: None,
+                    model: Some(model.clone()),
+                    model_provider_id: provider_id.clone(),
+                    effort: Some(effort),
+                    summary: None,
+                });
+
+                self.chat_widget.set_model(&model);
+                self.current_model = model.clone();
+                self.on_update_reasoning_effort(effort);
+
+                let profile = self.active_profile.as_deref();
+                let mut edits = ConfigEditsBuilder::new(&self.config.codex_home)
+                    .with_profile(profile)
+                    .set_model(Some(model.as_str()), effort);
+                if provider_id.is_some() {
+                    edits = edits.set_model_provider(provider_id.as_deref());
+                }
+                match edits.apply().await {
+                    Ok(()) => {
+                        let mut message = format!("Model changed to {model}");
+                        if let Some(label) = Self::reasoning_label_for(&model, effort) {
+                            message.push(' ');
+                            message.push_str(label);
+                        }
+                        if let Some(provider_id) = provider_id.as_deref() {
+                            message.push_str(" via ");
+                            message.push_str(provider_id);
+                        }
+                        if let Some(profile_id) = switchover_profile.as_deref() {
+                            message.push_str(" (api profile: ");
+                            message.push_str(profile_id);
+                            message.push(')');
+                        }
+                        self.chat_widget.add_info_message(message, None);
+                    }
+                    Err(err) => {
+                        tracing::error!(error = %err, "failed to persist model selection");
+                        self.chat_widget
+                            .add_error_message(format!("Failed to save model selection: {err}"));
+                    }
+                }
+            }
             AppEvent::UpdateModel(model) => {
                 self.chat_widget.set_model(&model);
                 self.current_model = model;
@@ -1828,6 +1990,7 @@ impl App {
                                         approval_policy: Some(preset.approval),
                                         sandbox_policy: Some(preset.sandbox.clone()),
                                         model: None,
+                                        model_provider_id: None,
                                         effort: None,
                                         summary: None,
                                     },

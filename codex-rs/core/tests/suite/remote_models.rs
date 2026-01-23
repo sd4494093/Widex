@@ -137,6 +137,7 @@ async fn remote_models_remote_model_uses_unified_exec() -> Result<()> {
             approval_policy: None,
             sandbox_policy: None,
             model: Some(REMOTE_MODEL_SLUG.to_string()),
+            model_provider_id: None,
             effort: None,
             summary: None,
         })
@@ -361,6 +362,7 @@ async fn remote_models_apply_remote_base_instructions() -> Result<()> {
             approval_policy: None,
             sandbox_policy: None,
             model: Some(model.to_string()),
+            model_provider_id: None,
             effort: None,
             summary: None,
         })

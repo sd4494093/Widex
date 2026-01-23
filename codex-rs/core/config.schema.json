@@ -75,6 +75,9 @@
         "apply_patch_freeform": {
           "type": "boolean"
         },
+        "child_agents_md": {
+          "type": "boolean"
+        },
         "collab": {
           "type": "boolean"
         },
@@ -97,9 +100,6 @@
           "type": "boolean"
         },
         "experimental_windows_sandbox": {
-          "type": "boolean"
-        },
-        "child_agents_md": {
           "type": "boolean"
         },
         "include_apply_patch_tool": {
@@ -543,6 +543,9 @@
             "apply_patch_freeform": {
               "type": "boolean"
             },
+            "child_agents_md": {
+              "type": "boolean"
+            },
             "collab": {
               "type": "boolean"
             },
@@ -565,9 +568,6 @@
               "type": "boolean"
             },
             "experimental_windows_sandbox": {
-              "type": "boolean"
-            },
-            "child_agents_md": {
               "type": "boolean"
             },
             "include_apply_patch_tool": {
@@ -1461,6 +1461,13 @@
           "type": "string",
           "enum": [
             "chat"
+          ]
+        },
+        {
+          "description": "Google Gemini JSON API exposed via `:streamGenerateContent`.",
+          "type": "string",
+          "enum": [
+            "gemini"
           ]
         }
       ]

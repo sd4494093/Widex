@@ -107,6 +107,7 @@ async fn permissions_message_added_on_override_change() -> Result<()> {
             approval_policy: Some(AskForApproval::Never),
             sandbox_policy: None,
             model: None,
+            model_provider_id: None,
             effort: None,
             summary: None,
         })
@@ -222,6 +223,7 @@ async fn resume_replays_permissions_messages() -> Result<()> {
             approval_policy: Some(AskForApproval::Never),
             sandbox_policy: None,
             model: None,
+            model_provider_id: None,
             effort: None,
             summary: None,
         })
@@ -298,6 +300,7 @@ async fn resume_and_fork_append_permissions_messages() -> Result<()> {
             approval_policy: Some(AskForApproval::Never),
             sandbox_policy: None,
             model: None,
+            model_provider_id: None,
             effort: None,
             summary: None,
         })

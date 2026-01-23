@@ -1230,6 +1230,7 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
         name: "do_thing".into(),
         arguments: "{}".into(),
         call_id: "function-call-id".into(),
+        thought_signature: None,
     });
     prompt.input.push(ResponseItem::FunctionCallOutput {
         call_id: "function-call-id".into(),

@@ -1,0 +1,43 @@
+version: 1
+
+codex:
+  profiles:
+    openai-official:
+      name: OpenAI (official)
+      provider_id: openai
+      auth:
+        # Recommended: pull from env instead of committing secrets.
+        openai_api_key:
+          env: OPENAI_API_KEY
+
+    gemini-official:
+      name: Gemini (official)
+      provider_id: gemini
+      auth:
+        gemini_api_key:
+          env: GEMINI_API_KEY
+
+    # Example: switch to a user-defined proxy provider.
+    # This provider_id must exist under `[model_providers]` in config.toml.
+    # openai-proxy:
+    #   name: OpenAI (proxy)
+    #   provider_id: openai-proxy
+    #   auth:
+    #     openai_api_key:
+    #       env: OPENAI_API_KEY
+
+  # Exact model slug mapping (highest priority).
+  models: {}
+
+  # Ordered prefix/equals rules (first match wins).
+  rules:
+    - match:
+        prefix: "gemini-"
+      use: gemini-official
+    - match:
+        prefix: "gpt-"
+      use: openai-official
+
+  # Fallback when nothing matches.
+  default_profile: openai-official
+

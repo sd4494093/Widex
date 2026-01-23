@@ -22,6 +22,8 @@ pub enum ConfigEdit {
         model: Option<String>,
         effort: Option<ReasoningEffort>,
     },
+    /// Update the model provider id (key into `model_providers`).
+    SetModelProvider { provider: Option<String> },
     /// Toggle the acknowledgement flag under `[notice]`.
     SetNoticeHideFullAccessWarning(bool),
     /// Toggle the Windows world-writable directories warning acknowledgement flag.
@@ -265,6 +267,10 @@ impl ConfigDocument {
                 );
                 mutated
             }),
+            ConfigEdit::SetModelProvider { provider } => Ok(self.write_profile_value(
+                &["model_provider"],
+                provider.as_ref().map(|provider| value(provider.clone())),
+            )),
             ConfigEdit::SetNoticeHideFullAccessWarning(acknowledged) => Ok(self.write_value(
                 Scope::Global,
                 &[Notice::TABLE_KEY, "hide_full_access_warning"],
@@ -596,6 +602,13 @@ impl ConfigEditsBuilder {
         self
     }
 
+    pub fn set_model_provider(mut self, provider: Option<&str>) -> Self {
+        self.edits.push(ConfigEdit::SetModelProvider {
+            provider: provider.map(ToOwned::to_owned),
+        });
+        self
+    }
+
     pub fn set_hide_full_access_warning(mut self, acknowledged: bool) -> Self {
         self.edits
             .push(ConfigEdit::SetNoticeHideFullAccessWarning(acknowledged));
@@ -695,6 +708,47 @@ mod tests {
     use pretty_assertions::assert_eq;
     use tempfile::tempdir;
     use toml::Value as TomlValue;
+
+    #[test]
+    fn blocking_set_model_provider_top_level() {
+        let tmp = tempdir().expect("tmpdir");
+        let codex_home = tmp.path();
+
+        apply_blocking(
+            codex_home,
+            None,
+            &[ConfigEdit::SetModelProvider {
+                provider: Some("openai".to_string()),
+            }],
+        )
+        .expect("persist");
+
+        let contents =
+            std::fs::read_to_string(codex_home.join(CONFIG_TOML_FILE)).expect("read config");
+        assert_eq!(contents, "model_provider = \"openai\"\n");
+    }
+
+    #[test]
+    fn blocking_set_model_provider_in_profile() {
+        let tmp = tempdir().expect("tmpdir");
+        let codex_home = tmp.path();
+
+        apply_blocking(
+            codex_home,
+            Some("fast"),
+            &[ConfigEdit::SetModelProvider {
+                provider: Some("openai-chat-completions".to_string()),
+            }],
+        )
+        .expect("persist");
+
+        let contents =
+            std::fs::read_to_string(codex_home.join(CONFIG_TOML_FILE)).expect("read config");
+        let expected = r#"[profiles.fast]
+model_provider = "openai-chat-completions"
+"#;
+        assert_eq!(contents, expected);
+    }
 
     #[test]
     fn blocking_set_model_top_level() {

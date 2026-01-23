@@ -342,6 +342,7 @@ async fn overrides_turn_context_but_keeps_cached_prefix_and_key_constant() -> an
             approval_policy: Some(AskForApproval::Never),
             sandbox_policy: Some(new_policy.clone()),
             model: Some("o3".to_string()),
+            model_provider_id: None,
             effort: Some(Some(ReasoningEffort::High)),
             summary: Some(ReasoningSummary::Detailed),
         })
@@ -405,6 +406,7 @@ async fn override_before_first_turn_emits_environment_context() -> anyhow::Resul
             approval_policy: Some(AskForApproval::Never),
             sandbox_policy: None,
             model: None,
+            model_provider_id: None,
             effort: None,
             summary: None,
         })

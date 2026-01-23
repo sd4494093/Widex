@@ -31,6 +31,7 @@ use std::time::Instant;
 use crate::version::CODEX_CLI_VERSION;
 use codex_app_server_protocol::AuthMode;
 use codex_backend_client::Client as BackendClient;
+use codex_core::ModelProviderInfo;
 use codex_core::config::Config;
 use codex_core::config::ConstraintResult;
 use codex_core::config::types::Notifications;
@@ -2710,16 +2711,10 @@ impl ChatWidget {
         let default_effort: ReasoningEffortConfig = preset.default_reasoning_effort;
 
         let switch_actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
-            tx.send(AppEvent::CodexOp(Op::OverrideTurnContext {
-                cwd: None,
-                approval_policy: None,
-                sandbox_policy: None,
-                model: Some(switch_model.clone()),
-                effort: Some(Some(default_effort)),
-                summary: None,
-            }));
-            tx.send(AppEvent::UpdateModel(switch_model.clone()));
-            tx.send(AppEvent::UpdateReasoningEffort(Some(default_effort)));
+            tx.send(AppEvent::ApplyModelSelection {
+                model: switch_model.clone(),
+                effort: Some(default_effort),
+            });
         })];
 
         let keep_actions: Vec<SelectionAction> = Vec::new();
@@ -2984,17 +2979,7 @@ impl ChatWidget {
             let effort_label = effort_for_action
                 .map(|effort| effort.to_string())
                 .unwrap_or_else(|| "default".to_string());
-            tx.send(AppEvent::CodexOp(Op::OverrideTurnContext {
-                cwd: None,
-                approval_policy: None,
-                sandbox_policy: None,
-                model: Some(model_for_action.clone()),
-                effort: Some(effort_for_action),
-                summary: None,
-            }));
-            tx.send(AppEvent::UpdateModel(model_for_action.clone()));
-            tx.send(AppEvent::UpdateReasoningEffort(effort_for_action));
-            tx.send(AppEvent::PersistModelSelection {
+            tx.send(AppEvent::ApplyModelSelection {
                 model: model_for_action.clone(),
                 effort: effort_for_action,
             });
@@ -3154,28 +3139,17 @@ impl ChatWidget {
     }
 
     fn apply_model_and_effort(&self, model: String, effort: Option<ReasoningEffortConfig>) {
-        self.app_event_tx
-            .send(AppEvent::CodexOp(Op::OverrideTurnContext {
-                cwd: None,
-                approval_policy: None,
-                sandbox_policy: None,
-                model: Some(model.clone()),
-                effort: Some(effort),
-                summary: None,
-            }));
-        self.app_event_tx.send(AppEvent::UpdateModel(model.clone()));
-        self.app_event_tx
-            .send(AppEvent::UpdateReasoningEffort(effort));
-        self.app_event_tx.send(AppEvent::PersistModelSelection {
+        let effort_label = effort
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "default".to_string());
+        self.app_event_tx.send(AppEvent::ApplyModelSelection {
             model: model.clone(),
             effort,
         });
         tracing::info!(
             "Selected model: {}, Selected effort: {}",
             model,
-            effort
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "default".to_string())
+            effort_label
         );
     }
 
@@ -3328,6 +3302,7 @@ impl ChatWidget {
                 approval_policy: Some(approval),
                 sandbox_policy: Some(sandbox_clone.clone()),
                 model: None,
+                model_provider_id: None,
                 effort: None,
                 summary: None,
             }));
@@ -3904,6 +3879,11 @@ impl ChatWidget {
     pub(crate) fn set_model(&mut self, model: &str) {
         self.session_header.set_model(model);
         self.model = Some(model.to_string());
+    }
+
+    pub(crate) fn set_model_provider(&mut self, provider_id: String, provider: ModelProviderInfo) {
+        self.config.model_provider_id = provider_id;
+        self.config.model_provider = provider;
     }
 
     fn current_model(&self) -> Option<&str> {

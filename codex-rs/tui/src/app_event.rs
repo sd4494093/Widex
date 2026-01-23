@@ -97,6 +97,13 @@ pub(crate) enum AppEvent {
     /// Update the current model slug in the running app and widget.
     UpdateModel(String),
 
+    /// Apply a model selection from the UI, optionally consulting the widex API switchover config
+    /// to also switch model provider and auth.
+    ApplyModelSelection {
+        model: String,
+        effort: Option<ReasoningEffort>,
+    },
+
     /// Persist the selected model and reasoning effort to the appropriate config.
     PersistModelSelection {
         model: String,

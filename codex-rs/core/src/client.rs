@@ -185,6 +185,11 @@ impl ModelClient {
         if prompt.input.is_empty() {
             return Ok(Vec::new());
         }
+        if self.state.provider.wire_api == WireApi::Gemini {
+            return Err(CodexErr::UnsupportedOperation(
+                "Conversation compaction is not supported for Gemini providers".to_string(),
+            ));
+        }
         let auth_manager = self.state.auth_manager.clone();
         let auth = match auth_manager.as_ref() {
             Some(manager) => manager.auth().await,
@@ -255,6 +260,15 @@ impl ModelClientSession {
                         self.state.otel_manager.clone(),
                     ))
                 }
+            }
+            WireApi::Gemini => {
+                crate::gemini::stream_gemini(
+                    self.state.config.as_ref(),
+                    &self.state.provider,
+                    &self.state.model_info,
+                    prompt,
+                )
+                .await
             }
         }
     }

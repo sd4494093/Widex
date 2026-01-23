@@ -992,6 +992,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-api-switchover"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "codex-core",
+ "dirs",
+ "pretty_assertions",
+ "serde",
+ "serde_yaml",
+ "tempfile",
+]
+
+[[package]]
 name = "codex-app-server"
 version = "0.0.0"
 dependencies = [
@@ -1273,6 +1287,7 @@ dependencies = [
  "async-channel",
  "async-trait",
  "base64",
+ "bytes",
  "chardetng",
  "chrono",
  "clap",
@@ -1744,6 +1759,7 @@ dependencies = [
  "chrono",
  "clap",
  "codex-ansi-escape",
+ "codex-api-switchover",
  "codex-app-server-protocol",
  "codex-arg0",
  "codex-backend-client",
@@ -1819,6 +1835,7 @@ dependencies = [
  "chrono",
  "clap",
  "codex-ansi-escape",
+ "codex-api-switchover",
  "codex-app-server-protocol",
  "codex-arg0",
  "codex-backend-client",

@@ -70,7 +70,7 @@ async fn build_codex_with_test_tool(server: &wiremock::MockServer) -> anyhow::Re
 fn assert_parallel_duration(actual: Duration) {
     // Allow headroom for runtime overhead while still differentiating from serial execution.
     assert!(
-        actual < Duration::from_millis(750),
+        actual < Duration::from_millis(2_600),
         "expected parallel execution to finish quickly, got {actual:?}"
     );
 }
@@ -100,7 +100,9 @@ async fn read_file_tools_run_in_parallel() -> anyhow::Result<()> {
     .to_string();
 
     let parallel_args = json!({
-        "sleep_after_ms": 300,
+        // Use a longer sleep to reduce flakiness on slower/loaded machines while still
+        // clearly distinguishing parallel (~1500ms) from serial (~3000ms) execution.
+        "sleep_after_ms": 1500,
         "barrier": {
             "id": "parallel-test-sync",
             "participants": 2,

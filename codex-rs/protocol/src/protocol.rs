@@ -140,6 +140,10 @@ pub enum Op {
         #[serde(skip_serializing_if = "Option::is_none")]
         model: Option<String>,
 
+        /// Updated model provider id (key into `model_providers`).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        model_provider_id: Option<String>,
+
         /// Updated reasoning effort (honored only for reasoning-capable models).
         ///
         /// Use `Some(Some(_))` to set a specific effort, `Some(None)` to clear

@@ -156,6 +156,50 @@ impl ContextManager {
         }
     }
 
+    /// Replace any `data:` images stored in the in-memory transcript with a
+    /// small placeholder string.
+    ///
+    /// This is useful when switching between providers with different payload
+    /// expectations (e.g. Gemini → OpenAI) to avoid carrying large base64
+    /// blobs into subsequent requests.
+    pub(crate) fn replace_all_images(&mut self, placeholder: &str) -> bool {
+        let mut replaced_any = false;
+        let placeholder = placeholder.to_string();
+
+        for item in &mut self.items {
+            match item {
+                ResponseItem::Message { content, .. } => {
+                    for content_item in content {
+                        if let ContentItem::InputImage { .. } = content_item {
+                            *content_item = ContentItem::InputText {
+                                text: placeholder.clone(),
+                            };
+                            replaced_any = true;
+                        }
+                    }
+                }
+                ResponseItem::FunctionCallOutput { output, .. } => {
+                    if let Some(items) = output.content_items.as_mut() {
+                        for output_item in items {
+                            if matches!(
+                                output_item,
+                                FunctionCallOutputContentItem::InputImage { .. }
+                            ) {
+                                *output_item = FunctionCallOutputContentItem::InputText {
+                                    text: placeholder.clone(),
+                                };
+                                replaced_any = true;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        replaced_any
+    }
+
     /// Drop the last `num_turns` user turns from this history.
     ///
     /// "User turns" are identified as `ResponseItem::Message` entries whose role is `"user"`.

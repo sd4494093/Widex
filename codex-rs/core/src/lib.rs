@@ -14,6 +14,7 @@ mod client_common;
 pub mod codex;
 mod codex_thread;
 mod compact_remote;
+mod gemini;
 pub use codex_thread::CodexThread;
 mod agent;
 mod codex_delegate;

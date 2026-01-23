@@ -47,6 +47,7 @@ members = [
     "utils/string",
     "codex-client",
     "codex-api",
+    "api-switchover",
 ]
 resolver = "2"
 
@@ -64,6 +65,7 @@ license = "Apache-2.0"
 app_test_support = { path = "app-server/tests/common" }
 codex-ansi-escape = { path = "ansi-escape" }
 codex-api = { path = "codex-api" }
+codex-api-switchover = { path = "api-switchover" }
 codex-app-server = { path = "app-server" }
 codex-app-server-protocol = { path = "app-server-protocol" }
 codex-apply-patch = { path = "apply-patch" }

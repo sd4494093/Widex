@@ -50,6 +50,9 @@ pub enum WireApi {
     /// Regular Chat Completions compatible with `/v1/chat/completions`.
     #[default]
     Chat,
+
+    /// Google Gemini JSON API exposed via `:streamGenerateContent`.
+    Gemini,
 }
 
 /// Serializable representation of a provider definition.
@@ -108,7 +111,7 @@ pub struct ModelProviderInfo {
 }
 
 impl ModelProviderInfo {
-    fn build_header_map(&self) -> crate::error::Result<HeaderMap> {
+    pub(crate) fn build_header_map(&self) -> crate::error::Result<HeaderMap> {
         let mut headers = HeaderMap::new();
         if let Some(extra) = &self.http_headers {
             for (k, v) in extra {
@@ -137,6 +140,11 @@ impl ModelProviderInfo {
         &self,
         auth_mode: Option<AuthMode>,
     ) -> crate::error::Result<ApiProvider> {
+        if self.wire_api == WireApi::Gemini {
+            return Err(crate::error::CodexErr::UnsupportedOperation(
+                "Gemini wire API is not supported by codex-api transports".to_string(),
+            ));
+        }
         let default_base_url = if matches!(auth_mode, Some(AuthMode::ChatGPT)) {
             "https://chatgpt.com/backend-api/codex"
         } else {
@@ -164,6 +172,7 @@ impl ModelProviderInfo {
                 WireApi::Responses => ApiWireApi::Responses,
                 WireApi::ResponsesWebsocket => ApiWireApi::Responses,
                 WireApi::Chat => ApiWireApi::Chat,
+                WireApi::Gemini => ApiWireApi::Chat,
             },
             headers,
             retry,
@@ -279,6 +288,37 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
     // `model_providers` in config.toml to add their own providers.
     [
         ("openai", P::create_openai_provider()),
+        (
+            "gemini",
+            P {
+                name: "Gemini".into(),
+                base_url: std::env::var("GEMINI_BASE_URL")
+                    .ok()
+                    .filter(|v| !v.trim().is_empty())
+                    .or_else(|| Some("https://generativelanguage.googleapis.com/v1beta".into())),
+                env_key: None,
+                env_key_instructions: Some(
+                    "Set GEMINI_API_KEY (preferred) to authenticate Gemini requests, or configure a proxy that accepts OPENAI_API_KEY."
+                        .into(),
+                ),
+                experimental_bearer_token: None,
+                wire_api: WireApi::Gemini,
+                query_params: None,
+                http_headers: None,
+                env_http_headers: Some(
+                    [
+                        ("X-Goog-Api-Key".to_string(), "GEMINI_API_KEY".to_string()),
+                        ("Cookie".to_string(), "GEMINI_COOKIE".to_string()),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+                request_max_retries: None,
+                stream_max_retries: None,
+                stream_idle_timeout_ms: None,
+                requires_openai_auth: false,
+            },
+        ),
         (
             OLLAMA_OSS_PROVIDER_ID,
             create_oss_provider(DEFAULT_OLLAMA_PORT, WireApi::Responses),

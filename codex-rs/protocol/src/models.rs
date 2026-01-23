@@ -109,6 +109,15 @@ pub enum ResponseItem {
         // Chat Completions + Responses API behavior.
         arguments: String,
         call_id: String,
+        /// Gemini thought signature associated with the function call.
+        ///
+        /// This is not part of the OpenAI wire schema. We keep it in-memory so
+        /// Gemini integrations can preserve and replay thought signatures
+        /// between turns without leaking provider-specific fields to other
+        /// wire APIs.
+        #[serde(default, skip_serializing)]
+        #[ts(skip)]
+        thought_signature: Option<String>,
     },
     // NOTE: The input schema for `function_call_output` objects that clients send to the
     // OpenAI /v1/responses endpoint is NOT the same shape as the objects the server returns on the

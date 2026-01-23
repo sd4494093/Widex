@@ -306,6 +306,71 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             show_in_picker: false,
             supported_in_api: true,
         },
+        ModelPreset {
+            id: "gemini-3-pro-preview-codex".to_string(),
+            model: "gemini-3-pro-preview-codex".to_string(),
+            display_name: "gemini-3-pro-preview-codex".to_string(),
+            description: "Gemini 3 Pro preview (via Gemini wire API).".to_string(),
+            default_reasoning_effort: ReasoningEffort::High,
+            supported_reasoning_efforts: vec![
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Low,
+                    description: "Lower-cost reasoning".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Medium,
+                    description: "Balanced reasoning depth".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::High,
+                    description: "Higher-quality reasoning for complex problems".to_string(),
+                },
+            ],
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+        },
+        ModelPreset {
+            id: "gemini-3-flash-preview".to_string(),
+            model: "gemini-3-flash-preview".to_string(),
+            display_name: "gemini-3-flash-preview".to_string(),
+            description: "Gemini 3 Flash preview (via Gemini wire API).".to_string(),
+            default_reasoning_effort: ReasoningEffort::High,
+            supported_reasoning_efforts: vec![
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Low,
+                    description: "Lower-cost reasoning".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Medium,
+                    description: "Balanced reasoning depth".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::High,
+                    description: "Higher-quality reasoning for complex problems".to_string(),
+                },
+            ],
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+        },
+        ModelPreset {
+            id: "gemini-3-pro-image-preview".to_string(),
+            model: "gemini-3-pro-image-preview".to_string(),
+            display_name: "gemini-3-pro-image-preview".to_string(),
+            description: "Gemini 3 Pro image preview (multimodal).".to_string(),
+            default_reasoning_effort: ReasoningEffort::Medium,
+            supported_reasoning_efforts: vec![ReasoningEffortPreset {
+                effort: ReasoningEffort::Medium,
+                description: "Default Gemini reasoning behaviour for image workflows.".to_string(),
+            }],
+            is_default: false,
+            upgrade: None,
+            show_in_picker: true,
+            supported_in_api: true,
+        },
     ]
 });
 

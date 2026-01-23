@@ -21,8 +21,10 @@ const GPT_5_1_INSTRUCTIONS: &str = include_str!("../../gpt_5_1_prompt.md");
 const GPT_5_2_INSTRUCTIONS: &str = include_str!("../../gpt_5_2_prompt.md");
 const GPT_5_1_CODEX_MAX_INSTRUCTIONS: &str = include_str!("../../gpt-5.1-codex-max_prompt.md");
 const GPT_5_2_CODEX_INSTRUCTIONS: &str = include_str!("../../gpt-5.2-codex_prompt.md");
+const GEMINI_INSTRUCTIONS: &str = include_str!("../../gemini_prompt.md");
 
 pub(crate) const CONTEXT_WINDOW_272K: i64 = 272_000;
+pub(crate) const CONTEXT_WINDOW_1M: i64 = 1_000_000;
 
 macro_rules! model_info {
     (
@@ -132,6 +134,16 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             base_instructions: BASE_INSTRUCTIONS_WITH_APPLY_PATCH.to_string(),
             supports_reasoning_summaries: false,
             context_window: Some(16_385),
+        )
+    } else if slug.starts_with("gemini-") {
+        model_info!(
+            slug,
+            base_instructions: GEMINI_INSTRUCTIONS.to_string(),
+            default_reasoning_level: Some(ReasoningEffort::High),
+            supported_reasoning_levels: supported_reasoning_level_low_medium_high(),
+            supports_parallel_tool_calls: true,
+            shell_type: ConfigShellToolType::ShellCommand,
+            context_window: Some(CONTEXT_WINDOW_1M),
         )
     } else if slug.starts_with("test-gpt-5") {
         model_info!(
