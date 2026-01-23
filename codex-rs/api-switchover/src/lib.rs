@@ -173,17 +173,24 @@ pub struct CodexAuthConfig {
 
 impl CodexAuthConfig {
     fn resolve(&self) -> anyhow::Result<ResolvedAuth> {
+        let wants_openai_api_key = self.openai_api_key.is_some();
+        let wants_gemini_api_key = self.gemini_api_key.is_some();
+
         Ok(ResolvedAuth {
             openai_api_key: self
                 .openai_api_key
                 .as_ref()
-                .map(SecretSource::resolve)
-                .transpose()?,
+                .map(SecretSource::resolve_optional)
+                .transpose()?
+                .flatten(),
             gemini_api_key: self
                 .gemini_api_key
                 .as_ref()
-                .map(SecretSource::resolve)
-                .transpose()?,
+                .map(SecretSource::resolve_optional)
+                .transpose()?
+                .flatten(),
+            wants_openai_api_key,
+            wants_gemini_api_key,
         })
     }
 }
@@ -199,6 +206,8 @@ pub struct ResolvedPlan {
 pub struct ResolvedAuth {
     pub openai_api_key: Option<String>,
     pub gemini_api_key: Option<String>,
+    pub wants_openai_api_key: bool,
+    pub wants_gemini_api_key: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -211,18 +220,19 @@ pub enum SecretSource {
 }
 
 impl SecretSource {
-    fn resolve(&self) -> anyhow::Result<String> {
+    fn resolve_optional(&self) -> anyhow::Result<Option<String>> {
         match self {
-            Self::Literal(value) => Ok(value.clone()),
+            Self::Literal(value) => Ok(Some(value.clone())),
             Self::Env { env } => {
-                let value = std::env::var(env).with_context(|| {
-                    format!("missing env var `{env}` required by api switchover config")
-                })?;
+                let value = std::env::var(env).ok();
+                let Some(value) = value else {
+                    return Ok(None);
+                };
                 let trimmed = value.trim();
                 if trimmed.is_empty() {
-                    anyhow::bail!("env var `{env}` required by api switchover config is empty");
+                    return Ok(None);
                 }
-                Ok(trimmed.to_string())
+                Ok(Some(trimmed.to_string()))
             }
         }
     }
@@ -263,6 +273,8 @@ codex:
                 auth: ResolvedAuth {
                     openai_api_key: Some("sk-test".to_string()),
                     gemini_api_key: None,
+                    wants_openai_api_key: true,
+                    wants_gemini_api_key: false,
                 },
             }
         );

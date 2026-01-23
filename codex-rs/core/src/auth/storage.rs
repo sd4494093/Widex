@@ -5,6 +5,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use sha2::Digest;
 use sha2::Sha256;
+use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::fs::File;
 use std::fs::OpenOptions;
@@ -46,6 +47,17 @@ pub struct AuthDotJson {
         skip_serializing_if = "Option::is_none"
     )]
     pub gemini_api_key: Option<String>,
+
+    /// Widex extension: persist multiple API keys and switch between them without
+    /// losing previously stored values.
+    ///
+    /// Keys are stored under stable names (e.g. "profile:<id>:OPENAI_API_KEY").
+    #[serde(
+        rename = "WIDEX_SAVED_API_KEYS",
+        default,
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub widex_saved_api_keys: BTreeMap<String, String>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokens: Option<TokenData>,
@@ -305,6 +317,7 @@ mod tests {
         let auth_dot_json = AuthDotJson {
             openai_api_key: Some("test-key".to_string()),
             gemini_api_key: None,
+            widex_saved_api_keys: Default::default(),
             tokens: None,
             last_refresh: Some(Utc::now()),
         };
@@ -325,6 +338,7 @@ mod tests {
         let auth_dot_json = AuthDotJson {
             openai_api_key: Some("test-key".to_string()),
             gemini_api_key: None,
+            widex_saved_api_keys: Default::default(),
             tokens: None,
             last_refresh: Some(Utc::now()),
         };
@@ -347,6 +361,7 @@ mod tests {
         let auth_dot_json = AuthDotJson {
             openai_api_key: Some("sk-test-key".to_string()),
             gemini_api_key: None,
+            widex_saved_api_keys: Default::default(),
             tokens: None,
             last_refresh: None,
         };
@@ -437,6 +452,7 @@ mod tests {
         AuthDotJson {
             openai_api_key: Some(format!("{prefix}-api-key")),
             gemini_api_key: None,
+            widex_saved_api_keys: Default::default(),
             tokens: Some(TokenData {
                 id_token: id_token_with_prefix(prefix),
                 access_token: format!("{prefix}-access"),
@@ -458,6 +474,7 @@ mod tests {
         let expected = AuthDotJson {
             openai_api_key: Some("sk-test".to_string()),
             gemini_api_key: None,
+            widex_saved_api_keys: Default::default(),
             tokens: None,
             last_refresh: None,
         };
@@ -495,6 +512,7 @@ mod tests {
         let auth = AuthDotJson {
             openai_api_key: None,
             gemini_api_key: None,
+            widex_saved_api_keys: Default::default(),
             tokens: Some(TokenData {
                 id_token: Default::default(),
                 access_token: "access".to_string(),

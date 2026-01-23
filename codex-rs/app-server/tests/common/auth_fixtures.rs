@@ -160,6 +160,7 @@ pub fn write_chatgpt_auth(
     let auth = AuthDotJson {
         openai_api_key: None,
         gemini_api_key: None,
+        widex_saved_api_keys: Default::default(),
         tokens: Some(tokens),
         last_refresh,
     };

@@ -52,7 +52,8 @@ struct ApplyArgs {
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     write_config: bool,
 
-    /// If set, write auth.json updates (OPENAI_API_KEY / GEMINI_API_KEY) when present in the plan.
+    /// If set, write auth.json updates (OPENAI_API_KEY / GEMINI_API_KEY) for keys referenced
+    /// by the resolved profile, falling back to `WIDEX_SAVED_API_KEYS` when env vars are unset.
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     write_auth: bool,
 
@@ -106,11 +107,23 @@ fn main() -> anyhow::Result<()> {
                     if let Some(provider_id) = plan.provider_id.as_deref() {
                         println!("provider_id: {provider_id}");
                     }
-                    if plan.auth.openai_api_key.is_some() {
-                        println!("auth: OPENAI_API_KEY (set)");
+                    if plan.auth.wants_openai_api_key {
+                        if plan.auth.openai_api_key.is_some() {
+                            println!("auth: OPENAI_API_KEY (set)");
+                        } else {
+                            println!(
+                                "auth: OPENAI_API_KEY (missing env; will use saved if available)"
+                            );
+                        }
                     }
-                    if plan.auth.gemini_api_key.is_some() {
-                        println!("auth: GEMINI_API_KEY (set)");
+                    if plan.auth.wants_gemini_api_key {
+                        if plan.auth.gemini_api_key.is_some() {
+                            println!("auth: GEMINI_API_KEY (set)");
+                        } else {
+                            println!(
+                                "auth: GEMINI_API_KEY (missing env; will use saved if available)"
+                            );
+                        }
                     }
                 }
             }
@@ -144,22 +157,49 @@ fn main() -> anyhow::Result<()> {
             }
 
             if apply.write_auth
-                && (plan.auth.openai_api_key.is_some() || plan.auth.gemini_api_key.is_some())
+                && (plan.auth.wants_openai_api_key || plan.auth.wants_gemini_api_key)
             {
                 let mut auth = load_auth_dot_json(&codex_home, auth_store)
                     .unwrap_or(None)
                     .unwrap_or(AuthDotJson {
                         openai_api_key: None,
                         gemini_api_key: None,
+                        widex_saved_api_keys: Default::default(),
                         tokens: None,
                         last_refresh: None,
                     });
 
-                if let Some(key) = plan.auth.openai_api_key {
-                    auth.openai_api_key = Some(key);
+                let openai_cache_key = format!("profile:{}:OPENAI_API_KEY", plan.profile_id);
+                let gemini_cache_key = format!("profile:{}:GEMINI_API_KEY", plan.profile_id);
+
+                if plan.auth.wants_openai_api_key {
+                    if let Some(key) = plan.auth.openai_api_key.clone() {
+                        auth.widex_saved_api_keys
+                            .insert(openai_cache_key.clone(), key.clone());
+                        auth.openai_api_key = Some(key);
+                    } else if let Some(saved) = auth.widex_saved_api_keys.get(&openai_cache_key) {
+                        auth.openai_api_key = Some(saved.clone());
+                    } else {
+                        anyhow::bail!(
+                            "Profile `{}` requires OPENAI_API_KEY, but env was missing and no saved key was found",
+                            plan.profile_id
+                        );
+                    }
                 }
-                if let Some(key) = plan.auth.gemini_api_key {
-                    auth.gemini_api_key = Some(key);
+
+                if plan.auth.wants_gemini_api_key {
+                    if let Some(key) = plan.auth.gemini_api_key.clone() {
+                        auth.widex_saved_api_keys
+                            .insert(gemini_cache_key.clone(), key.clone());
+                        auth.gemini_api_key = Some(key);
+                    } else if let Some(saved) = auth.widex_saved_api_keys.get(&gemini_cache_key) {
+                        auth.gemini_api_key = Some(saved.clone());
+                    } else {
+                        anyhow::bail!(
+                            "Profile `{}` requires GEMINI_API_KEY, but env was missing and no saved key was found",
+                            plan.profile_id
+                        );
+                    }
                 }
                 save_auth(&codex_home, &auth, auth_store)?;
             }

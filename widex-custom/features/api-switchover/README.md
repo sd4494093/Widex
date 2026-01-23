@@ -4,7 +4,7 @@ This folder contains a YAML-driven "API/provider switcher" for widex that can be
 
 1) Inside the TUI: selecting a model via `/model` will also (optionally) switch:
 - the active `model_provider` (via `Op::OverrideTurnContext.model_provider_id`)
-- the stored API keys in `CODEX_HOME/auth.json` (OpenAI + Gemini only, for now)
+- the stored API keys in `CODEX_HOME/auth.json` (writes OPENAI_API_KEY / GEMINI_API_KEY)
 
 2) As a standalone CLI:
 - `cargo run -p codex-api-switchover -- --config <path> list`
@@ -40,9 +40,11 @@ export GEMINI_API_KEY='...'
 
 ## Notes
 
-- This is intentionally conservative today: it only writes `OPENAI_API_KEY` and `GEMINI_API_KEY`.
-  Future providers (e.g. Grok / Sonnet) should extend core auth/config in the same layered way
-  as the Gemini integration.
+- Widex stores multiple keys in `auth.json` under `WIDEX_SAVED_API_KEYS` so switching profiles does
+  not lose previous values. The active key is still written to `OPENAI_API_KEY` / `GEMINI_API_KEY`.
+
+- If a profile references an env var (e.g. `GROK_API_KEY`) and that env var is missing at runtime,
+  the switchover will fall back to the last saved key for that profile (if any).
 
 - Grok (via VectorEngine) uses an OpenAI-compatible Chat Completions endpoint (`/v1/chat/completions`).
   In the switcher YAML, configure Grok profiles using `auth.openai_api_key` (recommended from `GROK_API_KEY` env).

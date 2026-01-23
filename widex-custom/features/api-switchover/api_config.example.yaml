@@ -7,6 +7,8 @@ codex:
       provider_id: openai
       auth:
         # Recommended: pull from env instead of committing secrets.
+        # Widex will cache the resolved key in auth.json (WIDEX_SAVED_API_KEYS),
+        # so after one successful switch you can unset the env var.
         openai_api_key:
           env: OPENAI_API_KEY
 
@@ -14,6 +16,8 @@ codex:
       name: Gemini (official)
       provider_id: gemini
       auth:
+        # Widex will cache the resolved key in auth.json (WIDEX_SAVED_API_KEYS),
+        # so after one successful switch you can unset the env var.
         gemini_api_key:
           env: GEMINI_API_KEY
 
@@ -22,6 +26,8 @@ codex:
       provider_id: grok-vectorengine
       auth:
         # VectorEngine's Grok endpoint is OpenAI Chat Completions compatible, so use openai_api_key.
+        # Widex will cache the resolved key in auth.json (WIDEX_SAVED_API_KEYS),
+        # so after one successful switch you can unset the env var.
         openai_api_key:
           env: GROK_API_KEY
 

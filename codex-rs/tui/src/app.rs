@@ -1103,8 +1103,7 @@ impl App {
                                     }
                                 }
 
-                                if plan.auth.openai_api_key.is_some()
-                                    || plan.auth.gemini_api_key.is_some()
+                                if plan.auth.wants_openai_api_key || plan.auth.wants_gemini_api_key
                                 {
                                     let mut auth = load_auth_dot_json(
                                         &self.config.codex_home,
@@ -1114,22 +1113,86 @@ impl App {
                                     .unwrap_or(AuthDotJson {
                                         openai_api_key: None,
                                         gemini_api_key: None,
+                                        widex_saved_api_keys: Default::default(),
                                         tokens: None,
                                         last_refresh: None,
                                     });
 
                                     let mut changed = false;
-                                    if let Some(key) = plan.auth.openai_api_key
-                                        && auth.openai_api_key.as_deref() != Some(key.as_str())
-                                    {
-                                        auth.openai_api_key = Some(key);
-                                        changed = true;
+                                    let openai_cache_key =
+                                        format!("profile:{}:OPENAI_API_KEY", plan.profile_id);
+                                    let gemini_cache_key =
+                                        format!("profile:{}:GEMINI_API_KEY", plan.profile_id);
+
+                                    let openai_key = plan.auth.openai_api_key.clone();
+                                    let gemini_key = plan.auth.gemini_api_key.clone();
+
+                                    if plan.auth.wants_openai_api_key {
+                                        if let Some(key) = openai_key {
+                                            if auth
+                                                .widex_saved_api_keys
+                                                .get(&openai_cache_key)
+                                                .is_none_or(|saved| saved != &key)
+                                            {
+                                                auth.widex_saved_api_keys
+                                                    .insert(openai_cache_key, key.clone());
+                                                changed = true;
+                                            }
+                                            if auth.openai_api_key.as_deref() != Some(key.as_str())
+                                            {
+                                                auth.openai_api_key = Some(key);
+                                                changed = true;
+                                            }
+                                        } else if let Some(saved) =
+                                            auth.widex_saved_api_keys.get(&openai_cache_key)
+                                            && auth.openai_api_key.as_deref()
+                                                != Some(saved.as_str())
+                                        {
+                                            auth.openai_api_key = Some(saved.clone());
+                                            changed = true;
+                                        } else if !auth
+                                            .widex_saved_api_keys
+                                            .contains_key(&openai_cache_key)
+                                        {
+                                            self.chat_widget.add_error_message(format!(
+                                                "API switchover profile `{}` requires OPENAI_API_KEY, but none was provided and no saved key was found.\n\nHint: set the env var referenced by api_switchover.yaml, switch once to save it, then you can unset the env var.",
+                                                plan.profile_id
+                                            ));
+                                        }
                                     }
-                                    if let Some(key) = plan.auth.gemini_api_key
-                                        && auth.gemini_api_key.as_deref() != Some(key.as_str())
-                                    {
-                                        auth.gemini_api_key = Some(key);
-                                        changed = true;
+
+                                    if plan.auth.wants_gemini_api_key {
+                                        if let Some(key) = gemini_key {
+                                            if auth
+                                                .widex_saved_api_keys
+                                                .get(&gemini_cache_key)
+                                                .is_none_or(|saved| saved != &key)
+                                            {
+                                                auth.widex_saved_api_keys
+                                                    .insert(gemini_cache_key, key.clone());
+                                                changed = true;
+                                            }
+                                            if auth.gemini_api_key.as_deref() != Some(key.as_str())
+                                            {
+                                                auth.gemini_api_key = Some(key);
+                                                changed = true;
+                                            }
+                                        } else if let Some(saved) =
+                                            auth.widex_saved_api_keys.get(&gemini_cache_key)
+                                            && auth.gemini_api_key.as_deref()
+                                                != Some(saved.as_str())
+                                        {
+                                            auth.gemini_api_key = Some(saved.clone());
+                                            changed = true;
+                                        } else if !auth
+                                            .widex_saved_api_keys
+                                            .contains_key(&gemini_cache_key)
+                                        {
+                                            self.chat_widget.add_error_message(format!(
+                                                "API switchover profile `{}` requires GEMINI_API_KEY, but none was provided and no saved key was found.\n\nHint: set the env var referenced by api_switchover.yaml, switch once to save it, then you can unset the env var.",
+                                                plan.profile_id
+                                            ));
+                                        }
                                     }
                                     if changed {
                                         if let Err(err) = save_auth(

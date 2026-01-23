@@ -520,25 +520,27 @@ impl SessionConfiguration {
                 let next_is_gemini = next_model.starts_with("gemini-");
                 let next_is_grok = next_model.starts_with("grok-");
 
-                if next_is_gemini && current_provider_id != Some("gemini")
+                if next_is_gemini
+                    && current_provider_id != Some("gemini")
                     && is_current_openai_like
-                        && let Some(gemini) = self
-                            .original_config_do_not_use
-                            .model_providers
-                            .get("gemini")
-                    {
-                        next_configuration.provider = gemini.clone();
-                    }
+                    && let Some(gemini) = self
+                        .original_config_do_not_use
+                        .model_providers
+                        .get("gemini")
+                {
+                    next_configuration.provider = gemini.clone();
+                }
 
-                if next_is_grok && current_provider_id != Some("grok-vectorengine")
+                if next_is_grok
+                    && current_provider_id != Some("grok-vectorengine")
                     && is_current_openai_like
-                        && let Some(grok) = self
-                            .original_config_do_not_use
-                            .model_providers
-                            .get("grok-vectorengine")
-                    {
-                        next_configuration.provider = grok.clone();
-                    }
+                    && let Some(grok) = self
+                        .original_config_do_not_use
+                        .model_providers
+                        .get("grok-vectorengine")
+                {
+                    next_configuration.provider = grok.clone();
+                }
 
                 if old_model.starts_with("gemini-")
                     && !next_is_gemini

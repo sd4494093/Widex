@@ -162,6 +162,7 @@ impl CodexAuth {
         let auth_dot_json = AuthDotJson {
             openai_api_key: None,
             gemini_api_key: None,
+            widex_saved_api_keys: Default::default(),
             tokens: Some(TokenData {
                 id_token: Default::default(),
                 access_token: "Access Token".to_string(),
@@ -266,6 +267,7 @@ pub fn login_with_api_key(
     let auth_dot_json = AuthDotJson {
         openai_api_key: Some(api_key.to_string()),
         gemini_api_key: None,
+        widex_saved_api_keys: Default::default(),
         tokens: None,
         last_refresh: None,
     };
@@ -405,6 +407,7 @@ fn load_auth(
     let AuthDotJson {
         openai_api_key: auth_json_api_key,
         gemini_api_key,
+        widex_saved_api_keys,
         tokens,
         last_refresh,
     } = auth_dot_json;
@@ -421,6 +424,7 @@ fn load_auth(
         auth_dot_json: Arc::new(Mutex::new(Some(AuthDotJson {
             openai_api_key: None,
             gemini_api_key,
+            widex_saved_api_keys,
             tokens,
             last_refresh,
         }))),
@@ -1031,6 +1035,7 @@ mod tests {
             &AuthDotJson {
                 openai_api_key: None,
                 gemini_api_key: None,
+                widex_saved_api_keys: Default::default(),
                 tokens: Some(TokenData {
                     id_token: IdTokenInfo {
                         email: Some("user@example.com".to_string()),
@@ -1075,6 +1080,7 @@ mod tests {
         let auth_dot_json = AuthDotJson {
             openai_api_key: Some("sk-test-key".to_string()),
             gemini_api_key: None,
+            widex_saved_api_keys: Default::default(),
             tokens: None,
             last_refresh: None,
         };
