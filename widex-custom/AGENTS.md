@@ -10,6 +10,12 @@
 
 ## 约束（后续接入其它模型也要遵循）
 
+### 0. 安全边界（强制）
+
+- **禁止提交任何密钥/令牌**：包括 `sk-...`、cookies、`auth.json`、以及包含真实 key 的 yaml/toml/json。
+- `CODEX_HOME` 默认应在仓库外（推荐：官方 `~/.codex`；widex `~/.widex-codex`），不要把 `CODEX_HOME` 指到仓库目录。
+- switchover 会把 key 缓存进 `${CODEX_HOME}/auth.json` 的 `WIDEX_SAVED_API_KEYS`（这是 secrets 数据），只能存在于用户机器本地。
+
 ### A. 按层拆解（强制）
 
 接入任何新模型/新 Provider，都必须按下面的层次去设计和实现（不要把逻辑散落在各处）：
@@ -25,13 +31,21 @@
 
 - 对外可用行为/配置一旦变更，必须在 `widex-custom/docs/` 补齐说明与示例。
 - 对“如何同步上游”的流程更新，必须同步更新 `widex-custom/docs/BRANCH_GUIDE.md`。
+- 对“切换器（api_switchover.yaml）”的规则/行为变更，必须同步更新：
+  - `widex-custom/features/api-switchover/README.md`
+  - `widex-custom/features/api-switchover/api_config.example.yaml`
 
 ### C. 最小侵入上游代码（强制）
 
 - 优先把 Widex 特性做成：配置（profiles/config 模板）+ 新增模块文件 + 小范围接入点（分流/注册）。
 - 避免把 provider 专用逻辑堆到上游的巨型文件里；尽量以新增文件/模块承载。
 
-### D. 不在这里放 Rust 代码规范（说明）
+### D. 官方 codex 与 widex 分离（强制）
+
+- 继续保留官方 npm `codex`，不要让 widex 的配置/schema 破坏它。
+- widex 运行请使用 `widex-custom/bin/widex`（它会默认隔离 `CODEX_HOME=~/.widex-codex`，并在缺 binary 时自动 release 构建）。
+
+### E. 不在这里放 Rust 代码规范（说明）
 
 - `widex-custom/` 主要承载文档/配置资产。
 - Rust 代码（`codex-rs/`）的风格/测试/工具约束以仓库根部 `AGENTS.md` 为准（不要在这里复制一份产生分叉）。

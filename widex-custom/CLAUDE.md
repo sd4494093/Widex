@@ -19,6 +19,18 @@ git merge main
 git push origin widex
 ```
 
+## Dual CLI（强制遵守）
+
+目标：官方 npm `codex` 与 widex fork 共存，互不干扰。
+
+- 官方 npm `codex`：默认使用 `~/.codex`
+- widex：使用 `widex-custom/bin/widex` 启动，默认使用 `~/.widex-codex`
+
+原因：widex 增加了官方 npm CLI 不识别的配置扩展（例如 `wire_api = "gemini"`）。共用同一个 `CODEX_HOME`
+会互相“读坏配置”。
+
+更多说明见：`widex-custom/docs/DUAL_CLI.md`。
+
 
 ## 统一约束：新增任何模型/Provider 必须按层实现
 
@@ -51,6 +63,15 @@ git push origin widex
 7) UI 支持层（必要时补齐）
 - 图片/文件类输出需要落盘时：定义保存路径、命令入口（如 /open-image）、以及用户提示
 - UI 变更需要更新 snapshot（若项目使用 insta）
+
+## 密钥/鉴权（强制遵守）
+
+- 永远不要把任何真实 key/令牌写进 git（包括 `sk-...`、cookies、`auth.json`、包含 key 的本地 yaml/toml）。
+- switchover 允许在 `auth.json` 缓存多份 key：
+  - `OPENAI_API_KEY` / `GEMINI_API_KEY`：当前生效 key（历史上一直存在）
+  - `WIDEX_SAVED_API_KEYS`：按 profile 缓存多份 key，避免切换时丢失
+- switchover YAML 中推荐使用 `env: XXX_API_KEY`，并允许：
+  - env 缺失时回退到 `WIDEX_SAVED_API_KEYS` 中之前保存的 key（若存在）
 
 
 ## Rust 约束来源
@@ -89,6 +110,27 @@ git push origin widex
 - 目前 core 会产出 `ContentItem::InputImage { image_url: "data:..." }`
 - TUI 的“落盘 + /open-image”尚未加入（后续按需补齐）
 
+## Grok（本仓）落地检查清单（按层读代码）
+
+Grok（通过 VectorEngine 中转）目前按 OpenAI Chat Completions 兼容接入：
+
+1) 配置/Provider：新增内置 provider `grok-vectorengine`
+- `codex-rs/core/src/model_provider_info.rs`
+  - 内置 `grok-vectorengine`
+  - `base_url = https://api.vectorengine.ai/v1`
+  - `wire_api = "chat"`（`/v1/chat/completions` + SSE）
+
+2) 模型预设（picker 可见）
+- `codex-rs/core/src/models_manager/model_presets.rs`
+  - `grok-4.1`
+  - `grok-4-1-fast-reasoning`
+  - `grok-4-1-fast-non-reasoning`
+
+3) switchover 规则（/model 切换时自动换 provider + key）
+- YAML 模板：`widex-custom/features/api-switchover/api_config.example.yaml`
+  - `grok-` 前缀 -> `grok-vectorengine` profile
+  - profile 的 `auth.openai_api_key` 推荐从 `GROK_API_KEY` env 读取（首次切换后会缓存进 `WIDEX_SAVED_API_KEYS`）
+
 
 ## 测试建议（本仓）
 
@@ -103,3 +145,14 @@ git push origin widex
 
 - `codex-core` 的集成测试集合在 `core/tests/all.rs`，其中包含会修改进程环境变量的测试；并发执行容易互相干扰。
 - 若要跑它，建议：`cd codex-rs && cargo test -p codex-core --test all -- --test-threads=1`。
+
+
+## 下一步：Grok “更多能力”（先明确范围）
+
+按同一模板继续推进时，请先确认你希望优先补哪些能力（可多选）：
+
+- tools/function calling：tool schema、tool-choice、tool-call streaming delta 的兼容性与回填策略
+- 多模态：image input/output（若 VectorEngine 端支持）
+- reasoning 参数映射：effort/temperature/top_p 等的映射规则与默认值
+- token/usage 解析：非 stream + stream 情况下 usage 的提取与展示
+- 错误码/重试策略：429/5xx、SSE 断流重连、请求超时与错误归因
