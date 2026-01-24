@@ -183,6 +183,20 @@ widex ralph-widex run --no-continue
 widex ralph-widex run --session-expiry-hours 6
 ```
 
+### 6.1) 自动清理会话（避免长线程/卡死）
+
+在以下情况，`ralph-widex` 会自动删除 `.ralph/.widex_session.json`（只影响“下一轮”是否 resume），以避免“长线程 compaction 导致的退化/卡死”：
+
+- `widex exec` 单次超时（exit code 124）
+- `widex exec` exit code 0 但没有最终 assistant 消息（`no last agent message`）
+- stdout 事件里出现 “Long threads and multiple compactions ... Start a new thread ...” 的提示
+
+日志里会出现类似：
+
+```
+[WARN] Clearing session for next loop: timeout
+```
+
 
 ## 7) 常用参数
 
