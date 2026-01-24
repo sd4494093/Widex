@@ -4,10 +4,12 @@ use clap::Parser;
 use clap::Subcommand;
 use std::path::PathBuf;
 
+mod circuit_breaker;
 mod loop_runner;
 mod monitor;
 mod ralph_status;
 mod ralph_storage;
+mod response_analysis;
 
 #[derive(Debug, Parser)]
 #[command(version)]

@@ -20,6 +20,14 @@ struct ProgressFile {
     last_output: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct CircuitBreakerStateFile {
+    state: Option<String>,
+    reason: Option<String>,
+    consecutive_no_progress: Option<u64>,
+    consecutive_same_error: Option<u64>,
+}
+
 pub(crate) async fn run_monitor(cwd: &std::path::Path, interval_secs: u64) -> anyhow::Result<()> {
     let paths = RalphPaths::new(cwd);
     let interval_secs = interval_secs.max(1);
@@ -61,6 +69,26 @@ async fn render_once(paths: &RalphPaths, interval_secs: u64) -> anyhow::Result<(
     } else {
         println!("Status file not found: {}", paths.status_file.display());
         println!("(Is ralph-widex running in this repo?)");
+    }
+
+    if let Ok(cb) = read_json::<CircuitBreakerStateFile>(&paths.circuit_breaker_state_file).await {
+        let state = cb.state.unwrap_or_else(|| "UNKNOWN".to_string());
+        let reason = cb.reason.unwrap_or_default();
+        let no_progress = cb.consecutive_no_progress.unwrap_or(0);
+        let same_error = cb.consecutive_same_error.unwrap_or(0);
+        println!();
+        println!("Circuit:    {state} (no_progress={no_progress}, same_error={same_error})");
+        if !reason.is_empty() {
+            println!("CB reason:  {reason}");
+        }
+    }
+
+    if tokio::fs::try_exists(&paths.stop_file)
+        .await
+        .unwrap_or(false)
+    {
+        println!();
+        println!("STOP:       present ({})", paths.stop_file.display());
     }
 
     if let Ok(progress) = read_json::<ProgressFile>(&paths.progress_file).await

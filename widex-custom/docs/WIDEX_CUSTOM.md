@@ -98,6 +98,15 @@ git push origin widex
 - `templates/`：Rust 原生实现会直接复用这里的模板内容生成 `.ralph/`
 - `bin/`、`lib/`：早期 shell 版实现遗留（不作为运行路径，只保留作参考）
 
+运行期文件（Rust 版会写入/读取）：
+
+- `.ralph/status.json`：loop 状态（含 rate limit 信息）
+- `.ralph/progress.json`：当前 `codex exec` 的实时进度（执行中才存在）
+- `.ralph/.response_analysis`：每轮分析结果（退出检测/进展/错误）
+- `.ralph/.exit_signals`：用于观测“test-only / completion 信号”的累积记录
+- `.ralph/.circuit_breaker_state` / `.ralph/.circuit_breaker_history`：熔断器状态与历史
+- `.ralph/STOP`：若存在，loop 会在下一轮开始前主动退出（用于外部停机）
+
 用途：
 
 - 在 TUI 内通过 `/ralph-widex` 启动一个“自主开发循环”（Ralph loop），底层会反复调用 `codex exec`

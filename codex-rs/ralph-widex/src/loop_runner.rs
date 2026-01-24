@@ -1,10 +1,14 @@
-use crate::ralph_status::parse_ralph_status_from_text;
+use crate::circuit_breaker;
 use crate::ralph_storage::RALPH_DIR;
 use crate::ralph_storage::RalphPaths;
 use crate::ralph_storage::acquire_lock;
 use crate::ralph_storage::append_log_line;
 use crate::ralph_storage::remove_file_if_exists;
 use crate::ralph_storage::write_json_atomic;
+use crate::response_analysis::Analysis;
+use crate::response_analysis::AnalysisFile;
+use crate::response_analysis::ExitSignalsFile;
+use crate::response_analysis::analyze_last_message;
 use anyhow::Context;
 use chrono::Datelike;
 use chrono::Local;
@@ -119,6 +123,7 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
     paths.ensure_dirs().await?;
 
     let _lock = acquire_lock(&paths).await?;
+    circuit_breaker::ensure_initialized(&paths).await?;
 
     if !tokio::fs::try_exists(&opts.prompt_path).await? {
         anyhow::bail!(
@@ -139,6 +144,42 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
     loop {
         loop_count += 1;
         init_call_tracking(&paths).await?;
+
+        if tokio::fs::try_exists(&paths.stop_file).await? {
+            update_status(
+                &paths,
+                loop_count,
+                read_calls_made(&paths).await?,
+                opts.max_calls_per_hour,
+                "stop_file",
+                "exited",
+                "STOP file present",
+            )
+            .await?;
+            append_log_line(&paths, "WARN", "STOP file present; stopping loop.").await?;
+            return Ok(());
+        }
+
+        if !circuit_breaker::can_execute(&paths).await? {
+            let state = circuit_breaker::read_state(&paths).await?;
+            update_status(
+                &paths,
+                loop_count,
+                read_calls_made(&paths).await?,
+                opts.max_calls_per_hour,
+                "circuit_breaker",
+                "exited",
+                &state.reason,
+            )
+            .await?;
+            append_log_line(
+                &paths,
+                "ERROR",
+                &format!("Circuit breaker open: {}", state.reason),
+            )
+            .await?;
+            anyhow::bail!("Circuit breaker open: {}", state.reason);
+        }
 
         let calls_made = read_calls_made(&paths).await?;
         if calls_made >= opts.max_calls_per_hour {
@@ -194,13 +235,78 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
             update_session(&paths, thread_id, opts.session_expiry_hours).await?;
         }
 
-        let gate_satisfied = exec
+        let output_length = exec
             .last_message
             .as_deref()
-            .and_then(parse_ralph_status_from_text)
-            .is_some_and(|s| s.gate_satisfied());
+            .map(|s| s.len() as u64)
+            .unwrap_or(0);
 
-        if gate_satisfied {
+        let signals = analyze_last_message(
+            exec.last_message.as_deref(),
+            exec.files_changed,
+            exec.error_count,
+        );
+
+        let analysis = Analysis {
+            has_completion_signal: signals.has_completion_signal,
+            is_test_only: signals.is_test_only,
+            is_stuck: signals.is_stuck,
+            has_progress: exec.files_changed > 0,
+            files_modified: exec.files_changed,
+            confidence_score: signals.confidence_score,
+            exit_signal: signals.exit_signal,
+            work_summary: signals.work_summary.clone(),
+            output_length,
+            error_count: exec.error_count,
+        };
+
+        let analysis_file = AnalysisFile {
+            loop_number: loop_count,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            output_file: exec.last_message_path.display().to_string(),
+            output_format: "text".to_string(),
+            analysis: analysis.clone(),
+        };
+
+        write_json_atomic(&paths.response_analysis_file, &analysis_file).await?;
+
+        let mut exit_signals: ExitSignalsFile = tokio::fs::read(&paths.exit_signals_file)
+            .await
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        exit_signals.update_for_loop(loop_count, &analysis);
+        write_json_atomic(&paths.exit_signals_file, &exit_signals).await?;
+
+        let cb_outcome = circuit_breaker::record_loop_result(
+            &paths,
+            loop_count,
+            exec.files_changed,
+            exec.error_count > 0,
+        )
+        .await?;
+
+        if cb_outcome.opened {
+            update_status(
+                &paths,
+                loop_count,
+                calls_made,
+                opts.max_calls_per_hour,
+                "circuit_breaker",
+                "exited",
+                &cb_outcome.state.reason,
+            )
+            .await?;
+            append_log_line(
+                &paths,
+                "ERROR",
+                &format!("Stopping: {}", cb_outcome.state.reason),
+            )
+            .await?;
+            anyhow::bail!("Stopping: {}", cb_outcome.state.reason);
+        }
+
+        if signals.exit_signal && signals.has_completion_signal {
             update_status(
                 &paths,
                 loop_count,
@@ -238,6 +344,9 @@ struct ExecResult {
     exit_code: i32,
     thread_id: Option<String>,
     last_message: Option<String>,
+    last_message_path: PathBuf,
+    files_changed: u64,
+    error_count: u64,
 }
 
 async fn codex_exec_once(
@@ -311,6 +420,8 @@ async fn codex_exec_once(
     let start = time::Instant::now();
     let mut last_output = String::new();
     let mut thread_id: Option<String> = None;
+    let mut files_changed: u64 = 0;
+    let mut error_count: u64 = 0;
     let timeout = time::sleep(time::Duration::from_secs(opts.timeout_minutes * 60));
     tokio::pin!(timeout);
 
@@ -333,10 +444,12 @@ async fn codex_exec_once(
                             if let ThreadItemDetails::FileChange(item) = ev.item.details
                                 && item.status == PatchApplyStatus::Completed {
                                     let paths_changed: HashSet<_> = item.changes.into_iter().map(|c| c.path).collect();
+                                    files_changed = files_changed.saturating_add(paths_changed.len() as u64);
                                     last_output = format!("file changes: {}", paths_changed.len());
                                 }
                         }
                         ThreadEvent::Error(err) => {
+                            error_count = error_count.saturating_add(1);
                             last_output = format!("error: {}", truncate(&err.message, 120));
                         }
                         _ => {}
@@ -366,7 +479,14 @@ async fn codex_exec_once(
                 remove_file_if_exists(&paths.progress_file).await?;
                 let last_message = tokio::fs::read_to_string(&last_message_path).await.ok();
                 append_log_line(paths, "INFO", &format!("codex exec exit code: {exit_code}")).await?;
-                return Ok(ExecResult{ exit_code, thread_id, last_message });
+                return Ok(ExecResult{
+                    exit_code,
+                    thread_id,
+                    last_message,
+                    last_message_path: last_message_path.clone(),
+                    files_changed,
+                    error_count,
+                });
             }
             _ = &mut timeout => {
                 let _ = child.kill().await;
@@ -388,6 +508,9 @@ async fn codex_exec_once(
         exit_code,
         thread_id,
         last_message,
+        last_message_path,
+        files_changed,
+        error_count,
     })
 }
 
