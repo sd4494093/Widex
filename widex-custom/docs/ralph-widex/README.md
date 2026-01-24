@@ -49,7 +49,7 @@ TUI 内置命令（等价）：
 
 - `.ralph/status.json`：loop 状态（loop 计数、calls/hour、last_action、exit_reason、next_reset 等）
 - `.ralph/progress.json`：`widex exec` 执行中按秒刷新（不执行时通常不存在）
-- `.ralph/ralph_widex.pid`：当前 ralph-widex 进程 PID（运行时由 Rust 写入；正常退出会自动删除；崩溃时可能残留）
+- `.ralph/ralph_widex.pid`：当前 ralph-widex 进程 PID（运行时由 Rust 写入；正常退出会自动删除；崩溃/被强杀时可能残留；`widex ralph-widex status` 会标记 `(stale)`，可用 `widex ralph-widex stop` 清理）
 - `.ralph/STOP`：存在即请求停止；Rust 版会在 **exec 运行中** / **rate-limit 等待中** 也检测并尽快退出
 
 退出检测/分析：
