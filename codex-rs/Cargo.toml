@@ -47,6 +47,7 @@ members = [
     "codex-client",
     "codex-api",
     "api-switchover",
+    "ralph-widex",
 ]
 resolver = "2"
 
@@ -92,6 +93,7 @@ codex-process-hardening = { path = "process-hardening" }
 codex-protocol = { path = "protocol" }
 codex-responses-api-proxy = { path = "responses-api-proxy" }
 codex-rmcp-client = { path = "rmcp-client" }
+codex-ralph-widex = { path = "ralph-widex" }
 codex-stdio-to-uds = { path = "stdio-to-uds" }
 codex-tui = { path = "tui" }
 codex-utils-absolute-path = { path = "utils/absolute-path" }

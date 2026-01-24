@@ -1181,6 +1181,7 @@ dependencies = [
  "codex-login",
  "codex-mcp-server",
  "codex-protocol",
+ "codex-ralph-widex",
  "codex-responses-api-proxy",
  "codex-rmcp-client",
  "codex-stdio-to-uds",
@@ -1693,6 +1694,21 @@ dependencies = [
  "tracing",
  "ts-rs",
  "uuid",
+]
+
+[[package]]
+name = "codex-ralph-widex"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "codex-exec",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

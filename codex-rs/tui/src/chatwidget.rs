@@ -3081,21 +3081,19 @@ impl ChatWidget {
     }
 
     fn run_ralph_widex(&mut self, argv: Vec<String>) {
-        let install_dir = match crate::ralph_widex::ensure_installed(&self.config.codex_home) {
-            Ok(dir) => dir,
-            Err(err) => {
-                self.add_error_message(format!("Failed to install ralph-widex: {err}"));
-                return;
-            }
-        };
+        // Prefer the Rust-native CLI subcommand (`codex ralph-widex ...`).
+        // If we're running as `codex-tui`, fall back to invoking `codex` on PATH.
+        let codex_cmd = std::env::current_exe()
+            .ok()
+            .and_then(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n == "codex")
+                    .then_some(p.display().to_string())
+            })
+            .unwrap_or_else(|| "codex".to_string());
 
-        let bin = install_dir.join("bin").join("ralph-widex");
-        let mut cmd: Vec<String> = Vec::new();
-        cmd.push("env".to_string());
-        if let Ok(exe) = std::env::current_exe() {
-            cmd.push(format!("CODEX_CMD={}", exe.display()));
-        }
-        cmd.push(bin.display().to_string());
+        let mut cmd: Vec<String> = vec![codex_cmd, "ralph-widex".to_string()];
         cmd.extend(argv);
 
         let command = escape_command(&cmd);

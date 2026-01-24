@@ -93,13 +93,54 @@ git push origin widex
 
 目录：`widex-custom/features/ralph-widex/`
 
+说明：
+
+- `templates/`：Rust 原生实现会直接复用这里的模板内容生成 `.ralph/`
+- `bin/`、`lib/`：早期 shell 版实现遗留（不作为运行路径，只保留作参考）
+
 用途：
 
 - 在 TUI 内通过 `/ralph-widex` 启动一个“自主开发循环”（Ralph loop），底层会反复调用 `codex exec`
   并使用当前 repo 的 `.ralph/PROMPT.md` 作为提示词。
-- 支持 `/ralph-widex init` 初始化当前目录的 `.ralph/` 结构（模板位于 feature 目录，会自动安装到
-  `${CODEX_HOME}/features/ralph-widex`）。
+- 支持 `/ralph-widex init` 初始化当前目录的 `.ralph/` 结构（模板来源于 `widex-custom/features/ralph-widex/templates/`）。
 - 支持 `/ralph-widex monitor` 在终端查看 `.ralph/status.json` 的实时状态面板。
+
+现状（widex 分支）：
+
+- TUI 的 `/ralph-widex` **只调用 Rust 原生实现**：`codex ralph-widex ...`（无需安装 shell 脚本）。
+- `widex-custom/features/ralph-widex/` 的 shell 版仅作为历史参考保留（不再作为兜底/回退路径；不保证可用性）。
+
+### 3.3 Ralph（生产级 Rust 重构规划）
+
+背景：`ralph-widex` 的上游原型来自 `/home/will/data/backups/ralph-claude-code`（面向 `claude-code` 的 shell 插件）。
+我们已在 Widex 中完成“可用移植版”（shell + jq + grep 解析），但它天然存在如下风险：`set -euo pipefail`
+下的管道退出、跨平台 `date/timeout` 差异、以及对模型输出格式漂移的脆弱依赖。
+
+Widex 的生产级目标：把 Ralph 做成 **原生 Widex 功能**（原生 slash 命令 + Rust 实现），稳定、可测试、
+可演进，同时尽量保持 `.ralph/` 目录约定向后兼容。
+
+#### Rust 原生版的设计原则（强制）
+
+- **不依赖 shell 工具链**：不需要 `jq/timeout/grep`；用 Rust（`serde_json` + `tokio`）实现所有逻辑。
+- **结构化驱动**：以 `codex exec --json` 的 JSONL 事件为主要信号源，而不是基于纯文本 grep。
+- **可恢复/可观测**：保留 `.ralph/status.json`、`.ralph/progress.json`、`.ralph/logs/*` 作为稳定外部接口。
+- **可控退出**：优先通过 `--output-schema` 强制模型输出结构化 “Ralph 状态” JSON（失败时才 fallback）。
+- **单实例锁**：同一 repo 同一时间只允许一个 loop 在跑（避免并发写状态文件/重复调用）。
+- **安全边界**：不写入/回显任何 API key；不触碰 `CODEX_SANDBOX_*` 相关逻辑；不在 repo 内放 `CODEX_HOME`。
+
+#### 迁移策略（分阶段，避免破坏）
+
+阶段 0（历史）：早期移植曾以 shell 版脚本验证链路可用性（仅用于参考，不再作为运行路径）。
+
+阶段 1（进行中）：新增 Rust 实现（建议以 `codex ralph-widex ...` 子命令形式暴露）：
+
+- `codex ralph-widex init`：生成 `.ralph/`（复用 templates，但由 Rust 写入）
+- `codex ralph-widex run`：运行 loop（内部调用 `codex exec --json ...`；写 status/progress/log）
+- `codex ralph-widex monitor`：读取 `.ralph/status.json` + `.ralph/logs/ralph.log`（先 CLI 版，后续可内置到 TUI）
+
+阶段 2：TUI `/ralph-widex` 只调用 Rust 版（不再安装/执行 shell 脚本，也不提供 shell fallback）。
+
+阶段 3：把 monitor/状态面板做成 TUI 内置视图（不再需要独立 `monitor` 进程）。
 
 
 ## 4) Gemini 集成（新增 Wire API）
