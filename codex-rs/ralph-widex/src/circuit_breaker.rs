@@ -22,6 +22,8 @@ pub(crate) struct CircuitBreakerState {
     pub(crate) last_change: String,
     pub(crate) consecutive_no_progress: u64,
     pub(crate) consecutive_same_error: u64,
+    #[serde(default)]
+    pub(crate) last_error_signature: String,
     pub(crate) last_progress_loop: u64,
     pub(crate) total_opens: u64,
     pub(crate) reason: String,
@@ -35,6 +37,7 @@ impl Default for CircuitBreakerState {
             last_change: Utc::now().to_rfc3339(),
             consecutive_no_progress: 0,
             consecutive_same_error: 0,
+            last_error_signature: String::new(),
             last_progress_loop: 0,
             total_opens: 0,
             reason: String::new(),
@@ -96,7 +99,7 @@ pub(crate) async fn record_loop_result(
     paths: &RalphPaths,
     loop_number: u64,
     files_changed: u64,
-    has_errors: bool,
+    error_signature: Option<&str>,
 ) -> anyhow::Result<RecordOutcome> {
     let mut state = read_state(paths).await?;
     let current_state = state.state;
@@ -109,10 +112,16 @@ pub(crate) async fn record_loop_result(
         state.consecutive_no_progress = state.consecutive_no_progress.saturating_add(1);
     }
 
-    if has_errors {
-        state.consecutive_same_error = state.consecutive_same_error.saturating_add(1);
+    if let Some(signature) = error_signature.filter(|s| !s.trim().is_empty()) {
+        if signature == state.last_error_signature {
+            state.consecutive_same_error = state.consecutive_same_error.saturating_add(1);
+        } else {
+            state.consecutive_same_error = 1;
+            state.last_error_signature = signature.to_string();
+        }
     } else {
         state.consecutive_same_error = 0;
+        state.last_error_signature.clear();
     }
 
     state.current_loop = loop_number;
@@ -213,13 +222,32 @@ mod tests {
         let paths = RalphPaths::new(dir.path());
         paths.ensure_dirs().await?;
 
-        let r1 = record_loop_result(&paths, 1, 0, false).await?;
+        let r1 = record_loop_result(&paths, 1, 0, None).await?;
         assert_eq!(r1.state.state, CircuitState::Closed);
-        let r2 = record_loop_result(&paths, 2, 0, false).await?;
+        let r2 = record_loop_result(&paths, 2, 0, None).await?;
         assert_eq!(r2.state.state, CircuitState::HalfOpen);
-        let r3 = record_loop_result(&paths, 3, 0, false).await?;
+        let r3 = record_loop_result(&paths, 3, 0, None).await?;
         assert_eq!(r3.state.state, CircuitState::Open);
         assert_eq!(r3.opened, true);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn opens_after_repeating_same_error_signature() -> anyhow::Result<()> {
+        let dir = tempdir()?;
+        let paths = RalphPaths::new(dir.path());
+        paths.ensure_dirs().await?;
+
+        // Repeat the same signature across loops.
+        for i in 1..=SAME_ERROR_THRESHOLD {
+            let res = record_loop_result(&paths, i, 1, Some("ERR: foo")).await?;
+            if i < SAME_ERROR_THRESHOLD {
+                assert_eq!(res.state.state, CircuitState::Closed);
+            } else {
+                assert_eq!(res.state.state, CircuitState::Open);
+            }
+        }
 
         Ok(())
     }

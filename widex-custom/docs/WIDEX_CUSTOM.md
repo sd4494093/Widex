@@ -101,22 +101,23 @@ git push origin widex
 运行期文件（Rust 版会写入/读取）：
 
 - `.ralph/status.json`：loop 状态（含 rate limit 信息）
-- `.ralph/progress.json`：当前 `codex exec` 的实时进度（执行中才存在）
+- `.ralph/progress.json`：当前 `widex exec` 的实时进度（执行中才存在）
 - `.ralph/.response_analysis`：每轮分析结果（退出检测/进展/错误）
 - `.ralph/.exit_signals`：用于观测“test-only / completion 信号”的累积记录
 - `.ralph/.circuit_breaker_state` / `.ralph/.circuit_breaker_history`：熔断器状态与历史
-- `.ralph/STOP`：若存在，loop 会在下一轮开始前主动退出（用于外部停机）
+- `.ralph/STOP`：若存在，loop 会尽快退出；Rust 版也会在 `widex exec` 运行中或 rate-limit 等待期间检测到 STOP，并触发 graceful shutdown
+- `.ralph/ralph_output_schema.json`：Ralph 结构化输出的 JSON Schema（用于 `widex exec --output-schema`）
 
 用途：
 
-- 在 TUI 内通过 `/ralph-widex` 启动一个“自主开发循环”（Ralph loop），底层会反复调用 `codex exec`
+- 在 TUI 内通过 `/ralph-widex` 启动一个“自主开发循环”（Ralph loop），底层会反复调用 `widex exec`
   并使用当前 repo 的 `.ralph/PROMPT.md` 作为提示词。
 - 支持 `/ralph-widex init` 初始化当前目录的 `.ralph/` 结构（模板来源于 `widex-custom/features/ralph-widex/templates/`）。
 - 支持 `/ralph-widex monitor` 在终端查看 `.ralph/status.json` 的实时状态面板。
 
 现状（widex 分支）：
 
-- TUI 的 `/ralph-widex` **只调用 Rust 原生实现**：`codex ralph-widex ...`（无需安装 shell 脚本）。
+- TUI 的 `/ralph-widex` **只调用 Rust 原生实现**：`widex ralph-widex ...`（无需安装 shell 脚本）。
 - `widex-custom/features/ralph-widex/` 的 shell 版仅作为历史参考保留（不再作为兜底/回退路径；不保证可用性）。
 
 ### 3.3 Ralph（生产级 Rust 重构规划）
@@ -131,7 +132,7 @@ Widex 的生产级目标：把 Ralph 做成 **原生 Widex 功能**（原生 sla
 #### Rust 原生版的设计原则（强制）
 
 - **不依赖 shell 工具链**：不需要 `jq/timeout/grep`；用 Rust（`serde_json` + `tokio`）实现所有逻辑。
-- **结构化驱动**：以 `codex exec --json` 的 JSONL 事件为主要信号源，而不是基于纯文本 grep。
+- **结构化驱动**：以 `widex exec --json` 的 JSONL 事件为主要信号源，而不是基于纯文本 grep。
 - **可恢复/可观测**：保留 `.ralph/status.json`、`.ralph/progress.json`、`.ralph/logs/*` 作为稳定外部接口。
 - **可控退出**：优先通过 `--output-schema` 强制模型输出结构化 “Ralph 状态” JSON（失败时才 fallback）。
 - **单实例锁**：同一 repo 同一时间只允许一个 loop 在跑（避免并发写状态文件/重复调用）。
@@ -141,15 +142,36 @@ Widex 的生产级目标：把 Ralph 做成 **原生 Widex 功能**（原生 sla
 
 阶段 0（历史）：早期移植曾以 shell 版脚本验证链路可用性（仅用于参考，不再作为运行路径）。
 
-阶段 1（进行中）：新增 Rust 实现（建议以 `codex ralph-widex ...` 子命令形式暴露）：
+阶段 1（进行中）：新增 Rust 实现（以 `widex ralph-widex ...` 子命令形式暴露）：
 
-- `codex ralph-widex init`：生成 `.ralph/`（复用 templates，但由 Rust 写入）
-- `codex ralph-widex run`：运行 loop（内部调用 `codex exec --json ...`；写 status/progress/log）
-- `codex ralph-widex monitor`：读取 `.ralph/status.json` + `.ralph/logs/ralph.log`（先 CLI 版，后续可内置到 TUI）
+- `widex ralph-widex init`：生成 `.ralph/`（复用 templates，但由 Rust 写入）
+- `widex ralph-widex run`：运行 loop（内部调用 `widex exec --json ...`；写 status/progress/log）
+- `widex ralph-widex start`：后台启动 loop（不阻塞 TUI/终端；会写入 `.ralph/ralph_widex.pid`）
+- `widex ralph-widex stop`：请求停机（创建 `.ralph/STOP`，并 best-effort 发送 SIGTERM）
+- `widex ralph-widex monitor`：读取 `.ralph/status.json` + `.ralph/logs/ralph.log`（先 CLI 版，后续可内置到 TUI）
+  - `run` 运行时会写入 `.ralph/ralph_widex.pid`（PID 文件；正常退出会删除）
 
 阶段 2：TUI `/ralph-widex` 只调用 Rust 版（不再安装/执行 shell 脚本，也不提供 shell fallback）。
 
 阶段 3：把 monitor/状态面板做成 TUI 内置视图（不再需要独立 `monitor` 进程）。
+
+#### 生产级细节（Rust 版）
+
+- same error 签名检测：loop 会从 `widex exec --json` 的 error item（以及部分 stderr）提取 error 文本并做归一化
+  （数字→`<n>`、UUID→`<uuid>`、长 hex/0x→`<hex>`、压缩空白并 lower-case），用于区分“连续同一错误” vs “不同错误”。
+  连续同一错误达到阈值会触发 circuit breaker。
+- structured output：默认会为每次 `widex exec` 自动附带 `--output-schema .ralph/ralph_output_schema.json`，让模型更倾向输出可解析 JSON。
+  可通过 `widex ralph-widex run --no-output-schema` 关闭。
+- no last agent message 自动重试：当 `widex exec` exit code 为 0 但 `--output-last-message` 产出空内容时，
+  `ralph-widex` 会在同一 loop 内自动重试（默认重试 1 次，可通过 `--retry-no-final-message` 调整；重试会计入 calls/hour）。
+- 超时不致命：当单次 `widex exec` 触发 `--timeout-minutes` 超时，Rust 版会将其视为本轮失败（exit code 124）并继续下一轮；
+  若持续超时/持续同错，会被熔断器收敛（避免无限消耗）。
+- MCP 排查：如遇 rmcp serde / JsonRpcMessage 类错误，可用 `widex ralph-widex run --disable-mcp` 临时禁用已配置的 MCP servers（设置 `mcp_servers.<name>.enabled=false`），避免 JSON-RPC framing 被破坏。
+- 继续（resume）旧会话时，Codex 可能会在 stderr 输出 `Custom tool call output is missing for call id: ...` 之类的内部修复日志；ralph-widex 会忽略这类日志，不会将其计入同错熔断。
+- graceful shutdown：支持 Ctrl-C（SIGINT）与 SIGTERM；会尝试向子进程发送对应信号并在超时后强制终止，
+  同时更新 `.ralph/status.json` 为 `shutdown/exited`。
+- progress/monitor：Rust 版会按秒刷新 `.ralph/progress.json`（即使 stdout 没有持续输出），monitor 也会响应 Ctrl-C/SIGTERM 退出。
+- 单实例锁（stale lock）：若上一次异常退出遗留 `.ralph/.lock`，Rust 版会尝试判断 PID 是否仍存在；若已不存在会清理 stale lock 并继续。
 
 
 ## 4) Gemini 集成（新增 Wire API）

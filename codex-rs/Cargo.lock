@@ -1704,11 +1704,14 @@ dependencies = [
  "chrono",
  "clap",
  "codex-exec",
+ "libc",
  "pretty_assertions",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-util",
+ "toml 0.9.5",
 ]
 
 [[package]]

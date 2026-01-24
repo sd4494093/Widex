@@ -45,7 +45,13 @@
 - 继续保留官方 npm `codex`，不要让 widex 的配置/schema 破坏它。
 - widex 运行请使用 `widex-custom/bin/widex`（它会默认隔离 `CODEX_HOME=~/.widex-codex`，并在缺 binary 时自动 release 构建）。
 
-### E. 不在这里放 Rust 代码规范（说明）
+### E. Ralph Widex（强制）
+
+- `/ralph-widex` 在 widex 中**只走 Rust 原生实现**（`widex ralph-widex ...`）；不要再引入 shell 兜底路径。
+- `widex-custom/features/ralph-widex/bin/` 与 `lib/` 仅作为历史参考保留（不保证可用性）；任何新能力都应落在 `codex-rs/ralph-widex/`。
+- 交互体验：TUI 的 `/ralph-widex` 默认应启动后台 loop（等价于 `widex ralph-widex start`），避免阻塞 TUI。
+
+### F. 不在这里放 Rust 代码规范（说明）
 
 - `widex-custom/` 主要承载文档/配置资产。
 - Rust 代码（`codex-rs/`）的风格/测试/工具约束以仓库根部 `AGENTS.md` 为准（不要在这里复制一份产生分叉）。

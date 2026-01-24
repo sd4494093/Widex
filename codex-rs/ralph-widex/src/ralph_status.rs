@@ -24,6 +24,7 @@ pub enum WorkType {
     Testing,
     Documentation,
     Refactoring,
+    Debugging,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

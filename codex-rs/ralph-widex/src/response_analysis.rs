@@ -18,13 +18,14 @@ const NO_WORK_PATTERNS: [&str; 4] = [
     "up to date",
 ];
 
-const TEST_ONLY_PATTERNS: [&str; 6] = [
+const TEST_ONLY_PATTERNS: [&str; 7] = [
     "npm test",
     "bats",
     "pytest",
     "jest",
     "cargo test",
     "go test",
+    "running tests",
 ];
 
 #[derive(Debug, Clone, Serialize)]
@@ -180,6 +181,21 @@ impl ExitSignalsFile {
         if analysis.has_completion_signal {
             self.done_signals.push(loop_number);
         }
+
+        if analysis.confidence_score >= 60 {
+            self.completion_indicators.push(loop_number);
+        }
+
+        truncate_signal_history(&mut self.test_only_loops);
+        truncate_signal_history(&mut self.done_signals);
+        truncate_signal_history(&mut self.completion_indicators);
+    }
+}
+
+fn truncate_signal_history(values: &mut Vec<u64>) {
+    const MAX: usize = 20;
+    if values.len() > MAX {
+        values.drain(0..values.len().saturating_sub(MAX));
     }
 }
 

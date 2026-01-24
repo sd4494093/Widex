@@ -52,11 +52,11 @@ use codex_core::terminal::TerminalName;
     version,
     // If a sub‑command is given, ignore requirements of the default args.
     subcommand_negates_reqs = true,
-    // The executable is sometimes invoked via a platform‑specific name like
-    // `codex-x86_64-unknown-linux-musl`, but the help output should always use
-    // the generic `codex` command name that users run.
-    bin_name = "codex",
-    override_usage = "codex [OPTIONS] [PROMPT]\n       codex [OPTIONS] <COMMAND> [ARGS]"
+    // Widex fork: keep all user-facing help/usage strings consistent with the wrapper
+    // command users run (`widex`), even though the underlying binary may still be named
+    // `codex` on disk.
+    bin_name = "widex",
+    override_usage = "widex [OPTIONS] [PROMPT]\n       widex [OPTIONS] <COMMAND> [ARGS]"
 )]
 struct MultitoolCli {
     #[clap(flatten)]

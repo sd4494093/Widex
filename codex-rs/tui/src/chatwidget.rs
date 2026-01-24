@@ -2372,7 +2372,8 @@ impl ChatWidget {
                 self.app_event_tx.send(AppEvent::CodexOp(Op::Compact));
             }
             SlashCommand::RalphWidex => {
-                self.run_ralph_widex(Vec::new());
+                // Default behavior should not block the TUI; start in background.
+                self.run_ralph_widex(vec!["start".to_string()]);
             }
             SlashCommand::Review => {
                 self.open_review_popup();
@@ -2560,6 +2561,17 @@ impl ChatWidget {
                 let argv = shlex::split(trimmed)
                     .filter(|v| !v.is_empty())
                     .unwrap_or_else(|| vec![trimmed.to_string()]);
+                // For convenience, map `/ralph-widex` and `/ralph-widex run` to background start.
+                // Users can still run the foreground loop via `widex ralph-widex run` in a terminal.
+                let argv = if argv.is_empty() {
+                    vec!["start".to_string()]
+                } else if argv.first().is_some_and(|v| v == "run") {
+                    let mut out = vec!["start".to_string()];
+                    out.extend(argv.into_iter().skip(1));
+                    out
+                } else {
+                    argv
+                };
                 self.run_ralph_widex(argv);
             }
             SlashCommand::Review if !trimmed.is_empty() => {
@@ -3081,6 +3093,16 @@ impl ChatWidget {
     }
 
     fn run_ralph_widex(&mut self, argv: Vec<String>) {
+        if let Ok(cmd) = std::env::var("WIDEX_CMD")
+            && !cmd.trim().is_empty()
+        {
+            let mut cmd: Vec<String> = vec![cmd, "ralph-widex".to_string()];
+            cmd.extend(argv);
+            let command = escape_command(&cmd);
+            self.submit_op(Op::RunUserShellCommand { command });
+            return;
+        }
+
         // Prefer the Rust-native CLI subcommand (`codex ralph-widex ...`).
         // If we're running as `codex-tui`, fall back to invoking `codex` on PATH.
         let codex_cmd = std::env::current_exe()

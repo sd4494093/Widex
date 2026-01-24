@@ -23,6 +23,13 @@ export CODEX_HOME="${CODEX_HOME:-${CODEX_HOME_DEFAULT}}"
 # Hint the TUI switchover integration where to find the YAML.
 export WIDEX_API_SWITCHER_CONFIG="${WIDEX_API_SWITCHER_CONFIG:-${CODEX_HOME}/api_switchover.yaml}"
 
+# Brand-aware command hinting: within Widex, user-facing examples should prefer `widex ...`.
+export WIDEX_CMD="${WIDEX_CMD:-widex}"
+
+# Ensure subcomponents that spawn `codex exec` (e.g. ralph-widex) route back through the wrapper,
+# so CODEX_HOME isolation stays consistent.
+export CODEX_CMD="${CODEX_CMD:-${WIDEX_CMD}}"
+
 BIN_RELEASE="${REPO_ROOT}/codex-rs/target/release/codex"
 BUILD_DIR="${REPO_ROOT}/codex-rs"
 
@@ -38,7 +45,8 @@ if [[ ! -x "${BIN_RELEASE}" ]]; then
 fi
 
 if [[ -x "${BIN_RELEASE}" ]]; then
-  exec "${BIN_RELEASE}" "$@"
+  # Make `--help`/usage strings show `widex` instead of the underlying `codex` binary name.
+  exec -a "${WIDEX_CMD}" "${BIN_RELEASE}" "$@"
 else
   echo "widex: expected release binary at ${BIN_RELEASE}, but it is missing or not executable." >&2
   exit 1

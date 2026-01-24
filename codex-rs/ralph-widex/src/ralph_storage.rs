@@ -4,6 +4,8 @@ use serde::Serialize;
 use std::ffi::OsStr;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 
@@ -15,6 +17,7 @@ pub(crate) struct RalphPaths {
     pub(crate) ralph_dir: PathBuf,
     pub(crate) logs_dir: PathBuf,
     pub(crate) docs_generated_dir: PathBuf,
+    pub(crate) pid_file: PathBuf,
     pub(crate) status_file: PathBuf,
     pub(crate) progress_file: PathBuf,
     pub(crate) response_analysis_file: PathBuf,
@@ -22,6 +25,7 @@ pub(crate) struct RalphPaths {
     pub(crate) circuit_breaker_state_file: PathBuf,
     pub(crate) circuit_breaker_history_file: PathBuf,
     pub(crate) stop_file: PathBuf,
+    pub(crate) output_schema_file: PathBuf,
     pub(crate) call_count_file: PathBuf,
     pub(crate) last_reset_file: PathBuf,
     pub(crate) session_file: PathBuf,
@@ -39,6 +43,7 @@ impl RalphPaths {
             ralph_dir: ralph_dir.clone(),
             logs_dir,
             docs_generated_dir,
+            pid_file: ralph_dir.join("ralph_widex.pid"),
             status_file: ralph_dir.join("status.json"),
             progress_file: ralph_dir.join("progress.json"),
             response_analysis_file: ralph_dir.join(".response_analysis"),
@@ -46,6 +51,7 @@ impl RalphPaths {
             circuit_breaker_state_file: ralph_dir.join(".circuit_breaker_state"),
             circuit_breaker_history_file: ralph_dir.join(".circuit_breaker_history"),
             stop_file: ralph_dir.join("STOP"),
+            output_schema_file: ralph_dir.join("ralph_output_schema.json"),
             call_count_file: ralph_dir.join(".call_count"),
             last_reset_file: ralph_dir.join(".last_reset"),
             session_file: ralph_dir.join(".widex_session.json"),
@@ -76,25 +82,57 @@ impl Drop for LockGuard {
 
 pub(crate) async fn acquire_lock(paths: &RalphPaths) -> anyhow::Result<LockGuard> {
     fs::create_dir_all(&paths.ralph_dir).await?;
-    let mut opts = fs::OpenOptions::new();
-    opts.write(true).create_new(true);
+    let stale_cleanup_attempted = AtomicBool::new(false);
 
-    let mut file = opts.open(&paths.lock_file).await.with_context(|| {
-        format!(
-            "Failed to acquire lock at {} (is ralph already running?)",
-            paths.lock_file.display()
-        )
-    })?;
+    loop {
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create_new(true);
 
-    let pid = std::process::id();
-    let now = Utc::now().to_rfc3339();
-    let content = format!("pid={pid}\nstarted_at={now}\n");
-    file.write_all(content.as_bytes()).await?;
-    file.flush().await?;
+        match opts.open(&paths.lock_file).await {
+            Ok(mut file) => {
+                let pid = std::process::id();
+                let now = Utc::now().to_rfc3339();
+                let content = format!("pid={pid}\nstarted_at={now}\n");
+                file.write_all(content.as_bytes()).await?;
+                file.flush().await?;
 
-    Ok(LockGuard {
-        path: paths.lock_file.clone(),
-    })
+                return Ok(LockGuard {
+                    path: paths.lock_file.clone(),
+                });
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                // If the previous process crashed, the lock file can be left behind.
+                // Try a single stale-lock cleanup pass to avoid trapping the user.
+                if stale_cleanup_attempted.swap(true, Ordering::SeqCst) {
+                    return Err(err).with_context(|| {
+                        format!(
+                            "Failed to acquire lock at {} (is ralph already running?)",
+                            paths.lock_file.display()
+                        )
+                    });
+                }
+
+                if let Some(pid) = read_lock_pid(&paths.lock_file).await?
+                    && !process_is_running(pid)
+                {
+                    let _ = fs::remove_file(&paths.lock_file).await;
+                    continue;
+                }
+
+                return Err(err).with_context(|| {
+                    format!(
+                        "Failed to acquire lock at {} (is ralph already running?)",
+                        paths.lock_file.display()
+                    )
+                });
+            }
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!("Failed to acquire lock at {}", paths.lock_file.display())
+                });
+            }
+        }
+    }
 }
 
 pub(crate) async fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {
@@ -175,4 +213,43 @@ fn tmp_path_for(path: &Path) -> PathBuf {
 
     p.set_file_name(new_name);
     p
+}
+
+async fn read_lock_pid(path: &Path) -> anyhow::Result<Option<u32>> {
+    let contents = match fs::read_to_string(path).await {
+        Ok(v) => v,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err).with_context(|| format!("Failed to read {}", path.display())),
+    };
+
+    for line in contents.lines() {
+        if let Some(v) = line.strip_prefix("pid=")
+            && let Ok(pid) = v.trim().parse::<u32>()
+        {
+            return Ok(Some(pid));
+        }
+    }
+
+    Ok(None)
+}
+
+#[cfg(unix)]
+pub(crate) fn process_is_running(pid: u32) -> bool {
+    unsafe {
+        // SAFETY: `kill(pid, 0)` does not actually send a signal; it checks process existence.
+        // We treat EPERM as "running but not permitted".
+        if libc::kill(pid as i32, 0) == 0 {
+            return true;
+        }
+        !matches!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(code) if code == libc::ESRCH
+        )
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn process_is_running(_pid: u32) -> bool {
+    // Best-effort only; on non-Unix platforms we avoid adding extra dependencies.
+    true
 }

@@ -21,7 +21,8 @@ Solution
 This repo now ships a wrapper script at `widex-custom/bin/widex` that:
 
 - sets `CODEX_HOME=~/.widex-codex` by default
-- runs the repo-built Rust binary (`codex-rs/target/{release,debug}/codex`)
+- runs the repo-built Rust binary (`codex-rs/target/release/codex`)
+- builds `codex-rs/target/release/codex` automatically on first run (`cargo build --release`)
 
 2) Install the wrapper on PATH
 
@@ -43,7 +44,7 @@ Pick one:
 
 ```bash
 cd /home/will/data/codex/codex-rs
-cargo build -p codex-cli --bin codex
+cargo build -p codex-cli --bin codex --release
 ```
 
 4) Usage

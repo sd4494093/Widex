@@ -78,6 +78,13 @@ git push origin widex
 
 - Rust 代码（`codex-rs/`）的风格/测试/工具约束以仓库根部 `AGENTS.md` 为准。
 
+## Ralph Widex（本仓）
+
+- TUI 内置命令：`/ralph-widex`（可带参数：`/ralph-widex init|run|monitor ...`）。
+- 实现形态：只调用 Rust 原生子命令 `widex ralph-widex ...`（不安装/不执行 shell 脚本；shell 目录仅作历史参考）。
+- 运行约定：在项目根目录生成 `.ralph/`；可用 `.ralph/STOP` 触发 loop 尽快停机；`widex ralph-widex monitor` 读取 `.ralph/status.json`/日志做状态面板。
+- 交互默认：TUI 的 `/ralph-widex` 默认走后台启动（等价 `widex ralph-widex start`），避免阻塞当前会话。
+
 
 ## Gemini（本仓）落地检查清单（按层读代码）
 
