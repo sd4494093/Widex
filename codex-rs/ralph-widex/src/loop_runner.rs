@@ -387,6 +387,18 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
             update_session(&paths, thread_id, opts.session_expiry_hours).await?;
         }
 
+        if opts.use_continue {
+            if let Some(reason) = should_clear_session_after_exec(&exec) {
+                remove_file_if_exists(&paths.session_file).await?;
+                append_log_line(
+                    &paths,
+                    "WARN",
+                    &format!("Clearing session for next loop: {reason}"),
+                )
+                .await?;
+            }
+        }
+
         if exec.interrupted {
             update_status(
                 &paths,
@@ -669,8 +681,29 @@ struct ExecResult {
     files_changed: u64,
     error_count: u64,
     error_signature: Option<String>,
+    saw_thread_compaction_warning: bool,
     interrupted: bool,
     interrupt_reason: String,
+}
+
+fn should_clear_session_after_exec(exec: &ExecResult) -> Option<&'static str> {
+    if exec.interrupted {
+        return None;
+    }
+
+    if exec.saw_thread_compaction_warning {
+        return Some("thread_compaction_warning");
+    }
+
+    if exec.exit_code == 124 {
+        return Some("timeout");
+    }
+
+    if exec.exit_code == 0 && exec.last_message.is_none() {
+        return Some("no_final_message");
+    }
+
+    None
 }
 
 async fn codex_exec_once(
@@ -777,6 +810,7 @@ async fn codex_exec_once(
     let mut files_changed: u64 = 0;
     let mut error_count: u64 = 0;
     let mut error_messages: Vec<String> = Vec::new();
+    let mut saw_thread_compaction_warning = false;
     let timeout = time::sleep(time::Duration::from_secs(opts.timeout_minutes * 60));
     tokio::pin!(timeout);
     let mut progress_tick = time::interval(time::Duration::from_secs(1));
@@ -799,6 +833,7 @@ async fn codex_exec_once(
                     files_changed,
                     error_count,
                     error_signature,
+                    saw_thread_compaction_warning,
                     interrupted: true,
                     interrupt_reason,
                 });
@@ -839,6 +874,13 @@ async fn codex_exec_once(
                                     last_output = format!("file changes: {}", paths_changed.len());
                                 }
                                 ThreadItemDetails::Error(item) => {
+                                    if item
+                                        .message
+                                        .to_ascii_lowercase()
+                                        .contains("long threads and multiple compactions")
+                                    {
+                                        saw_thread_compaction_warning = true;
+                                    }
                                     error_count = error_count.saturating_add(1);
                                     error_messages.push(item.message.clone());
                                     last_output = format!("error: {}", truncate(&item.message, 120));
@@ -847,6 +889,13 @@ async fn codex_exec_once(
                             }
                         }
                         ThreadEvent::Error(err) => {
+                            if err
+                                .message
+                                .to_ascii_lowercase()
+                                .contains("long threads and multiple compactions")
+                            {
+                                saw_thread_compaction_warning = true;
+                            }
                             error_count = error_count.saturating_add(1);
                             error_messages.push(err.message.clone());
                             last_output = format!("error: {}", truncate(&err.message, 120));
@@ -891,6 +940,7 @@ async fn codex_exec_once(
                     files_changed,
                     error_count,
                     error_signature,
+                    saw_thread_compaction_warning,
                     interrupted: false,
                     interrupt_reason: String::new(),
                 });
@@ -911,6 +961,7 @@ async fn codex_exec_once(
                     files_changed,
                     error_count,
                     error_signature,
+                    saw_thread_compaction_warning,
                     interrupted: false,
                     interrupt_reason: msg,
                 });
@@ -939,6 +990,7 @@ async fn codex_exec_once(
         files_changed,
         error_count,
         error_signature,
+        saw_thread_compaction_warning,
         interrupted: false,
         interrupt_reason: String::new(),
     })
