@@ -267,10 +267,12 @@ async fn start_background(
     // Make sure a previous STOP doesn't immediately kill the new run.
     let _ = tokio::fs::remove_file(&paths.stop_file).await;
 
-    if let Ok(pid) = read_pid_file(&paths).await
-        && crate::ralph_storage::process_is_running(pid)
-    {
-        anyhow::bail!("ralph-widex already running (pid={pid})");
+    if let Ok(pid) = read_pid_file(&paths).await {
+        if crate::ralph_storage::process_is_running(pid) {
+            anyhow::bail!("ralph-widex already running (pid={pid})");
+        }
+        // Stale PID file (e.g., killed process); allow restart.
+        let _ = tokio::fs::remove_file(&paths.pid_file).await;
     }
 
     // Spawn: `widex ralph-widex run ...`
@@ -327,6 +329,12 @@ async fn stop_background(cwd: &std::path::Path, args: StopArgs) -> anyhow::Resul
         println!("Stop requested (STOP file created).");
         return Ok(());
     };
+
+    if !crate::ralph_storage::process_is_running(pid) {
+        let _ = tokio::fs::remove_file(&paths.pid_file).await;
+        println!("Stop requested (pid={pid}; already stopped).");
+        return Ok(());
+    }
 
     #[cfg(unix)]
     if !args.no_sigterm {

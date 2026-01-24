@@ -28,6 +28,12 @@ struct CircuitBreakerStateFile {
     consecutive_same_error: Option<u64>,
 }
 
+async fn read_pid(paths: &RalphPaths) -> Option<u32> {
+    let s = tokio::fs::read_to_string(&paths.pid_file).await.ok()?;
+    let pid = s.trim().parse::<u32>().ok()?;
+    Some(pid)
+}
+
 pub(crate) async fn run_monitor(cwd: &std::path::Path, interval_secs: u64) -> anyhow::Result<()> {
     let paths = RalphPaths::new(cwd);
     let interval_secs = interval_secs.max(1);
@@ -78,8 +84,16 @@ async fn render_once(paths: &RalphPaths, interval_secs: u64) -> anyhow::Result<(
     println!("==================");
     println!();
 
+    let pid = read_pid(paths).await;
+    let pid_is_running = pid
+        .map(crate::ralph_storage::process_is_running)
+        .unwrap_or(false);
+
     if let Ok(status) = read_json::<StatusFile>(&paths.status_file).await {
-        let status_str = status.status.unwrap_or_else(|| "unknown".to_string());
+        let mut status_str = status.status.unwrap_or_else(|| "unknown".to_string());
+        if status_str == "running" && pid.is_some() && !pid_is_running {
+            status_str = "exited".to_string();
+        }
         let loop_count = status.loop_count.unwrap_or(0);
         let calls_made = status.calls_made_this_hour.unwrap_or(0);
         let max_calls = status.max_calls_per_hour.unwrap_or(0);
@@ -96,10 +110,11 @@ async fn render_once(paths: &RalphPaths, interval_secs: u64) -> anyhow::Result<(
         println!("(Is ralph-widex running in this repo?)");
     }
 
-    if let Ok(pid) = tokio::fs::read_to_string(&paths.pid_file).await {
-        let pid = pid.trim();
-        if !pid.is_empty() {
+    if let Some(pid) = pid {
+        if pid_is_running {
             println!("PID:        {pid}");
+        } else {
+            println!("PID:        {pid} (stale)");
         }
     }
 
@@ -125,6 +140,7 @@ async fn render_once(paths: &RalphPaths, interval_secs: u64) -> anyhow::Result<(
 
     if let Ok(progress) = read_json::<ProgressFile>(&paths.progress_file).await
         && progress.status.as_deref() == Some("executing")
+        && (pid.is_none() || pid_is_running)
     {
         let elapsed = progress.elapsed_seconds.unwrap_or(0);
         let last_output = progress.last_output.unwrap_or_default();
@@ -173,8 +189,16 @@ pub(crate) async fn print_status_once(
     println!("CWD: {}", paths.cwd.display());
     println!("RALPH: {}", paths.ralph_dir.display());
 
+    let pid = read_pid(&paths).await;
+    let pid_is_running = pid
+        .map(crate::ralph_storage::process_is_running)
+        .unwrap_or(false);
+
     if let Ok(status) = read_json::<StatusFile>(&paths.status_file).await {
-        let status_str = status.status.unwrap_or_else(|| "unknown".to_string());
+        let mut status_str = status.status.unwrap_or_else(|| "unknown".to_string());
+        if status_str == "running" && pid.is_some() && !pid_is_running {
+            status_str = "exited".to_string();
+        }
         let loop_count = status.loop_count.unwrap_or(0);
         let calls_made = status.calls_made_this_hour.unwrap_or(0);
         let max_calls = status.max_calls_per_hour.unwrap_or(0);
@@ -193,11 +217,12 @@ pub(crate) async fn print_status_once(
         println!("Run: widex ralph-widex init");
     }
 
-    if let Ok(pid) = tokio::fs::read_to_string(&paths.pid_file).await {
-        let pid = pid.trim();
-        if !pid.is_empty() {
-            println!();
+    if let Some(pid) = pid {
+        println!();
+        if pid_is_running {
             println!("PID:        {pid}");
+        } else {
+            println!("PID:        {pid} (stale)");
         }
     }
 
@@ -223,6 +248,7 @@ pub(crate) async fn print_status_once(
 
     if let Ok(progress) = read_json::<ProgressFile>(&paths.progress_file).await
         && progress.status.as_deref() == Some("executing")
+        && (pid.is_none() || pid_is_running)
     {
         let elapsed = progress.elapsed_seconds.unwrap_or(0);
         let last_output = progress.last_output.unwrap_or_default();
