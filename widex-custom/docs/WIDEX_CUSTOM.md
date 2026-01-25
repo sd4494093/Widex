@@ -45,10 +45,33 @@ git push origin widex
 
 - wrapper：`widex-custom/bin/widex`
   - 默认 `CODEX_HOME=~/.widex-codex`
-  - 若 `codex-rs/target/release/codex` 不存在，会自动 `cargo build --release`
+  - 默认运行 `codex-rs/target/widex-release/codex`（Widex 专用快速构建 profile）
+  - 若二进制不存在，会自动构建：
+    - 默认：`cargo build -p codex-cli --bin codex --profile widex-release`
+    - 上游一致：`WIDEX_BUILD_PROFILE=upstream` 时走 `cargo build -p codex-cli --bin codex --release`
   - 设置 `WIDEX_API_SWITCHER_CONFIG=${CODEX_HOME}/api_switchover.yaml` 便于 TUI 读取切换器配置
 
 更多说明见：`widex-custom/docs/DUAL_CLI.md`。
+
+### 2.1 Widex 快速构建 profile（widex-release）
+
+目的：让 Widex 本地日常构建更快、更吃多核，同时保持上游 `--release` 行为不变（方便同步上游、CI 一致）。
+
+实现点：
+
+- `codex-rs/Cargo.toml` 新增 `profile.widex-release`：
+  - `lto = "thin"`（更快的 LTO）
+  - `codegen-units = 16`（多 codegen unit，更容易并行）
+  - `incremental = true`（本地重复构建更快）
+  - `strip = "none"`（本地调试/回溯更友好；也可避免 strip 增加 link 压力）
+- `widex` wrapper 默认用 `--profile widex-release` 构建并运行。
+
+常用开关（wrapper）：
+
+- `WIDEX_BUILD_PROFILE=upstream`：强制使用上游 `--release`（fat LTO + 单 CGU，更慢但更贴近上游产物）
+- `WIDEX_CARGO_JOBS=$(nproc)`：控制 `cargo` 的并行度（默认自动探测 CPU 数）
+- `WIDEX_FORCE_REBUILD=1`：即使已有二进制也强制重建
+- `WIDEX_USE_SCCACHE=1`：若机器已安装 `sccache`，启用 `RUSTC_WRAPPER=sccache` 加速重复编译
 
 
 ## 3) API Switchover（YAML 驱动的 provider/key 快速切换）
