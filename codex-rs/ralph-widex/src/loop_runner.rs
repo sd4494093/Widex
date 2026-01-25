@@ -807,6 +807,7 @@ async fn codex_exec_once(
     let start = time::Instant::now();
     let mut last_output = String::new();
     let mut thread_id: Option<String> = None;
+    let mut last_agent_message: Option<String> = None;
     let mut files_changed: u64 = 0;
     let mut error_count: u64 = 0;
     let mut error_messages: Vec<String> = Vec::new();
@@ -864,6 +865,10 @@ async fn codex_exec_once(
                         }
                         ThreadEvent::ItemCompleted(ev) => {
                             match ev.item.details {
+                                ThreadItemDetails::AgentMessage(item) => {
+                                    last_agent_message = Some(item.text.clone());
+                                    last_output = "agent message received".to_string();
+                                }
                                 ThreadItemDetails::FileChange(item)
                                     if item.status == PatchApplyStatus::Completed =>
                                 {
@@ -930,6 +935,7 @@ async fn codex_exec_once(
                     &mut error_count,
                     &mut error_messages,
                 );
+                let last_message = last_message.or_else(|| last_agent_message.clone());
                 append_log_line(paths, "INFO", &format!("codex exec exit code: {exit_code}")).await?;
                 let error_signature = compute_error_signature(&error_messages);
                 return Ok(ExecResult{
@@ -979,6 +985,7 @@ async fn codex_exec_once(
         &mut error_count,
         &mut error_messages,
     );
+    let last_message = last_message.or_else(|| last_agent_message);
     append_log_line(paths, "INFO", &format!("codex exec exit code: {exit_code}")).await?;
     let error_signature = compute_error_signature(&error_messages);
 
