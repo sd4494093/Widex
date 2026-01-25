@@ -1018,7 +1018,7 @@ async fn ensure_output_schema_file(paths: &RalphPaths) -> anyhow::Result<()> {
             "tests_status": { "type": "string", "enum": ["PASSING", "FAILING", "NOT_RUN"] },
             "work_type": { "type": "string", "enum": ["IMPLEMENTATION", "TESTING", "DOCUMENTATION", "REFACTORING", "DEBUGGING"] },
             "exit_signal": { "type": "boolean" },
-            "recommendation": { "type": "string" }
+            "recommendation": { "type": "string", "maxLength": 240 }
         },
         "required": ["status", "tasks_completed_this_loop", "files_modified", "tests_status", "work_type", "exit_signal", "recommendation"]
     });
