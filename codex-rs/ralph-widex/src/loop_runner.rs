@@ -741,6 +741,18 @@ async fn codex_exec_once(
         cmd.arg("-m");
         cmd.arg(model);
     }
+
+    // The ralph loop only needs a final structured agent message; reasoning summaries add noise and
+    // can meaningfully increase output latency. Allow users to override this via --exec-config.
+    if !opts
+        .exec_config_overrides
+        .iter()
+        .any(|kv| kv.trim_start().starts_with("model_reasoning_summary"))
+    {
+        cmd.arg("-c");
+        cmd.arg("model_reasoning_summary=\"none\"");
+    }
+
     for kv in &opts.exec_config_overrides {
         cmd.arg("-c");
         cmd.arg(kv);
