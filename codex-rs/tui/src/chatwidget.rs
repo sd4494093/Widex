@@ -548,6 +548,9 @@ struct RalphTuiState {
     max_loops: u64,
     current_loop: u64,
     completion_phrases: Vec<String>,
+    completion_mode: RalphCompletionMode,
+    completion_regexes: Vec<regex_lite::Regex>,
+    completion_regex_patterns: Vec<String>,
     in_flight: bool,
     // Optional per-hour limiter for the number of Ralph turns (not tool calls).
     max_calls_per_hour: Option<u64>,
@@ -557,12 +560,36 @@ struct RalphTuiState {
     timeout_minutes: Option<u64>,
     // Guards against stale timeout timers from previous turns.
     active_turn_nonce: u64,
+    // Best-effort: why the current (or most recent) turn aborted, if known.
+    last_abort_reason: Option<String>,
+    // True if the per-turn watchdog fired for the current turn.
+    turn_timed_out: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RalphCompletionMode {
+    Contains,
+    PromiseTag,
+    Regex,
+}
+
+impl RalphCompletionMode {
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "contains" => Some(Self::Contains),
+            "promise-tag" => Some(Self::PromiseTag),
+            "regex" => Some(Self::Regex),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 struct RalphTuiConfig {
     loops: u64,
     completion_phrases: Vec<String>,
+    completion_mode: RalphCompletionMode,
+    completion_regexes: Vec<String>,
     max_calls_per_hour: Option<u64>,
     timeout_minutes: Option<u64>,
     skip_git_repo_check: bool,
@@ -902,7 +929,17 @@ impl ChatWidget {
         self.update_task_running_state();
         self.retry_status_header = None;
         self.bottom_pane.set_interrupt_hint_visible(true);
-        self.set_status_header(String::from("Working"));
+        let header = if let Some(state) = self.ralph_tui.as_ref() {
+            let max = if state.max_loops == 0 {
+                "infinite".to_string()
+            } else {
+                state.max_loops.to_string()
+            };
+            format!("Working (Ralph {}/{max})", state.current_loop)
+        } else {
+            "Working".to_string()
+        };
+        self.set_status_header(header);
         self.full_reasoning_buffer.clear();
         self.reasoning_buffer.clear();
         self.request_redraw();
@@ -1234,6 +1271,12 @@ impl ChatWidget {
         self.finalize_turn();
 
         if self.ralph_tui.as_ref().is_some_and(|state| state.in_flight) {
+            if let Some(state) = self.ralph_tui.as_mut()
+                && state.in_flight
+                && state.last_abort_reason.is_none()
+            {
+                state.last_abort_reason = Some(format!("{reason:?}"));
+            }
             if reason != TurnAbortReason::ReviewEnded {
                 self.add_to_history(history_cell::new_error_event(
                     "Conversation interrupted.".to_owned(),
@@ -2422,6 +2465,8 @@ impl ChatWidget {
                 self.start_ralph_tui(RalphTuiConfig {
                     loops: 20,
                     completion_phrases: vec!["所有任务已完成".to_string()],
+                    completion_mode: RalphCompletionMode::Contains,
+                    completion_regexes: Vec::new(),
                     max_calls_per_hour: None,
                     timeout_minutes: None,
                     skip_git_repo_check: false,
@@ -3155,7 +3200,9 @@ impl ChatWidget {
             self.add_info_message(
                 "Ralph-Widex (TUI)\n\n\
 Usage:\n\
-  /ralph-widex start [--loops N] [--completion-phrase TEXT]...\n\
+  /ralph-widex start [--loops N] [--calls N] [--timeout-minutes N] [--skip-git-repo-check]\n\
+                    [--completion-phrase TEXT]... [--completion-mode MODE]\n\
+                    [--completion-regex PATTERN]...\n\
   /ralph-widex stop\n\
   /ralph-widex status\n\
 \n\
@@ -3172,6 +3219,8 @@ Advanced (CLI passthrough):\n\
             self.start_ralph_tui(RalphTuiConfig {
                 loops: 20,
                 completion_phrases: vec!["所有任务已完成".to_string()],
+                completion_mode: RalphCompletionMode::Contains,
+                completion_regexes: Vec::new(),
                 max_calls_per_hour: None,
                 timeout_minutes: None,
                 skip_git_repo_check: false,
@@ -3209,6 +3258,32 @@ Advanced (CLI passthrough):\n\
             cfg.completion_phrases.push("所有任务已完成".to_string());
         }
 
+        let completion_regexes = if cfg.completion_mode == RalphCompletionMode::Regex {
+            if cfg.completion_regexes.is_empty() {
+                self.add_error_message(
+                    "Missing --completion-regex (required when --completion-mode regex)."
+                        .to_string(),
+                );
+                return;
+            }
+
+            let mut compiled = Vec::new();
+            for pattern in &cfg.completion_regexes {
+                match regex_lite::Regex::new(pattern) {
+                    Ok(re) => compiled.push(re),
+                    Err(err) => {
+                        self.add_error_message(format!(
+                            "Invalid --completion-regex {pattern}: {err}"
+                        ));
+                        return;
+                    }
+                }
+            }
+            compiled
+        } else {
+            Vec::new()
+        };
+
         let ralph_dir = self.config.cwd.join(".ralph");
         let prompt_path = ralph_dir.join("PROMPT.md");
         if !prompt_path.exists() {
@@ -3228,10 +3303,7 @@ Advanced (CLI passthrough):\n\
 
         // Best-effort: ensure expected files exist so the prompt can reliably reference them.
         let _ = std::fs::create_dir_all(ralph_dir.join("logs"));
-        let fix_progress = ralph_dir.join("@fix_progress.md");
-        if !fix_progress.exists() {
-            let _ = std::fs::write(&fix_progress, "# Ralph Fix Progress\n\n");
-        }
+        let _ = ensure_ralph_fix_progress_file(&ralph_dir);
         // Clear STOP so a previous run doesn't immediately stop the loop.
         let _ = std::fs::remove_file(ralph_dir.join("STOP"));
 
@@ -3242,12 +3314,17 @@ Advanced (CLI passthrough):\n\
             max_loops: cfg.loops,
             current_loop: 1,
             completion_phrases: cfg.completion_phrases.clone(),
+            completion_mode: cfg.completion_mode,
+            completion_regexes,
+            completion_regex_patterns: cfg.completion_regexes.clone(),
             in_flight: false,
             max_calls_per_hour: cfg.max_calls_per_hour,
             call_window_key,
             calls_made_in_window: 0,
             timeout_minutes: cfg.timeout_minutes,
             active_turn_nonce: 0,
+            last_abort_reason: None,
+            turn_timed_out: false,
         };
         self.ralph_tui = Some(state);
 
@@ -3264,10 +3341,17 @@ Advanced (CLI passthrough):\n\
             .timeout_minutes
             .map(|n| format!("{n}m"))
             .unwrap_or_else(|| "none".to_string());
+
+        let completion = match cfg.completion_mode {
+            RalphCompletionMode::Contains => cfg.completion_phrases.join(" | "),
+            RalphCompletionMode::PromiseTag => {
+                format!("promise-tag: {}", cfg.completion_phrases.join(" | "))
+            }
+            RalphCompletionMode::Regex => format!("regex: {}", cfg.completion_regexes.join(" | ")),
+        };
         self.add_info_message(
             format!(
-                "Ralph loop started (loops={max}, calls/hour={calls}, timeout={timeout}, completion={}).",
-                cfg.completion_phrases.join(" | ")
+                "Ralph loop started (loops={max}, calls/hour={calls}, timeout={timeout}, completion={completion})."
             ),
             Some(
                 "It will keep iterating inside this Widex session. Use /ralph-widex stop to stop."
@@ -3292,26 +3376,81 @@ Advanced (CLI passthrough):\n\
             self.add_info_message("Ralph loop: inactive.".to_string(), None);
             return;
         };
+        let now = Local::now();
         let max = if state.max_loops == 0 {
             "infinite".to_string()
         } else {
             state.max_loops.to_string()
         };
-        self.add_info_message(
-            format!(
-                "Ralph loop: active (loop {}/{max}). Completion phrases: {}",
-                state.current_loop,
-                state.completion_phrases.join(" | ")
-            ),
-            None,
-        );
+
+        let calls_max = state
+            .max_calls_per_hour
+            .filter(|n| *n != 0)
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "unlimited".to_string());
+        let calls = state.calls_made_in_window;
+
+        let reset_in_secs = now
+            .with_minute(0)
+            .and_then(|t| t.with_second(0))
+            .and_then(|t| t.with_nanosecond(0))
+            .map(|base| {
+                (base + chrono::Duration::hours(1) - now)
+                    .num_seconds()
+                    .max(0) as u64
+            });
+
+        let timeout = state
+            .timeout_minutes
+            .filter(|n| *n != 0)
+            .map(|n| format!("{n}m"))
+            .unwrap_or_else(|| "none".to_string());
+
+        let completion = match state.completion_mode {
+            RalphCompletionMode::Contains => {
+                format!("contains: {}", state.completion_phrases.join(" | "))
+            }
+            RalphCompletionMode::PromiseTag => {
+                format!("promise-tag: {}", state.completion_phrases.join(" | "))
+            }
+            RalphCompletionMode::Regex => {
+                format!("regex: {}", state.completion_regex_patterns.join(" | "))
+            }
+        };
+
+        let stop_file_present = self.config.cwd.join(".ralph").join("STOP").exists();
+
+        let mut msg = String::new();
+        msg.push_str("Ralph-Widex (TUI)\n\n");
+        msg.push_str(&format!(
+            "Status: active (loop {}/{max}, in_flight={}).\n",
+            state.current_loop, state.in_flight
+        ));
+        msg.push_str(&format!("Calls/hour: {calls}/{calls_max}.\n"));
+        if let Some(reset_in_secs) = reset_in_secs {
+            msg.push_str(&format!("Next reset: in {reset_in_secs}s.\n"));
+        }
+        msg.push_str(&format!("Timeout: {timeout}.\n"));
+        msg.push_str(&format!("Completion: {completion}.\n"));
+        msg.push_str(&format!(
+            "STOP file: {}.\n",
+            if stop_file_present {
+                "present"
+            } else {
+                "absent"
+            }
+        ));
+
+        self.add_info_message(msg, None);
     }
 
     fn enqueue_ralph_tui_iteration(&mut self) {
         let now = Local::now();
+        let ralph_dir = self.config.cwd.join(".ralph");
 
         let mut wait_for_reset: Option<(u64, u64)> = None; // (wait_secs, max)
         let mut next_prompt: Option<(String, Option<u64>, u64)> = None; // (prompt, timeout_minutes, nonce)
+        let mut fix_progress_event: Option<RalphFixProgressEvent> = None;
 
         {
             let Some(state) = self.ralph_tui.as_mut() else {
@@ -3348,7 +3487,46 @@ Advanced (CLI passthrough):\n\
                 } else {
                     state.max_loops.to_string()
                 };
-                let phrases = state.completion_phrases.join(" | ");
+                let completion_instruction = match state.completion_mode {
+                    RalphCompletionMode::Contains => {
+                        if state.completion_phrases.is_empty() {
+                            String::new()
+                        } else {
+                            let phrases = state.completion_phrases.join(" | ");
+                            format!(
+                                "If all tasks are complete, print one of these completion phrases in your FINAL assistant message (exact text):\n{phrases}\n"
+                            )
+                        }
+                    }
+                    RalphCompletionMode::PromiseTag => {
+                        if state.completion_phrases.is_empty() {
+                            String::new()
+                        } else {
+                            let tags = state
+                                .completion_phrases
+                                .iter()
+                                .map(|p| {
+                                    let p = p.trim();
+                                    format!("<promise>{p}</promise>")
+                                })
+                                .collect::<Vec<_>>()
+                                .join(" | ");
+                            format!(
+                                "If all tasks are complete, print ONE of these completion promise tags in your FINAL assistant message (exact text):\n{tags}\n"
+                            )
+                        }
+                    }
+                    RalphCompletionMode::Regex => {
+                        if state.completion_regex_patterns.is_empty() {
+                            String::new()
+                        } else {
+                            let patterns = state.completion_regex_patterns.join(" | ");
+                            format!(
+                                "If all tasks are complete, ensure your FINAL assistant message matches one of these regex patterns:\n{patterns}\n"
+                            )
+                        }
+                    }
+                };
                 let text = format!(
                     "Ralph-Widex loop {}/{}.\n\n\
 Read and follow:\n\
@@ -3356,16 +3534,18 @@ Read and follow:\n\
 - .ralph/@fix_plan.md\n\
 - .ralph/@fix_progress.md\n\n\
 After you make progress, append a short update to `.ralph/@fix_progress.md`.\n\
-If all tasks are complete, print one of these completion phrases in your FINAL assistant message (exact text):\n\
-{phrases}\n",
+{completion_instruction}",
                     state.current_loop, max
                 );
 
                 state.in_flight = true;
                 state.calls_made_in_window = state.calls_made_in_window.saturating_add(1);
                 state.active_turn_nonce = state.active_turn_nonce.saturating_add(1);
+                state.last_abort_reason = None;
+                state.turn_timed_out = false;
                 let nonce = state.active_turn_nonce;
                 next_prompt = Some((text, state.timeout_minutes, nonce));
+                fix_progress_event = Some(RalphFixProgressEvent::start(state.current_loop));
             }
         }
 
@@ -3393,6 +3573,12 @@ If all tasks are complete, print one of these completion phrases in your FINAL a
             return;
         };
 
+        if let Some(event) = fix_progress_event
+            && let Err(err) = write_ralph_fix_progress_event(&ralph_dir, event)
+        {
+            self.add_error_message(format!("Failed to update .ralph/@fix_progress.md: {err}"));
+        }
+
         self.queue_user_message(text.into());
 
         if let Some(timeout) = timeout_minutes
@@ -3416,7 +3602,7 @@ If all tasks are complete, print one of these completion phrases in your FINAL a
     }
 
     pub(crate) fn on_ralph_tui_timeout(&mut self, nonce: u64) {
-        let Some(state) = self.ralph_tui.as_ref() else {
+        let Some(state) = self.ralph_tui.as_mut() else {
             return;
         };
         if !state.in_flight {
@@ -3427,6 +3613,11 @@ If all tasks are complete, print one of these completion phrases in your FINAL a
         }
         if !self.bottom_pane.is_task_running() {
             return;
+        }
+
+        state.turn_timed_out = true;
+        if state.last_abort_reason.is_none() {
+            state.last_abort_reason = Some("timeout".to_string());
         }
 
         self.add_to_history(history_cell::new_error_event(
@@ -3442,7 +3633,7 @@ If all tasks are complete, print one of these completion phrases in your FINAL a
         let mut stop_reason: Option<&'static str> = None;
         let mut next_prompt: Option<String> = None;
 
-        {
+        let fix_progress_event = {
             let Some(state) = self.ralph_tui.as_mut() else {
                 return;
             };
@@ -3452,30 +3643,20 @@ If all tasks are complete, print one of these completion phrases in your FINAL a
 
             state.in_flight = false;
 
-            let completion_seen =
-                completion_phrase_seen(last_agent_message, &state.completion_phrases);
+            let completion_seen = completion_signal_seen(
+                last_agent_message,
+                state.completion_mode,
+                &state.completion_phrases,
+                &state.completion_regexes,
+            );
             let loop_num = state.current_loop;
             let max_loops = state.max_loops;
 
-            // Best-effort supervisor progress marker (the agent should also update this file).
-            let progress_path = self.config.cwd.join(".ralph").join("@fix_progress.md");
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&progress_path)
-            {
-                let ts = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                let _ = writeln!(
-                    f,
-                    "\n- Loop {loop_num} ({ts}): (supervisor) completion_seen={completion_seen}",
-                );
-            }
-
-            // Stop precedence: STOP file > completion phrase > max loops.
+            // Stop precedence: STOP file > completion signal > max loops.
             if stop_file_present {
                 stop_reason = Some("STOP file");
             } else if completion_seen {
-                stop_reason = Some("completion phrase seen");
+                stop_reason = Some("completion signal seen");
             } else if max_loops != 0 && loop_num >= max_loops {
                 stop_reason = Some("reached max loops");
             } else {
@@ -3486,7 +3667,46 @@ If all tasks are complete, print one of these completion phrases in your FINAL a
                 } else {
                     state.max_loops.to_string()
                 };
-                let phrases = state.completion_phrases.join(" | ");
+                let completion_instruction = match state.completion_mode {
+                    RalphCompletionMode::Contains => {
+                        if state.completion_phrases.is_empty() {
+                            String::new()
+                        } else {
+                            let phrases = state.completion_phrases.join(" | ");
+                            format!(
+                                "If all tasks are complete, print one of these completion phrases in your FINAL assistant message (exact text):\n{phrases}\n"
+                            )
+                        }
+                    }
+                    RalphCompletionMode::PromiseTag => {
+                        if state.completion_phrases.is_empty() {
+                            String::new()
+                        } else {
+                            let tags = state
+                                .completion_phrases
+                                .iter()
+                                .map(|p| {
+                                    let p = p.trim();
+                                    format!("<promise>{p}</promise>")
+                                })
+                                .collect::<Vec<_>>()
+                                .join(" | ");
+                            format!(
+                                "If all tasks are complete, print ONE of these completion promise tags in your FINAL assistant message (exact text):\n{tags}\n"
+                            )
+                        }
+                    }
+                    RalphCompletionMode::Regex => {
+                        if state.completion_regex_patterns.is_empty() {
+                            String::new()
+                        } else {
+                            let patterns = state.completion_regex_patterns.join(" | ");
+                            format!(
+                                "If all tasks are complete, ensure your FINAL assistant message matches one of these regex patterns:\n{patterns}\n"
+                            )
+                        }
+                    }
+                };
                 next_prompt = Some(format!(
                     "Ralph-Widex loop {}/{}.\n\n\
 Read and follow:\n\
@@ -3494,13 +3714,27 @@ Read and follow:\n\
 - .ralph/@fix_plan.md\n\
 - .ralph/@fix_progress.md\n\n\
 After you make progress, append a short update to `.ralph/@fix_progress.md`.\n\
-If all tasks are complete, print one of these completion phrases in your FINAL assistant message (exact text):\n\
-{phrases}\n",
+{completion_instruction}",
                     state.current_loop, max
                 ));
 
                 state.in_flight = true;
             }
+
+            let aborted = last_agent_message.is_none();
+            RalphFixProgressEvent::end(
+                loop_num,
+                completion_seen,
+                stop_reason,
+                aborted,
+                state.last_abort_reason.as_deref(),
+                state.turn_timed_out,
+            )
+        };
+
+        let ralph_dir = self.config.cwd.join(".ralph");
+        if let Err(err) = write_ralph_fix_progress_event(&ralph_dir, fix_progress_event) {
+            self.add_error_message(format!("Failed to update .ralph/@fix_progress.md: {err}"));
         }
 
         if let Some(reason) = stop_reason {
@@ -5092,6 +5326,21 @@ If all tasks are complete, print one of these completion phrases in your FINAL a
     fn on_ctrl_c(&mut self) {
         let key = key_hint::ctrl(KeyCode::Char('c'));
         let modal_or_popup_active = !self.bottom_pane.no_modal_or_popup_active();
+
+        // When the in-TUI Ralph loop is active, Ctrl+C should never attempt to quit. Treat it as a
+        // pure "interrupt current turn" signal (and still let the composer clear drafts, etc.).
+        if self.ralph_tui.is_some() {
+            self.quit_shortcut_expires_at = None;
+            self.quit_shortcut_key = None;
+            self.bottom_pane.clear_quit_shortcut_hint();
+
+            let _ = self.bottom_pane.on_ctrl_c();
+            if self.is_cancellable_work_active() {
+                self.submit_op(Op::Interrupt);
+            }
+            return;
+        }
+
         if self.bottom_pane.on_ctrl_c() == CancellationEvent::Handled {
             if DOUBLE_PRESS_QUIT_SHORTCUT_ENABLED {
                 if modal_or_popup_active {
@@ -5657,9 +5906,209 @@ async fn fetch_rate_limits(base_url: String, auth: CodexAuth) -> Option<RateLimi
     }
 }
 
+const RALPH_FIX_PROGRESS_AUTOLOG_JSONL: &str = ".fix_progress.autolog.jsonl";
+const RALPH_FIX_PROGRESS_AUTOLOG_START: &str = "<!-- RALPH_WIDEX_AUTOLOG_START -->";
+const RALPH_FIX_PROGRESS_AUTOLOG_END: &str = "<!-- RALPH_WIDEX_AUTOLOG_END -->";
+const RALPH_FIX_PROGRESS_AUTOLOG_MAX_EVENTS: usize = 200;
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RalphFixProgressEventKind {
+    Start,
+    End,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct RalphFixProgressEvent {
+    ts: String,
+    loop_number: u64,
+    kind: RalphFixProgressEventKind,
+    completion_seen: Option<bool>,
+    stop_reason: Option<String>,
+    interrupted: Option<bool>,
+    abort_reason: Option<String>,
+    timed_out: Option<bool>,
+}
+
+impl RalphFixProgressEvent {
+    fn start(loop_number: u64) -> Self {
+        Self {
+            ts: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            loop_number,
+            kind: RalphFixProgressEventKind::Start,
+            completion_seen: None,
+            stop_reason: None,
+            interrupted: None,
+            abort_reason: None,
+            timed_out: None,
+        }
+    }
+
+    fn end(
+        loop_number: u64,
+        completion_seen: bool,
+        stop_reason: Option<&str>,
+        aborted: bool,
+        abort_reason: Option<&str>,
+        timed_out: bool,
+    ) -> Self {
+        Self {
+            ts: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            loop_number,
+            kind: RalphFixProgressEventKind::End,
+            completion_seen: Some(completion_seen),
+            stop_reason: stop_reason.map(std::string::ToString::to_string),
+            interrupted: Some(aborted),
+            abort_reason: abort_reason.map(std::string::ToString::to_string),
+            timed_out: Some(timed_out),
+        }
+    }
+}
+
+fn ensure_ralph_fix_progress_file(ralph_dir: &Path) -> std::io::Result<()> {
+    let md_path = ralph_dir.join("@fix_progress.md");
+    if md_path.exists() {
+        return Ok(());
+    }
+
+    let content = "\
+# Ralph Fix Progress
+
+This file has two sections:
+- Notes (editable): the agent can append short updates after each loop.
+- Auto log: written by the Ralph supervisor at loop start/end (do not edit).
+
+## Notes (editable)
+
+Append-only suggested format:
+
+- Loop N (YYYY-MM-DD HH:MM:SS):
+  - What I did:
+  - Result:
+  - Next:
+
+<!-- RALPH_WIDEX_AUTOLOG_START -->
+
+## Auto log (managed by ralph-widex; do not edit)
+
+<!-- RALPH_WIDEX_AUTOLOG_END -->
+";
+    std::fs::write(md_path, content)
+}
+
+fn write_ralph_fix_progress_event(
+    ralph_dir: &Path,
+    event: RalphFixProgressEvent,
+) -> std::io::Result<()> {
+    let autolog_path = ralph_dir.join(RALPH_FIX_PROGRESS_AUTOLOG_JSONL);
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&autolog_path)?;
+    let line = serde_json::to_string(&event).map_err(std::io::Error::other)?;
+    writeln!(file, "{line}")?;
+
+    regenerate_ralph_fix_progress_md(ralph_dir)
+}
+
+fn regenerate_ralph_fix_progress_md(ralph_dir: &Path) -> std::io::Result<()> {
+    let md_path = ralph_dir.join("@fix_progress.md");
+    let mut contents = match std::fs::read_to_string(&md_path) {
+        Ok(v) => v,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            ensure_ralph_fix_progress_file(ralph_dir)?;
+            std::fs::read_to_string(&md_path)?
+        }
+        Err(err) => return Err(err),
+    };
+    if contents.trim().is_empty() {
+        ensure_ralph_fix_progress_file(ralph_dir)?;
+        contents = std::fs::read_to_string(&md_path)?;
+    }
+
+    if !contents.contains(RALPH_FIX_PROGRESS_AUTOLOG_START)
+        || !contents.contains(RALPH_FIX_PROGRESS_AUTOLOG_END)
+    {
+        contents.push_str("\n\n");
+        contents.push_str(RALPH_FIX_PROGRESS_AUTOLOG_START);
+        contents.push('\n');
+        contents.push('\n');
+        contents.push_str(RALPH_FIX_PROGRESS_AUTOLOG_END);
+        contents.push('\n');
+    }
+
+    let (before, after) = match contents.split_once(RALPH_FIX_PROGRESS_AUTOLOG_START) {
+        Some((before, rest)) => match rest.split_once(RALPH_FIX_PROGRESS_AUTOLOG_END) {
+            Some((_old, after)) => (before.to_string(), after.to_string()),
+            None => (contents.clone(), String::new()),
+        },
+        None => (contents.clone(), String::new()),
+    };
+
+    let events = read_ralph_fix_progress_events(ralph_dir);
+    let autolog = render_ralph_fix_progress_autolog(&events);
+    let new_contents = format!(
+        "{before}{RALPH_FIX_PROGRESS_AUTOLOG_START}\n{autolog}\n{RALPH_FIX_PROGRESS_AUTOLOG_END}{after}"
+    );
+    std::fs::write(md_path, new_contents)
+}
+
+fn read_ralph_fix_progress_events(ralph_dir: &Path) -> Vec<RalphFixProgressEvent> {
+    let autolog_path = ralph_dir.join(RALPH_FIX_PROGRESS_AUTOLOG_JSONL);
+    let Ok(contents) = std::fs::read_to_string(autolog_path) else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(ev) = serde_json::from_str::<RalphFixProgressEvent>(line) {
+            out.push(ev);
+        }
+    }
+    out
+}
+
+fn render_ralph_fix_progress_autolog(events: &[RalphFixProgressEvent]) -> String {
+    let mut out = String::new();
+    out.push_str("## Auto log (managed by ralph-widex; do not edit)\n\n");
+
+    let start = events
+        .len()
+        .saturating_sub(RALPH_FIX_PROGRESS_AUTOLOG_MAX_EVENTS);
+    for ev in &events[start..] {
+        match ev.kind {
+            RalphFixProgressEventKind::Start => {
+                let ts = ev.ts.as_str();
+                let loop_number = ev.loop_number;
+                out.push_str(&format!("- [{ts}] Loop {loop_number} start\n"));
+            }
+            RalphFixProgressEventKind::End => {
+                let ts = ev.ts.as_str();
+                let loop_number = ev.loop_number;
+                let completion_seen = ev.completion_seen.unwrap_or(false);
+                let stop_reason = ev.stop_reason.as_deref().unwrap_or("");
+                let interrupted = ev.interrupted.unwrap_or(false);
+                let abort_reason = ev.abort_reason.as_deref().unwrap_or("");
+                let timed_out = ev.timed_out.unwrap_or(false);
+                out.push_str(&format!(
+                    "- [{ts}] Loop {loop_number} end: completion_seen={completion_seen} stop_reason={stop_reason} interrupted={interrupted} abort_reason={abort_reason} timed_out={timed_out}\n"
+                ));
+            }
+        }
+    }
+
+    out
+}
+
 fn parse_ralph_tui_args(args: &[String]) -> RalphTuiConfig {
     let mut loops: Option<u64> = None;
     let mut completion_phrases: Vec<String> = Vec::new();
+    let mut completion_mode = RalphCompletionMode::Contains;
+    let mut completion_regexes: Vec<String> = Vec::new();
     let mut max_calls_per_hour: Option<u64> = None;
     let mut timeout_minutes: Option<u64> = None;
     let mut skip_git_repo_check = false;
@@ -5669,9 +6118,8 @@ fn parse_ralph_tui_args(args: &[String]) -> RalphTuiConfig {
         match args[i].as_str() {
             "--loops" => {
                 if let Some(val) = args.get(i + 1) {
-                    match val.parse::<u64>() {
-                        Ok(n) => loops = Some(n),
-                        Err(_) => {}
+                    if let Ok(n) = val.parse::<u64>() {
+                        loops = Some(n)
                     }
                     i += 2;
                     continue;
@@ -5680,6 +6128,22 @@ fn parse_ralph_tui_args(args: &[String]) -> RalphTuiConfig {
             "--completion-phrase" => {
                 if let Some(val) = args.get(i + 1) {
                     completion_phrases.push(val.to_string());
+                    i += 2;
+                    continue;
+                }
+            }
+            "--completion-mode" => {
+                if let Some(val) = args.get(i + 1)
+                    && let Some(mode) = RalphCompletionMode::parse(val)
+                {
+                    completion_mode = mode;
+                    i += 2;
+                    continue;
+                }
+            }
+            "--completion-regex" => {
+                if let Some(val) = args.get(i + 1) {
+                    completion_regexes.push(val.to_string());
                     i += 2;
                     continue;
                 }
@@ -5721,30 +6185,65 @@ fn parse_ralph_tui_args(args: &[String]) -> RalphTuiConfig {
     RalphTuiConfig {
         loops,
         completion_phrases,
+        completion_mode,
+        completion_regexes,
         max_calls_per_hour,
         timeout_minutes,
         skip_git_repo_check,
     }
 }
 
-fn completion_phrase_seen(message: Option<&str>, phrases: &[String]) -> bool {
+fn completion_signal_seen(
+    message: Option<&str>,
+    mode: RalphCompletionMode,
+    phrases: &[String],
+    regexes: &[regex_lite::Regex],
+) -> bool {
     let Some(message) = message else {
         return false;
     };
-    if phrases.is_empty() {
-        return false;
-    }
-
     let message = message.trim();
     if message.is_empty() {
         return false;
     }
 
-    let message_lower = message.to_lowercase();
-    phrases.iter().any(|p| {
-        let p = p.trim();
-        !p.is_empty() && message_lower.contains(&p.to_lowercase())
-    })
+    match mode {
+        RalphCompletionMode::Contains => {
+            if phrases.is_empty() {
+                return false;
+            }
+            let message_lower = message.to_lowercase();
+            phrases.iter().any(|p| {
+                let p = p.trim();
+                !p.is_empty() && message_lower.contains(&p.to_lowercase())
+            })
+        }
+        RalphCompletionMode::PromiseTag => completion_promise_tag_seen(message, phrases),
+        RalphCompletionMode::Regex => regexes.iter().any(|re| re.is_match(message)),
+    }
+}
+
+fn completion_promise_tag_seen(message: &str, phrases: &[String]) -> bool {
+    if phrases.is_empty() {
+        return false;
+    }
+
+    const OPEN: &str = "<promise>";
+    const CLOSE: &str = "</promise>";
+
+    let mut rest = message;
+    while let Some(start) = rest.find(OPEN) {
+        let after_open = &rest[start + OPEN.len()..];
+        let Some(end) = after_open.find(CLOSE) else {
+            return false;
+        };
+        let inner = after_open[..end].trim();
+        if !inner.is_empty() && phrases.iter().any(|p| p.trim() == inner) {
+            return true;
+        }
+        rest = &after_open[end + CLOSE.len()..];
+    }
+    false
 }
 
 #[cfg(test)]

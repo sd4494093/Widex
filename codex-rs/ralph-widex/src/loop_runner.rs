@@ -73,6 +73,8 @@ pub(crate) struct RunOptions {
     pub(crate) retry_no_final_message: u8,
     pub(crate) enable_circuit_breaker: bool,
     pub(crate) completion_phrases: Vec<String>,
+    pub(crate) completion_mode: crate::CompletionMode,
+    pub(crate) completion_regexes: Vec<regex::Regex>,
     pub(crate) exec_config_overrides: Vec<String>,
     pub(crate) exec_enable_features: Vec<String>,
     pub(crate) exec_disable_features: Vec<String>,
@@ -145,33 +147,170 @@ pub(crate) async fn init_in_place(cwd: &Path, no_overwrite: bool) -> anyhow::Res
     Ok(())
 }
 
-async fn append_fix_progress_entry(
-    paths: &RalphPaths,
+const FIX_PROGRESS_AUTOLOG_JSONL: &str = ".fix_progress.autolog.jsonl";
+const FIX_PROGRESS_AUTOLOG_START: &str = "<!-- RALPH_WIDEX_AUTOLOG_START -->";
+const FIX_PROGRESS_AUTOLOG_END: &str = "<!-- RALPH_WIDEX_AUTOLOG_END -->";
+const FIX_PROGRESS_AUTOLOG_MAX_EVENTS: usize = 200;
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum FixProgressEventKind {
+    Start,
+    End,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct FixProgressEvent {
+    ts: String,
     loop_number: u64,
-    exec: &ExecResult,
-    analysis: &Analysis,
+    kind: FixProgressEventKind,
+    exit_code: Option<i32>,
+    files_changed: Option<u64>,
+    error_count: Option<u64>,
+    interrupted: Option<bool>,
+    interrupt_reason: Option<String>,
+    summary: Option<String>,
+}
+
+impl FixProgressEvent {
+    fn start(loop_number: u64) -> Self {
+        Self {
+            ts: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            loop_number,
+            kind: FixProgressEventKind::Start,
+            exit_code: None,
+            files_changed: None,
+            error_count: None,
+            interrupted: None,
+            interrupt_reason: None,
+            summary: None,
+        }
+    }
+
+    fn end(loop_number: u64, exec: &ExecResult, analysis: &Analysis) -> Self {
+        let summary = truncate(analysis.work_summary.as_str(), 160);
+        Self {
+            ts: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            loop_number,
+            kind: FixProgressEventKind::End,
+            exit_code: Some(exec.exit_code),
+            files_changed: Some(exec.files_changed),
+            error_count: Some(exec.error_count),
+            interrupted: Some(exec.interrupted),
+            interrupt_reason: Some(exec.interrupt_reason.clone()),
+            summary: Some(summary),
+        }
+    }
+}
+
+async fn record_fix_progress_event(
+    paths: &RalphPaths,
+    event: FixProgressEvent,
 ) -> anyhow::Result<()> {
-    // Ensure ralph still makes forward progress even if the model forgets to update the progress file.
-    let ts = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let summary = truncate(analysis.work_summary.as_str(), 160);
-    let exit_code = exec.exit_code;
-    let files_changed = exec.files_changed;
-    let error_count = exec.error_count;
-
-    let mut entry = String::new();
-    entry.push_str(&format!("\n- Loop {loop_number} ({ts}):\n"));
-    entry.push_str(&format!(
-        "  - Supervisor: exit_code={exit_code} files_changed={files_changed} errors={error_count} summary={summary}\n",
-    ));
-
+    let autolog_path = paths.ralph_dir.join(FIX_PROGRESS_AUTOLOG_JSONL);
     let mut file = tokio::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(paths.ralph_dir.join("@fix_progress.md"))
-        .await?;
-    file.write_all(entry.as_bytes()).await?;
+        .open(&autolog_path)
+        .await
+        .with_context(|| format!("Failed to open {}", autolog_path.display()))?;
 
+    let line = serde_json::to_string(&event).context("Failed to serialize fix-progress event")?;
+    file.write_all(line.as_bytes()).await?;
+    file.write_all(b"\n").await?;
+    file.flush().await?;
+
+    regenerate_fix_progress_md(paths).await
+}
+
+async fn regenerate_fix_progress_md(paths: &RalphPaths) -> anyhow::Result<()> {
+    let md_path = paths.ralph_dir.join("@fix_progress.md");
+    let mut contents = match tokio::fs::read_to_string(&md_path).await {
+        Ok(v) => v,
+        Err(_) => TEMPLATE_FIX_PROGRESS.to_string(),
+    };
+
+    if !contents.contains(FIX_PROGRESS_AUTOLOG_START)
+        || !contents.contains(FIX_PROGRESS_AUTOLOG_END)
+    {
+        // Back-compat for early templates: treat everything as "notes" and append a protected section.
+        contents.push_str("\n\n");
+        contents.push_str(FIX_PROGRESS_AUTOLOG_START);
+        contents.push('\n');
+        contents.push('\n');
+        contents.push_str(FIX_PROGRESS_AUTOLOG_END);
+        contents.push('\n');
+    }
+
+    let (before, after) = match contents.split_once(FIX_PROGRESS_AUTOLOG_START) {
+        Some((before, rest)) => match rest.split_once(FIX_PROGRESS_AUTOLOG_END) {
+            Some((_old_autolog, after)) => (before.to_string(), after.to_string()),
+            None => (contents.clone(), String::new()),
+        },
+        None => (contents.clone(), String::new()),
+    };
+
+    let events = read_fix_progress_events(paths).await?;
+    let autolog = render_fix_progress_autolog(&events);
+    let new_contents = format!(
+        "{before}{FIX_PROGRESS_AUTOLOG_START}\n{autolog}\n{FIX_PROGRESS_AUTOLOG_END}{after}"
+    );
+    tokio::fs::write(&md_path, new_contents)
+        .await
+        .with_context(|| format!("Failed to write {}", md_path.display()))?;
     Ok(())
+}
+
+async fn read_fix_progress_events(paths: &RalphPaths) -> anyhow::Result<Vec<FixProgressEvent>> {
+    let autolog_path = paths.ralph_dir.join(FIX_PROGRESS_AUTOLOG_JSONL);
+    let file = match tokio::fs::File::open(&autolog_path).await {
+        Ok(f) => f,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => {
+            return Err(err).with_context(|| format!("Failed to open {}", autolog_path.display()));
+        }
+    };
+
+    let mut reader = BufReader::new(file).lines();
+    let mut out = Vec::new();
+    while let Some(line) = reader.next_line().await? {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(ev) = serde_json::from_str::<FixProgressEvent>(line) {
+            out.push(ev);
+        }
+    }
+    Ok(out)
+}
+
+fn render_fix_progress_autolog(events: &[FixProgressEvent]) -> String {
+    let mut out = String::new();
+    out.push_str("## Auto log (managed by ralph-widex; do not edit)\n\n");
+
+    let start = events.len().saturating_sub(FIX_PROGRESS_AUTOLOG_MAX_EVENTS);
+    for ev in &events[start..] {
+        match ev.kind {
+            FixProgressEventKind::Start => {
+                out.push_str(&format!("- [{}] Loop {} start\n", ev.ts, ev.loop_number));
+            }
+            FixProgressEventKind::End => {
+                let exit_code = ev.exit_code.unwrap_or_default();
+                let files_changed = ev.files_changed.unwrap_or_default();
+                let error_count = ev.error_count.unwrap_or_default();
+                let interrupted = ev.interrupted.unwrap_or(false);
+                let reason = ev.interrupt_reason.as_deref().unwrap_or("");
+                let summary = ev.summary.as_deref().unwrap_or("");
+                out.push_str(&format!(
+                    "- [{}] Loop {} end: exit_code={} files_changed={} errors={} interrupted={} reason={} summary={}\n",
+                    ev.ts, ev.loop_number, exit_code, files_changed, error_count, interrupted, reason, summary
+                ));
+            }
+        }
+    }
+
+    out
 }
 
 pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()> {
@@ -355,6 +494,16 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
             ),
         )
         .await?;
+        if let Err(err) =
+            record_fix_progress_event(&paths, FixProgressEvent::start(loop_count)).await
+        {
+            let _ = append_log_line(
+                &paths,
+                "WARN",
+                &format!("Failed to update @fix_progress.md (start): {err:#}"),
+            )
+            .await;
+        }
 
         let max_attempts = opts.retry_no_final_message.saturating_add(1);
         let mut attempt: u8 = 0;
@@ -464,16 +613,16 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
             update_session(&paths, thread_id, opts.session_expiry_hours).await?;
         }
 
-        if opts.use_continue {
-            if let Some(reason) = should_clear_session_after_exec(&exec) {
-                remove_file_if_exists(&paths.session_file).await?;
-                append_log_line(
-                    &paths,
-                    "WARN",
-                    &format!("Clearing session for next loop: {reason}"),
-                )
-                .await?;
-            }
+        if opts.use_continue
+            && let Some(reason) = should_clear_session_after_exec(&exec)
+        {
+            remove_file_if_exists(&paths.session_file).await?;
+            append_log_line(
+                &paths,
+                "WARN",
+                &format!("Clearing session for next loop: {reason}"),
+            )
+            .await?;
         }
 
         if exec.interrupted {
@@ -505,7 +654,19 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
                     .unwrap_or(0),
                 error_count: exec.error_count,
             };
-            append_fix_progress_entry(&paths, loop_count, &exec, &analysis).await?;
+            if let Err(err) = record_fix_progress_event(
+                &paths,
+                FixProgressEvent::end(loop_count, &exec, &analysis),
+            )
+            .await
+            {
+                let _ = append_log_line(
+                    &paths,
+                    "WARN",
+                    &format!("Failed to update @fix_progress.md (end): {err:#}"),
+                )
+                .await;
+            }
             append_log_line(
                 &paths,
                 "WARN",
@@ -575,7 +736,17 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
         exit_signals.update_for_loop(loop_count, &analysis);
         write_json_atomic(&paths.exit_signals_file, &exit_signals).await?;
 
-        append_fix_progress_entry(&paths, loop_count, &exec, &analysis).await?;
+        if let Err(err) =
+            record_fix_progress_event(&paths, FixProgressEvent::end(loop_count, &exec, &analysis))
+                .await
+        {
+            let _ = append_log_line(
+                &paths,
+                "WARN",
+                &format!("Failed to update @fix_progress.md (end): {err:#}"),
+            )
+            .await;
+        }
 
         if opts.enable_circuit_breaker {
             let files_changed_for_circuit_breaker = if analysis.is_test_only {
@@ -612,7 +783,7 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
             }
         }
 
-        if completion_phrase_seen(exec.last_message.as_deref(), &opts.completion_phrases) {
+        if completion_signal_seen(exec.last_message.as_deref(), &opts) {
             update_status(
                 &paths,
                 loop_count,
@@ -620,11 +791,11 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
                 opts.max_calls_per_hour,
                 "complete",
                 "completed",
-                "Completion phrase seen",
+                "Completion signal seen",
             )
             .await?;
-            append_log_line(&paths, "SUCCESS", "Completion phrase seen; stopping loop.").await?;
-            println!("Completion phrase seen; stopping loop.");
+            append_log_line(&paths, "SUCCESS", "Completion signal seen; stopping loop.").await?;
+            println!("Completion signal seen; stopping loop.");
             return Ok(());
         }
 
@@ -727,24 +898,60 @@ fn normalize_output_last_message(
     }
 }
 
-fn completion_phrase_seen(message: Option<&str>, phrases: &[String]) -> bool {
+fn completion_signal_seen(message: Option<&str>, opts: &RunOptions) -> bool {
     let Some(message) = message else {
         return false;
     };
-    if phrases.is_empty() {
-        return false;
-    }
-
     let message = message.trim();
     if message.is_empty() {
         return false;
     }
 
-    let message_lower = message.to_lowercase();
-    phrases.iter().any(|p| {
-        let p = p.trim();
-        !p.is_empty() && message_lower.contains(&p.to_lowercase())
-    })
+    match opts.completion_mode {
+        crate::CompletionMode::Contains => {
+            if opts.completion_phrases.is_empty() {
+                return false;
+            }
+
+            let message_lower = message.to_lowercase();
+            opts.completion_phrases.iter().any(|p| {
+                let p = p.trim();
+                !p.is_empty() && message_lower.contains(&p.to_lowercase())
+            })
+        }
+        crate::CompletionMode::PromiseTag => {
+            completion_promise_tag_seen(message, &opts.completion_phrases)
+        }
+        crate::CompletionMode::Regex => opts
+            .completion_regexes
+            .iter()
+            .any(|re| re.is_match(message)),
+    }
+}
+
+fn completion_promise_tag_seen(message: &str, phrases: &[String]) -> bool {
+    if phrases.is_empty() {
+        return false;
+    }
+
+    // We intentionally require the lowercase tag to avoid brittle "case-insensitive search"
+    // behavior across Unicode (case-folding can change string length).
+    const OPEN: &str = "<promise>";
+    const CLOSE: &str = "</promise>";
+
+    let mut rest = message;
+    while let Some(start) = rest.find(OPEN) {
+        let after_open = &rest[start + OPEN.len()..];
+        let Some(end) = after_open.find(CLOSE) else {
+            return false;
+        };
+        let inner = after_open[..end].trim();
+        if !inner.is_empty() && phrases.iter().any(|p| p.trim() == inner) {
+            return true;
+        }
+        rest = &after_open[end + CLOSE.len()..];
+    }
+    false
 }
 
 struct ExecResult {
@@ -1090,7 +1297,7 @@ async fn codex_exec_once(
         &mut error_count,
         &mut error_messages,
     );
-    let last_message = last_message.or_else(|| last_agent_message);
+    let last_message = last_message.or(last_agent_message);
     append_log_line(paths, "INFO", &format!("widex exec exit code: {exit_code}")).await?;
     let error_signature = compute_error_signature(&error_messages);
 
@@ -1166,13 +1373,37 @@ async fn load_prompt_with_footer(
         "- If you exit before completion, you will be restarted and asked to continue.\n\n",
     );
 
-    if !opts.completion_phrases.is_empty() {
-        footer.push_str("Early completion:\n");
-        footer.push_str("- If all tasks are complete, output one of these phrases verbatim in your final message:\n");
-        for p in &opts.completion_phrases {
-            footer.push_str(&format!("  - {p}\n"));
+    match opts.completion_mode {
+        crate::CompletionMode::Contains => {
+            if !opts.completion_phrases.is_empty() {
+                footer.push_str("Early completion:\n");
+                footer.push_str("- If all tasks are complete, output one of these phrases verbatim in your final message:\n");
+                for p in &opts.completion_phrases {
+                    footer.push_str(&format!("  - {p}\n"));
+                }
+                footer.push('\n');
+            }
         }
-        footer.push_str("\n");
+        crate::CompletionMode::PromiseTag => {
+            if !opts.completion_phrases.is_empty() {
+                footer.push_str("Early completion:\n");
+                footer.push_str("- If all tasks are complete, output ONE of these tags in your final message (exact spelling):\n");
+                for p in &opts.completion_phrases {
+                    footer.push_str(&format!("  - <promise>{p}</promise>\n"));
+                }
+                footer.push('\n');
+            }
+        }
+        crate::CompletionMode::Regex => {
+            if !opts.completion_regexes.is_empty() {
+                footer.push_str("Early completion:\n");
+                footer.push_str("- If all tasks are complete, ensure your final message matches one of these regex patterns:\n");
+                for re in &opts.completion_regexes {
+                    footer.push_str(&format!("  - {re}\n"));
+                }
+                footer.push('\n');
+            }
+        }
     }
 
     footer.push_str(&format!("Project root: {}\n", paths.cwd.display()));

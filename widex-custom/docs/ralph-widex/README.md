@@ -9,11 +9,14 @@
 1) **TUI 前台模式（推荐）**：在 Widex TUI 内使用 `/ralph-widex ...` 启动循环。每一轮都是一个正常的 Codex/Widex turn，因此你能在终端里看到完整的工具调用/执行过程；当一轮结束（或被中断）后，会自动触发下一轮，直到达到 `--loops` 或命中完成词（`--completion-phrase`）。
 
    - `Esc`：中断当前 turn，然后继续下一轮（不停止 Ralph）
-   - `Ctrl+C`：中断当前 turn / 或触发退出快捷键；Ralph 运行时会阻止退出并提示先 `/ralph-widex stop`
-   - `/ralph-widex stop`：停止整个 Ralph loop（不再进入下一轮）
+   - `Ctrl+C`：中断当前 turn，然后继续下一轮（不停止 Ralph；不会触发退出快捷键）
+   - `/ralph-widex stop`：停止整个 Ralph loop（不再进入下一轮；停止后才允许退出 Widex）
    - 支持的参数（TUI 模式）：
      - `--loops N`：最多迭代 N 轮（`0` 表示无限）
      - `--completion-phrase TEXT`：完成词（可重复传多个；命中任意一个即可提前停机）
+     - `--completion-mode MODE`：完成检测模式（`contains` / `promise-tag` / `regex`）
+       - 推荐：`promise-tag`（更少误触发），要求最终消息包含 `<promise>...</promise>`
+     - `--completion-regex PATTERN`：当 `--completion-mode regex` 时生效（可重复）
      - `--timeout-minutes N`：每个 turn 的 watchdog（超时会自动 `Interrupt` 该 turn 并继续下一轮）
      - `--calls N`：每小时最多跑 N 个 Ralph turn；到达后会等待到整点自动继续
      - `--skip-git-repo-check`：允许在非 git repo 目录运行（默认要求在 git repo 内）
@@ -40,6 +43,18 @@ widex --ask-for-approval never --sandbox danger-full-access -m gpt-5.2
 /ralph-widex start --loops 20 --completion-phrase "所有任务已完成"
 ```
 
+更可靠的“完成词”写法（避免正文里偶然出现“任务完成”导致误触发）：
+
+```text
+/ralph-widex start --loops 20 --completion-mode promise-tag --completion-phrase "任务完成"
+```
+
+然后要求模型在**最终消息**里输出（精确文本）：
+
+```text
+<promise>任务完成</promise>
+```
+
 推荐：在 `.ralph/PROMPT.md` 里加入“输出纪律”，避免 `cat` 大文件（尤其是 `.ralph/logs/codex_events_*.jsonl`）导致上下文暴涨和超时（`ralph-widex init` 的模板已内置该段落）。
 
 停止循环：
@@ -59,7 +74,8 @@ widex --ask-for-approval never --sandbox danger-full-access -m gpt-5.2
 
 - `.ralph/PROMPT.md`：Ralph 主提示词（你会改它）
 - `.ralph/@fix_plan.md`：当前待办/计划（你会改它）
-- `.ralph/@fix_progress.md`：每轮进度记录（由 ralph-widex supervisor 每轮追加，确保进度不丢；agent 也会被提示追加自己的进度）
+- `.ralph/@fix_progress.md`：进度记录（推荐 agent 在 Notes 里追加；supervisor 会在每轮 start/end 把 auto log 强制落盘）
+- `.ralph/.fix_progress.autolog.jsonl`：auto log 的“真源”（append-only）；即使模型误改/覆盖了 `@fix_progress.md`，supervisor 也能重建 auto log 段落
 - `.ralph/@AGENT.md`：辅助说明（可选维护）
 
 状态与控制：

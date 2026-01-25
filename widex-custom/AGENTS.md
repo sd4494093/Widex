@@ -52,6 +52,8 @@
 - 交互体验：TUI 的 `/ralph-widex start ...` 必须在**当前 Widex 会话内前台迭代**（每轮可见工具调用/输出），不要再默认做成后台 supervisor 进程。
   - `Esc`/`Ctrl+C`：只中断当前 turn，继续下一轮
   - `/ralph-widex stop`：停止整个循环
+- 进度落盘：supervisor 每轮 start/end 会写入 `.ralph/.fix_progress.autolog.jsonl` 并重建 `@fix_progress.md` 的 auto log 段落；agent 只应在 Notes 区追加内容。
+- 完成词建议：优先使用 `--completion-mode promise-tag` 并要求最终消息输出 `<promise>...</promise>`，减少误触发。
 
 ### F. 不在这里放 Rust 代码规范（说明）
 

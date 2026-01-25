@@ -125,7 +125,8 @@ git push origin widex
 
 - `.ralph/PROMPT.md`：Ralph 提示词（TUI 模式每轮提示模型去读；CLI 模式每轮 `widex exec` 读取）
 - `.ralph/@fix_plan.md`：计划（每轮执行前要求读取）
-- `.ralph/@fix_progress.md`：进度（每轮结束都会追加更新：supervisor 会强制追加一条，agent 也会被提示追加，用于“中断后继续/跨轮迭代”）
+- `.ralph/@fix_progress.md`：进度（推荐 agent 在 Notes 区追加；supervisor 会在每轮 start/end 把 auto log 强制落盘，用于“中断后继续/跨轮迭代”）
+- `.ralph/.fix_progress.autolog.jsonl`：auto log 的“真源”（append-only）；即使模型误改/覆盖了 `@fix_progress.md`，supervisor 也能重建 auto log 段落
 - `.ralph/STOP`：若存在，请求停止
   - TUI 模式：在当前 turn 结束/中断时生效（推荐直接 `/ralph-widex stop`）
   - CLI 模式：会在 `widex exec` 运行中或 rate-limit 等待期间检测到 STOP，并触发 graceful shutdown
@@ -144,13 +145,15 @@ git push origin widex
   - 一轮结束（或被中断）后自动触发下一轮，直到跑满 N 轮或命中完成词
 - 核心目标（必须满足）：
   - **跑满 N 轮**：除 `/ralph-widex stop` / `.ralph/STOP`（以及真正退出 Widex 进程）外，不会因为 turn 的成功/失败/超时/中断而提前停止
-  - **完成词提前退出**：通过 `--completion-phrase` 指定一个或多个完成词，最终消息包含任意完成词即可提前退出
+  - **完成词提前退出**：通过 `--completion-phrase` 指定一个或多个完成词；可用 `--completion-mode promise-tag` 要求最终消息包含 `<promise>...</promise>` 以减少误触发
 - 中断语义（TUI 模式）：
-  - `Esc` / `Ctrl+C`：只中断当前 turn，然后继续下一轮
+  - `Esc` / `Ctrl+C`：只中断当前 turn，然后继续下一轮（Ralph 活跃时 `Ctrl+C` 不走退出快捷键）
   - 停止整个循环：`/ralph-widex stop`
 - 常用参数（TUI 模式）：
   - `--loops N`：最多迭代 N 轮
   - `--completion-phrase TEXT`：完成词（可重复）
+  - `--completion-mode MODE`：完成检测模式（`contains` / `promise-tag` / `regex`）
+  - `--completion-regex PATTERN`：当 `--completion-mode regex` 时生效（可重复）
   - `--timeout-minutes N`：每轮 watchdog（超时会 Interrupt 当前 turn 并继续）
   - `--calls N`：每小时最多 N 个 Ralph turn（到达后等待到整点继续）
   - `--skip-git-repo-check`：允许在非 git repo 目录运行

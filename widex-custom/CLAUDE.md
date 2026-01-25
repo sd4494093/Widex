@@ -86,6 +86,8 @@ git push origin widex
 - 交互默认：TUI 的 `/ralph-widex start ...` 在**当前 Widex 会话内前台迭代**（每轮可见完整交互/工具调用），直到跑满轮次或命中完成词。
   - `Esc`/`Ctrl+C`：只中断当前 turn，继续下一轮
   - `/ralph-widex stop`：停止整个循环
+- 进度落盘：supervisor 每轮 start/end 会写入 `.ralph/.fix_progress.autolog.jsonl` 并重建 `@fix_progress.md` 的 auto log 段落；agent 只应在 Notes 区追加内容。
+- 完成词建议：优先用 `--completion-mode promise-tag`，要求最终消息输出 `<promise>...</promise>`，减少误触发。
 
 
 ## Gemini（本仓）落地检查清单（按层读代码）

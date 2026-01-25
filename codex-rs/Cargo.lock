@@ -1706,6 +1706,7 @@ dependencies = [
  "codex-exec",
  "libc",
  "pretty_assertions",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",

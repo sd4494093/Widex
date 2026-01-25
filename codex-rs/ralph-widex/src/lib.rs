@@ -2,6 +2,7 @@ use anyhow::Context;
 use clap::Args;
 use clap::Parser;
 use clap::Subcommand;
+use clap::ValueEnum;
 use std::io;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -12,6 +13,29 @@ mod monitor;
 mod ralph_status;
 mod ralph_storage;
 mod response_analysis;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "kebab-case")]
+pub enum CompletionMode {
+    /// Completion is detected when the final assistant message contains the phrase(s).
+    Contains,
+    /// Completion is detected only when the final assistant message contains a matching
+    /// `<promise>...</promise>` tag.
+    PromiseTag,
+    /// Completion is detected by matching the final assistant message against one or more regexes.
+    Regex,
+}
+
+impl std::fmt::Display for CompletionMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            CompletionMode::Contains => "contains",
+            CompletionMode::PromiseTag => "promise-tag",
+            CompletionMode::Regex => "regex",
+        };
+        f.write_str(s)
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(version)]
@@ -62,6 +86,14 @@ pub struct RunArgs {
     /// exits early (status=completed). Repeatable.
     #[arg(long = "completion-phrase")]
     pub completion_phrases: Vec<String>,
+
+    /// How completion is detected.
+    #[arg(long = "completion-mode", value_enum, default_value_t = CompletionMode::Contains)]
+    pub completion_mode: CompletionMode,
+
+    /// Regex pattern(s) used when `--completion-mode regex` is selected. Repeatable.
+    #[arg(long = "completion-regex")]
+    pub completion_regexes: Vec<String>,
 
     /// Enable the circuit breaker (off by default). When enabled, repeated no-progress or repeated
     /// same-error loops can stop execution early.
@@ -159,6 +191,8 @@ impl Default for RunArgs {
             loops: 20,
             max_calls_per_hour: 100,
             completion_phrases: Vec::new(),
+            completion_mode: CompletionMode::Contains,
+            completion_regexes: Vec::new(),
             enable_circuit_breaker: false,
             prompt_path: PathBuf::from(".ralph/PROMPT.md"),
             timeout_minutes: 15,
@@ -236,6 +270,15 @@ pub async fn run_main(cli: Cli, default_codex_cmd: PathBuf) -> anyhow::Result<()
                 .or_else(|| std::env::var_os("CODEX_CMD").map(PathBuf::from))
                 .unwrap_or(default_codex_cmd);
 
+            let completion_regexes = args
+                .completion_regexes
+                .iter()
+                .map(|pattern| {
+                    regex::Regex::new(pattern)
+                        .with_context(|| format!("Invalid --completion-regex: {pattern}"))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+
             let opts = loop_runner::RunOptions {
                 codex_cmd,
                 prompt_path: args.prompt_path,
@@ -253,6 +296,8 @@ pub async fn run_main(cli: Cli, default_codex_cmd: PathBuf) -> anyhow::Result<()
                 retry_no_final_message: args.retry_no_final_message,
                 enable_circuit_breaker: args.enable_circuit_breaker,
                 completion_phrases: args.completion_phrases,
+                completion_mode: args.completion_mode,
+                completion_regexes,
                 exec_config_overrides: args.exec_config_overrides,
                 exec_enable_features: args.exec_enable_features,
                 exec_disable_features: args.exec_disable_features,
@@ -287,7 +332,7 @@ pub(crate) fn widex_cmd_hint() -> &'static str {
 
 async fn start_background(
     cwd: &std::path::Path,
-    cmd: &PathBuf,
+    cmd: &std::path::Path,
     args: StartArgs,
 ) -> anyhow::Result<()> {
     let paths = crate::ralph_storage::RalphPaths::new(cwd);
@@ -408,6 +453,11 @@ fn apply_run_args(cmd: &mut std::process::Command, args: &RunArgs) {
     cmd.arg("--calls").arg(args.max_calls_per_hour.to_string());
     for phrase in &args.completion_phrases {
         cmd.arg("--completion-phrase").arg(phrase);
+    }
+    cmd.arg("--completion-mode")
+        .arg(args.completion_mode.to_string());
+    for pattern in &args.completion_regexes {
+        cmd.arg("--completion-regex").arg(pattern);
     }
     if args.enable_circuit_breaker {
         cmd.arg("--enable-circuit-breaker");
