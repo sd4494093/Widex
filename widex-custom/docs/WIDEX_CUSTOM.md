@@ -138,6 +138,10 @@ git push origin widex
 
 - 在 TUI 内通过 `/ralph-widex` 启动一个“自主开发循环”（Ralph loop），底层会反复调用 `widex exec`
   并使用当前 repo 的 `.ralph/PROMPT.md` 作为提示词。
+- 核心目标（必须满足）：
+  - **跑满 N 轮**：除 STOP/SIGTERM/Ctrl-C 外，不会因为 `widex exec` 超时/失败/退出而提前停机
+  - **完成词提前退出**：通过 `--completion-phrase` 指定一个或多个完成词，最终消息包含任意完成词即可提前退出
+- 约定：每轮必须更新 `.ralph/@fix_progress.md`，用于“中断后继续/跨轮迭代”的上下文承接（由 ralph 运行时注入指令约束）
 - 支持 `/ralph-widex init` 初始化当前目录的 `.ralph/` 结构（模板来源于 `widex-custom/features/ralph-widex/templates/`）。
 - 支持 `/ralph-widex monitor` 在终端查看 `.ralph/status.json` 的实时状态面板。
 

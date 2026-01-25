@@ -37,7 +37,7 @@ widex ralph-widex status
 TUI 内置命令（等价）：
 
 - `/ralph-widex init`
-- `/ralph-widex`（默认 start，后台启动）
+- `/ralph-widex`（默认 start，后台启动；默认 `--loops 20 --completion-phrase "所有任务已完成"`）
 - `/ralph-widex monitor`
 
 

@@ -2564,10 +2564,24 @@ impl ChatWidget {
                 // For convenience, map `/ralph-widex` and `/ralph-widex run` to background start.
                 // Users can still run the foreground loop via `widex ralph-widex run` in a terminal.
                 let argv = if argv.is_empty() {
-                    vec!["start".to_string()]
+                    vec![
+                        "start".to_string(),
+                        "--loops".to_string(),
+                        "20".to_string(),
+                        "--completion-phrase".to_string(),
+                        "所有任务已完成".to_string(),
+                    ]
                 } else if argv.first().is_some_and(|v| v == "run") {
                     let mut out = vec!["start".to_string()];
                     out.extend(argv.into_iter().skip(1));
+                    if !out.iter().any(|v| v == "--loops") {
+                        out.push("--loops".to_string());
+                        out.push("20".to_string());
+                    }
+                    if !out.iter().any(|v| v == "--completion-phrase") {
+                        out.push("--completion-phrase".to_string());
+                        out.push("所有任务已完成".to_string());
+                    }
                     out
                 } else {
                     argv
