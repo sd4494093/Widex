@@ -753,6 +753,15 @@ async fn codex_exec_once(
         cmd.arg("model_reasoning_summary=\"none\"");
     }
 
+    if !opts
+        .exec_config_overrides
+        .iter()
+        .any(|kv| kv.trim_start().starts_with("model_reasoning_effort"))
+    {
+        cmd.arg("-c");
+        cmd.arg("model_reasoning_effort=\"low\"");
+    }
+
     for kv in &opts.exec_config_overrides {
         cmd.arg("-c");
         cmd.arg(kv);
