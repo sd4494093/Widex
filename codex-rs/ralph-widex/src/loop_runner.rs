@@ -1041,6 +1041,19 @@ async fn ensure_output_schema_file(paths: &RalphPaths) -> anyhow::Result<()> {
 async fn detect_mcp_server_names(cwd: &Path) -> Vec<String> {
     let mut names = HashSet::<String>::new();
 
+    // Widex: best-effort "known servers" list. Even if we can't discover config layers,
+    // explicitly disabling these avoids rmcp framing issues from misbehaving servers.
+    for name in [
+        "chrome-devtools",
+        "context7",
+        "filesystem",
+        "mindsdb",
+        "playwright",
+        "sequential_thinking",
+    ] {
+        names.insert(name.to_string());
+    }
+
     // System config layer.
     names.extend(mcp_server_names_from_toml_file(Path::new("/etc/codex/config.toml")).await);
 
