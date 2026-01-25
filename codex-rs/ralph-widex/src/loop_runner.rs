@@ -1605,6 +1605,9 @@ fn is_ignorable_error_line(line: &str) -> bool {
         || lower.contains("function call output is missing for call id:")
         || lower.contains("local shell call output is missing for call id:")
         || lower.contains("error opening display!")
+        // MCP framing errors are noisy and non-actionable in the autonomous loop.
+        || lower.contains("rmcp::transport::async_rw")
+        || lower.contains("untagged enum jsonrpcmessage")
 }
 
 #[cfg(test)]
