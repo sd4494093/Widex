@@ -117,6 +117,8 @@ widex ralph-widex stop --no-sigterm
 - `--output-last-message <path>`（写入 `.ralph/logs/codex_last_message_*.txt`）
 - `--output-schema .ralph/ralph_output_schema.json`（强制/引导模型输出可解析结构）
 
+说明：schema 会限制 `recommendation` 的最大长度（当前为 240 字符），避免模型在“总结/复述日志”时输出过长导致超时。
+
 如需关闭 schema（仅用于排查模型/代理不兼容）：
 
 ```bash
