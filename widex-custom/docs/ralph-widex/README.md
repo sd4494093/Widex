@@ -238,6 +238,12 @@ widex ralph-widex run \
   --exec-config 'model_reasoning_effort="high"'
 ```
 
+注意：`ralph-widex` 默认会给子进程加 `-c model_reasoning_summary="none"`（减少噪音/加速收敛）。如需开启，请显式传：
+
+```bash
+widex ralph-widex run --exec-config 'model_reasoning_summary="concise"'
+```
+
 也可以用 feature toggles（repeatable）：
 
 ```bash
