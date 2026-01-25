@@ -24,6 +24,8 @@ widex ralph-widex start
 widex ralph-widex monitor
 ```
 
+推荐：在 `.ralph/PROMPT.md` 里加入“输出纪律”，避免 `cat` 大文件（尤其是 `.ralph/logs/codex_events_*.jsonl`）导致上下文暴涨和超时（`ralph-widex init` 的模板已内置该段落）。
+
 一次性查看状态（不进入刷新循环）：
 
 ```bash
