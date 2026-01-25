@@ -293,6 +293,16 @@ strip = "symbols"
 # See https://github.com/openai/codex/issues/1411 for details.
 codegen-units = 1
 
+[profile.widex-release]
+inherits = "release"
+# Widex local builds prioritize build speed + multi-core compilation. Keep upstream `--release`
+# unchanged so merging upstream stays low-friction.
+lto = "thin"
+codegen-units = 16
+incremental = true
+# Stripping makes the final link step slower; keep symbols for local debugging.
+strip = "none"
+
 [profile.ci-test]
 debug = 1         # Reduce debug symbol size
 inherits = "test"

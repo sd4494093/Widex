@@ -21,8 +21,9 @@ Solution
 This repo now ships a wrapper script at `widex-custom/bin/widex` that:
 
 - sets `CODEX_HOME=~/.widex-codex` by default
-- runs the repo-built Rust binary (`codex-rs/target/release/codex`)
-- builds `codex-rs/target/release/codex` automatically on first run (`cargo build --release`)
+- runs the repo-built Rust binary (default: `codex-rs/target/widex-release/codex`)
+- builds the binary automatically on first run
+- defaults to a fast multi-core build profile, but can be forced back to upstream `--release`
 
 2) Install the wrapper on PATH
 
@@ -44,7 +45,35 @@ Pick one:
 
 ```bash
 cd /home/will/data/codex/codex-rs
-cargo build -p codex-cli --bin codex --release
+cargo build -p codex-cli --bin codex --profile widex-release
+```
+
+Faster multi-core release builds
+
+Upstream `--release` uses fat LTO + `codegen-units=1`, which is great for maximum runtime perf but makes local builds slow and mostly single-core. Widex adds a separate Cargo profile `widex-release` for local dev:
+
+- `lto = "thin"`
+- `codegen-units = 16`
+- `incremental = true`
+- `strip = "none"`
+
+You can tune/override it:
+
+```bash
+# Faster (default) - uses the `widex-release` profile
+widex --version
+
+# Force a rebuild (if you already have a binary and want to rebuild anyway)
+WIDEX_FORCE_REBUILD=1 widex --version
+
+# Use upstream release profile exactly
+WIDEX_BUILD_PROFILE=upstream widex --version
+
+# Control build parallelism
+WIDEX_CARGO_JOBS="$(nproc)" widex --version
+
+# Optional compile cache for faster rebuilds (if installed)
+WIDEX_USE_SCCACHE=1 widex --version
 ```
 
 4) Usage

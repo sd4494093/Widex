@@ -30,24 +30,57 @@ export WIDEX_CMD="${WIDEX_CMD:-widex}"
 # so CODEX_HOME isolation stays consistent.
 export CODEX_CMD="${CODEX_CMD:-${WIDEX_CMD}}"
 
-BIN_RELEASE="${REPO_ROOT}/codex-rs/target/release/codex"
 BUILD_DIR="${REPO_ROOT}/codex-rs"
 
-if [[ ! -x "${BIN_RELEASE}" ]]; then
+BUILD_PROFILE="${WIDEX_BUILD_PROFILE:-widex-release}"
+BIN_PROFILE_DIR="${BUILD_PROFILE}"
+if [[ "${BUILD_PROFILE}" == "upstream" || "${BUILD_PROFILE}" == "release" ]]; then
+  # Use upstream release settings (fat LTO, single CGU, strip symbols).
+  BUILD_PROFILE="release"
+  BIN_PROFILE_DIR="release"
+fi
+
+BIN="${REPO_ROOT}/codex-rs/target/${BIN_PROFILE_DIR}/codex"
+
+if [[ "${WIDEX_FORCE_REBUILD:-0}" == "1" ]]; then
+  rm -f -- "${BIN}" 2>/dev/null || true
+fi
+
+if [[ ! -x "${BIN}" ]]; then
   if ! command -v cargo >/dev/null 2>&1; then
     echo "widex: missing release binary and cargo is not available on PATH." >&2
     echo "widex: install Rust (rustup) and rerun." >&2
     exit 1
   fi
 
-  echo "widex: building release codex binary..." >&2
-  (cd "${BUILD_DIR}" && cargo build -p codex-cli --bin codex --release)
+  echo "widex: building Widex codex binary (profile: ${BUILD_PROFILE})..." >&2
+
+  NPROC="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
+  if [[ -z "${NPROC}" ]]; then
+    NPROC="$(nproc 2>/dev/null || true)"
+  fi
+  if [[ -z "${NPROC}" ]]; then
+    NPROC=8
+  fi
+
+  CARGO_JOBS="${WIDEX_CARGO_JOBS:-${NPROC}}"
+
+  # Optional compiler cache for faster rebuilds.
+  if [[ "${WIDEX_USE_SCCACHE:-0}" == "1" ]] && command -v sccache >/dev/null 2>&1; then
+    export RUSTC_WRAPPER="sccache"
+  fi
+
+  if [[ "${BUILD_PROFILE}" == "release" ]]; then
+    (cd "${BUILD_DIR}" && CARGO_BUILD_JOBS="${CARGO_JOBS}" cargo build -p codex-cli --bin codex --release)
+  else
+    (cd "${BUILD_DIR}" && CARGO_BUILD_JOBS="${CARGO_JOBS}" cargo build -p codex-cli --bin codex --profile "${BUILD_PROFILE}")
+  fi
 fi
 
-if [[ -x "${BIN_RELEASE}" ]]; then
+if [[ -x "${BIN}" ]]; then
   # Make `--help`/usage strings show `widex` instead of the underlying `codex` binary name.
-  exec -a "${WIDEX_CMD}" "${BIN_RELEASE}" "$@"
+  exec -a "${WIDEX_CMD}" "${BIN}" "$@"
 else
-  echo "widex: expected release binary at ${BIN_RELEASE}, but it is missing or not executable." >&2
+  echo "widex: expected binary at ${BIN}, but it is missing or not executable." >&2
   exit 1
 fi
