@@ -212,11 +212,13 @@ widex ralph-widex run \
   --retry-no-final-message 1 \
   --session-expiry-hours 24 \
   --disable-mcp \
+  --exec-bypass-approvals-and-sandbox \
   --skip-git-repo-check \
   --verbose
 ```
 
 - `--codex-cmd <path>`：覆盖用于执行 `widex exec` 的二进制路径（默认用当前可执行文件；也可用 env `CODEX_CMD`）
+- `--exec-bypass-approvals-and-sandbox`：对子进程 `widex exec` 传 `--dangerously-bypass-approvals-and-sandbox`，避免 approval prompt 导致 exec 卡住直到超时（适合“无人值守的自治循环”）。
 
 ### 7.1) 透传到子进程 `widex exec`（推荐用来快速切模型/Provider）
 
