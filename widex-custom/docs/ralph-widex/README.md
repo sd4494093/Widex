@@ -13,12 +13,14 @@
 # 初始化 .ralph/
 widex ralph-widex init
 
-# 编辑提示词和计划
+# 编辑提示词和计划（以及可选的完成词）
 $EDITOR .ralph/PROMPT.md
 $EDITOR .ralph/@fix_plan.md
 
 # 启动循环（推荐：后台启动，不阻塞终端）
-widex ralph-widex start
+# - 默认最多跑 20 轮；或用 --loops 显式指定
+# - 通过 --completion-phrase 指定“完成词”，出现即可提前结束
+widex ralph-widex start --loops 20 --completion-phrase "所有任务已完成"
 
 # 另开一个终端监控状态
 widex ralph-widex monitor
@@ -45,6 +47,7 @@ TUI 内置命令（等价）：
 
 - `.ralph/PROMPT.md`：Ralph 主提示词（你会改它）
 - `.ralph/@fix_plan.md`：当前待办/计划（你会改它）
+- `.ralph/@fix_progress.md`：每轮进度记录（由 agent 每轮追加更新）
 - `.ralph/@AGENT.md`：辅助说明（可选维护）
 
 状态与控制：
@@ -153,24 +156,21 @@ widex ralph-widex run --calls 60
 
 触达限流会进入等待，直到下一个整点自动 reset；等待期间仍会响应 Ctrl-C/SIGTERM/STOP。
 
-## 5.1) BLOCKED（自动停机，不触发熔断）
+## 5.1) BLOCKED（信号，不自动停机）
 
-当 `widex exec` 输出结构化的 `RALPH_STATUS` 且 `STATUS: BLOCKED` 时，`ralph-widex` 会认为“需要外部输入/人工决策”，并**立即退出**（`status.json.last_action = "blocked"`），避免无意义地消耗 calls/hour。
+当 `widex exec` 输出结构化的 `RALPH_STATUS` 且 `STATUS: BLOCKED` 时，代表“需要外部输入/人工决策”的信号。
+
+Widex 的 ralph 核心目标是“按计划迭代到指定轮数，或命中完成词提前退出”，所以：
+
+- **默认不会因为 BLOCKED 自动退出**（会继续下一轮）
+- 若你希望遇到 BLOCKED 立即停机：可以用完成词策略（让 agent 在确认被阻塞时输出你指定的 completion phrase），或手动 `widex ralph-widex stop`
 
 典型场景：
 
 - 需要你提供离线快照/截图/密钥/权限
 - 需要你确认是否保留某些“意外出现”的文件（例如外部工具生成的新测试）
 
-处理方式：
-
-1) 按 recommendation 补齐输入/做出决策
-2) 再次运行：
-
-```bash
-rm -f .ralph/STOP .ralph/.circuit_breaker_state
-widex ralph-widex run --disable-mcp --skip-git-repo-check
-```
+处理方式：按 recommendation 补齐输入/做出决策后继续运行即可。
 
 
 ## 6) 会话连续性（continue/resume）
@@ -208,16 +208,23 @@ widex ralph-widex run --session-expiry-hours 6
 
 ```bash
 widex ralph-widex run \
+  --loops 20 \
+  --completion-phrase "所有任务已完成" \
   --prompt .ralph/PROMPT.md \
   --timeout-minutes 15 \
   --calls 100 \
   --retry-no-final-message 1 \
   --session-expiry-hours 24 \
-  --disable-mcp \
   --exec-bypass-approvals-and-sandbox \
   --skip-git-repo-check \
   --verbose
 ```
+
+说明：
+
+- `--loops N`：最多迭代 N 轮（未命中 completion phrase 时到点退出）
+- `--completion-phrase ...`：出现即提前退出（可重复指定多个）
+- `--enable-circuit-breaker`：可选开启熔断器（默认关闭；会在持续同错/无进展时提前停机）
 
 - `--codex-cmd <path>`：覆盖用于执行 `widex exec` 的二进制路径（默认用当前可执行文件；也可用 env `CODEX_CMD`）
 - `--exec-bypass-approvals-and-sandbox`：对子进程 `widex exec` 传 `--dangerously-bypass-approvals-and-sandbox`，避免 approval prompt 导致 exec 卡住直到超时（适合“无人值守的自治循环”）。

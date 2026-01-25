@@ -123,6 +123,9 @@ git push origin widex
 
 运行期文件（Rust 版会写入/读取）：
 
+- `.ralph/PROMPT.md`：Ralph 提示词（每轮 `widex exec` 都会读取；Ralph 会在运行时追加一段“Loop Control”指令）
+- `.ralph/@fix_plan.md`：计划（每轮执行前要求读取）
+- `.ralph/@fix_progress.md`：进度（每轮结束要求追加更新，用于“中断后继续/跨轮迭代”）
 - `.ralph/status.json`：loop 状态（含 rate limit 信息）
 - `.ralph/progress.json`：当前 `widex exec` 的实时进度（执行中才存在）
 - `.ralph/.response_analysis`：每轮分析结果（退出检测/进展/错误）
