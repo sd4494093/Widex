@@ -50,9 +50,23 @@ pub struct InitArgs {
 
 #[derive(Debug, Args, Clone)]
 pub struct RunArgs {
+    /// Max number of loops to run before exiting (unless completion phrase is seen).
+    #[arg(long = "loops", default_value_t = 20)]
+    pub loops: u64,
+
     /// Max calls per hour.
     #[arg(long = "calls", default_value_t = 100)]
     pub max_calls_per_hour: u64,
+
+    /// A phrase that indicates completion. If the final message contains any of these, the loop
+    /// exits early (status=completed). Repeatable.
+    #[arg(long = "completion-phrase")]
+    pub completion_phrases: Vec<String>,
+
+    /// Enable the circuit breaker (off by default). When enabled, repeated no-progress or repeated
+    /// same-error loops can stop execution early.
+    #[arg(long = "enable-circuit-breaker", default_value_t = false)]
+    pub enable_circuit_breaker: bool,
 
     /// Prompt file.
     #[arg(long = "prompt", default_value = ".ralph/PROMPT.md")]
@@ -142,7 +156,10 @@ pub struct RunArgs {
 impl Default for RunArgs {
     fn default() -> Self {
         Self {
+            loops: 20,
             max_calls_per_hour: 100,
+            completion_phrases: Vec::new(),
+            enable_circuit_breaker: false,
             prompt_path: PathBuf::from(".ralph/PROMPT.md"),
             timeout_minutes: 15,
             no_continue: false,
@@ -222,6 +239,7 @@ pub async fn run_main(cli: Cli, default_codex_cmd: PathBuf) -> anyhow::Result<()
             let opts = loop_runner::RunOptions {
                 codex_cmd,
                 prompt_path: args.prompt_path,
+                max_loops: args.loops,
                 max_calls_per_hour: args.max_calls_per_hour,
                 timeout_minutes: args.timeout_minutes,
                 use_continue: !args.no_continue,
@@ -233,6 +251,8 @@ pub async fn run_main(cli: Cli, default_codex_cmd: PathBuf) -> anyhow::Result<()
                 use_output_schema: !args.no_output_schema,
                 disable_mcp: args.disable_mcp,
                 retry_no_final_message: args.retry_no_final_message,
+                enable_circuit_breaker: args.enable_circuit_breaker,
+                completion_phrases: args.completion_phrases,
                 exec_config_overrides: args.exec_config_overrides,
                 exec_enable_features: args.exec_enable_features,
                 exec_disable_features: args.exec_disable_features,

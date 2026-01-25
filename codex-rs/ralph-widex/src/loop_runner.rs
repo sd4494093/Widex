@@ -46,6 +46,10 @@ const TEMPLATE_AGENT: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../widex-custom/features/ralph-widex/templates/AGENT.md"
 ));
+const TEMPLATE_FIX_PROGRESS: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../widex-custom/features/ralph-widex/templates/fix_progress.md"
+));
 const TEMPLATE_SPECS_GITKEEP: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../widex-custom/features/ralph-widex/templates/specs/.gitkeep"
@@ -55,6 +59,7 @@ const TEMPLATE_SPECS_GITKEEP: &str = include_str!(concat!(
 pub(crate) struct RunOptions {
     pub(crate) codex_cmd: PathBuf,
     pub(crate) prompt_path: PathBuf,
+    pub(crate) max_loops: u64,
     pub(crate) max_calls_per_hour: u64,
     pub(crate) timeout_minutes: u64,
     pub(crate) use_continue: bool,
@@ -66,6 +71,8 @@ pub(crate) struct RunOptions {
     pub(crate) use_output_schema: bool,
     pub(crate) disable_mcp: bool,
     pub(crate) retry_no_final_message: u8,
+    pub(crate) enable_circuit_breaker: bool,
+    pub(crate) completion_phrases: Vec<String>,
     pub(crate) exec_config_overrides: Vec<String>,
     pub(crate) exec_enable_features: Vec<String>,
     pub(crate) exec_disable_features: Vec<String>,
@@ -121,6 +128,7 @@ pub(crate) async fn init_in_place(cwd: &Path, no_overwrite: bool) -> anyhow::Res
 
     tokio::fs::write(&prompt_path, TEMPLATE_PROMPT).await?;
     tokio::fs::write(ralph_dir.join("@fix_plan.md"), TEMPLATE_FIX_PLAN).await?;
+    tokio::fs::write(ralph_dir.join("@fix_progress.md"), TEMPLATE_FIX_PROGRESS).await?;
     tokio::fs::write(ralph_dir.join("@AGENT.md"), TEMPLATE_AGENT).await?;
 
     let specs_dir = ralph_dir.join("specs");
@@ -132,6 +140,7 @@ pub(crate) async fn init_in_place(cwd: &Path, no_overwrite: bool) -> anyhow::Res
         "Next: edit {RALPH_DIR}/PROMPT.md and {RALPH_DIR}/@fix_plan.md then run: {} ralph-widex run",
         widex_cmd_hint()
     );
+    println!("Progress: {RALPH_DIR}/@fix_progress.md is updated by the agent after every loop.");
 
     Ok(())
 }
@@ -143,6 +152,7 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
     let _lock = acquire_lock(&paths).await?;
     let _pid_guard = PidGuard::write(&paths).await?;
     circuit_breaker::ensure_initialized(&paths).await?;
+    ensure_fix_progress_file(&paths).await?;
     if opts.use_output_schema {
         ensure_output_schema_file(&paths).await?;
     }
@@ -168,6 +178,28 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
 
     let mut loop_count: u64 = 0;
     loop {
+        if opts.max_loops != 0 && loop_count >= opts.max_loops {
+            let calls_made = read_calls_made(&paths).await?;
+            update_status(
+                &paths,
+                loop_count,
+                calls_made,
+                opts.max_calls_per_hour,
+                "max_loops",
+                "completed",
+                "Reached max loops",
+            )
+            .await?;
+            append_log_line(
+                &paths,
+                "SUCCESS",
+                &format!("Reached max loops ({}/{})", loop_count, opts.max_loops),
+            )
+            .await?;
+            println!("Reached max loops ({}/{})", loop_count, opts.max_loops);
+            return Ok(());
+        }
+
         loop_count += 1;
         init_call_tracking(&paths).await?;
 
@@ -208,7 +240,7 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
             return Ok(());
         }
 
-        if !circuit_breaker::can_execute(&paths).await? {
+        if opts.enable_circuit_breaker && !circuit_breaker::can_execute(&paths).await? {
             let state = circuit_breaker::read_state(&paths).await?;
             update_status(
                 &paths,
@@ -302,6 +334,8 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
             let exec = match codex_exec_once(&paths, loop_count, &opts, &shutdown).await {
                 Ok(exec) => exec,
                 Err(err) => {
+                    // Keep iterating until max loops (or completion phrase). Treat unexpected
+                    // `exec` failures as a failed loop.
                     update_status(
                         &paths,
                         loop_count,
@@ -314,7 +348,20 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
                     .await?;
                     append_log_line(&paths, "ERROR", &format!("codex exec failed: {err:#}"))
                         .await?;
-                    return Err(err);
+                    break ExecResult {
+                        exit_code: 1,
+                        thread_id: None,
+                        last_message: None,
+                        last_message_path: paths.logs_dir.join(format!(
+                            "codex_last_message_loop_{loop_count}_spawn_error.txt"
+                        )),
+                        files_changed: 0,
+                        error_count: 1,
+                        error_signature: Some("spawn_error".to_string()),
+                        saw_thread_compaction_warning: false,
+                        interrupted: false,
+                        interrupt_reason: format!("{err:#}"),
+                    };
                 }
             };
 
@@ -480,86 +527,42 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
         exit_signals.update_for_loop(loop_count, &analysis);
         write_json_atomic(&paths.exit_signals_file, &exit_signals).await?;
 
-        if let Some(status) = &ralph_status
-            && status.status == LoopCompletionStatus::Blocked
-        {
-            let recommendation =
-                sanitize_recommendation_for_exit_reason(status.recommendation.as_str());
-            let blocked_reason = format!("Blocked: {recommendation}");
-            update_status(
+        if opts.enable_circuit_breaker {
+            let files_changed_for_circuit_breaker = if analysis.is_test_only {
+                1
+            } else {
+                exec.files_changed
+            };
+            let cb_outcome = circuit_breaker::record_loop_result(
                 &paths,
                 loop_count,
-                calls_made,
-                opts.max_calls_per_hour,
-                "blocked",
-                "exited",
-                &blocked_reason,
+                files_changed_for_circuit_breaker,
+                exec.error_signature.as_deref(),
             )
             .await?;
-            append_log_line(&paths, "WARN", &blocked_reason).await?;
-            println!("{blocked_reason}");
-            return Ok(());
+
+            if cb_outcome.opened {
+                update_status(
+                    &paths,
+                    loop_count,
+                    calls_made,
+                    opts.max_calls_per_hour,
+                    "circuit_breaker",
+                    "exited",
+                    &cb_outcome.state.reason,
+                )
+                .await?;
+                append_log_line(
+                    &paths,
+                    "ERROR",
+                    &format!("Stopping: {}", cb_outcome.state.reason),
+                )
+                .await?;
+                anyhow::bail!("Stopping: {}", cb_outcome.state.reason);
+            }
         }
 
-        let files_changed_for_circuit_breaker = if analysis.is_test_only {
-            1
-        } else {
-            exec.files_changed
-        };
-        let cb_outcome = circuit_breaker::record_loop_result(
-            &paths,
-            loop_count,
-            files_changed_for_circuit_breaker,
-            exec.error_signature.as_deref(),
-        )
-        .await?;
-
-        if cb_outcome.opened {
-            update_status(
-                &paths,
-                loop_count,
-                calls_made,
-                opts.max_calls_per_hour,
-                "circuit_breaker",
-                "exited",
-                &cb_outcome.state.reason,
-            )
-            .await?;
-            append_log_line(
-                &paths,
-                "ERROR",
-                &format!("Stopping: {}", cb_outcome.state.reason),
-            )
-            .await?;
-            anyhow::bail!("Stopping: {}", cb_outcome.state.reason);
-        }
-
-        if analysis.is_test_only
-            && analysis.files_modified == 0
-            && analysis.error_count == 0
-            && has_consecutive_loop_suffix(&exit_signals.test_only_loops, 3, loop_count)
-        {
-            update_status(
-                &paths,
-                loop_count,
-                calls_made,
-                opts.max_calls_per_hour,
-                "test_only",
-                "completed",
-                "3 consecutive test-only loops",
-            )
-            .await?;
-            append_log_line(
-                &paths,
-                "SUCCESS",
-                "Stopping after 3 consecutive test-only loops (likely stable).",
-            )
-            .await?;
-            println!("Stopping after 3 consecutive test-only loops");
-            return Ok(());
-        }
-
-        if signals.exit_signal && signals.has_completion_signal {
+        if completion_phrase_seen(exec.last_message.as_deref(), &opts.completion_phrases) {
             update_status(
                 &paths,
                 loop_count,
@@ -567,11 +570,11 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
                 opts.max_calls_per_hour,
                 "complete",
                 "completed",
-                "EXIT_SIGNAL gate satisfied",
+                "Completion phrase seen",
             )
             .await?;
-            append_log_line(&paths, "SUCCESS", "Exit conditions met; stopping loop.").await?;
-            println!("EXIT_SIGNAL gate satisfied");
+            append_log_line(&paths, "SUCCESS", "Completion phrase seen; stopping loop.").await?;
+            println!("Completion phrase seen; stopping loop.");
             return Ok(());
         }
 
@@ -672,6 +675,26 @@ fn normalize_output_last_message(
             None
         }
     }
+}
+
+fn completion_phrase_seen(message: Option<&str>, phrases: &[String]) -> bool {
+    let Some(message) = message else {
+        return false;
+    };
+    if phrases.is_empty() {
+        return false;
+    }
+
+    let message = message.trim();
+    if message.is_empty() {
+        return false;
+    }
+
+    let message_lower = message.to_lowercase();
+    phrases.iter().any(|p| {
+        let p = p.trim();
+        !p.is_empty() && message_lower.contains(&p.to_lowercase())
+    })
 }
 
 struct ExecResult {
@@ -795,11 +818,7 @@ async fn codex_exec_once(
     }
     cmd.arg("-");
 
-    let prompt_file = tokio::fs::File::open(&opts.prompt_path)
-        .await
-        .with_context(|| format!("Failed to open {}", opts.prompt_path.display()))?;
-    let prompt_file = prompt_file.into_std().await;
-    cmd.stdin(std::process::Stdio::from(prompt_file));
+    cmd.stdin(std::process::Stdio::piped());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
@@ -815,6 +834,16 @@ async fn codex_exec_once(
     .await?;
 
     let mut child = cmd.spawn().context("Failed to spawn codex exec")?;
+
+    // Compose stdin from the base prompt + a tiny control footer that:
+    // - forces the agent to read plan/progress
+    // - forces the agent to update progress each loop
+    // - allows early exit on completion phrase(s)
+    let prompt = load_prompt_with_footer(paths, opts, loop_count).await?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(prompt.as_bytes()).await?;
+        stdin.shutdown().await?;
+    }
 
     let stdout = child.stdout.take().context("Missing stdout")?;
     let stderr = child.stderr.take().context("Missing stderr")?;
@@ -1045,6 +1074,58 @@ async fn ensure_output_schema_file(paths: &RalphPaths) -> anyhow::Result<()> {
     });
 
     write_json_atomic(&paths.output_schema_file, &schema).await
+}
+
+async fn ensure_fix_progress_file(paths: &RalphPaths) -> anyhow::Result<()> {
+    let path = paths.ralph_dir.join("@fix_progress.md");
+    if tokio::fs::try_exists(&path).await? {
+        return Ok(());
+    }
+
+    tokio::fs::write(&path, TEMPLATE_FIX_PROGRESS).await?;
+    Ok(())
+}
+
+async fn load_prompt_with_footer(
+    paths: &RalphPaths,
+    opts: &RunOptions,
+    loop_count: u64,
+) -> anyhow::Result<String> {
+    let base = tokio::fs::read_to_string(&opts.prompt_path)
+        .await
+        .with_context(|| format!("Failed to read {}", opts.prompt_path.display()))?;
+
+    let max_loops = if opts.max_loops == 0 {
+        "unlimited".to_string()
+    } else {
+        opts.max_loops.to_string()
+    };
+
+    let mut footer = String::new();
+    footer.push_str("\n\n# Ralph Loop Control\n");
+    footer.push_str(&format!("Loop: {loop_count}/{max_loops}\n\n"));
+    footer.push_str("Before doing anything:\n");
+    footer.push_str("- Read `.ralph/@fix_plan.md`\n");
+    footer.push_str("- Read `.ralph/@fix_progress.md`\n\n");
+    footer.push_str("After finishing this loop:\n");
+    footer.push_str("- Append a short progress entry to `.ralph/@fix_progress.md` (what you did, result, next).\n\n");
+    footer.push_str("Supervisor behavior:\n");
+    footer.push_str(
+        "- If you exit before completion, you will be restarted and asked to continue.\n\n",
+    );
+
+    if !opts.completion_phrases.is_empty() {
+        footer.push_str("Early completion:\n");
+        footer.push_str("- If all tasks are complete, output one of these phrases verbatim in your final message:\n");
+        for p in &opts.completion_phrases {
+            footer.push_str(&format!("  - {p}\n"));
+        }
+        footer.push_str("\n");
+    }
+
+    footer.push_str(&format!("Project root: {}\n", paths.cwd.display()));
+
+    Ok(format!("{base}\n\n---\n{footer}"))
 }
 
 async fn detect_mcp_server_names(cwd: &Path) -> Vec<String> {
@@ -1577,23 +1658,6 @@ fn truncate(s: &str, max: usize) -> String {
         out.push_str("...");
     }
     out
-}
-
-fn has_consecutive_loop_suffix(values: &[u64], n: usize, current_loop: u64) -> bool {
-    if values.len() < n || n == 0 {
-        return false;
-    }
-
-    // Expect the suffix to be: current_loop, current_loop-1, ..., current_loop-(n-1)
-    for i in 0..n {
-        let expected = current_loop.saturating_sub(i as u64);
-        let actual = values[values.len() - 1 - i];
-        if actual != expected {
-            return false;
-        }
-    }
-
-    true
 }
 
 fn looks_like_error(line: &str) -> bool {
