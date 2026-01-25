@@ -97,6 +97,14 @@ pub(crate) enum AppEvent {
     StopCommitAnimation,
     CommitTick,
 
+    /// Wake up the in-TUI Ralph loop after a scheduled delay (e.g., calls/hour reset).
+    RalphTuiWake,
+
+    /// Timeout fired for the in-TUI Ralph loop. The nonce guards against stale timers.
+    RalphTuiTimeout {
+        nonce: u64,
+    },
+
     /// Update the current reasoning effort in the running app and widget.
     UpdateReasoningEffort(Option<ReasoningEffort>),
 

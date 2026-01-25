@@ -145,7 +145,7 @@ async fn render_once(paths: &RalphPaths, interval_secs: u64) -> anyhow::Result<(
         let elapsed = progress.elapsed_seconds.unwrap_or(0);
         let last_output = progress.last_output.unwrap_or_default();
         println!();
-        println!("Codex exec: running ({elapsed}s elapsed)");
+        println!("Widex exec: running ({elapsed}s elapsed)");
         if !last_output.is_empty() {
             println!("Output:     {last_output}");
         }
@@ -253,7 +253,7 @@ pub(crate) async fn print_status_once(
         let elapsed = progress.elapsed_seconds.unwrap_or(0);
         let last_output = progress.last_output.unwrap_or_default();
         println!();
-        println!("Codex exec: running ({elapsed}s elapsed)");
+        println!("Widex exec: running ({elapsed}s elapsed)");
         if !last_output.is_empty() {
             println!("Output:     {last_output}");
         }

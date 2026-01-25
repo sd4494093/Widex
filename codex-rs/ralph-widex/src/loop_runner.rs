@@ -140,7 +140,36 @@ pub(crate) async fn init_in_place(cwd: &Path, no_overwrite: bool) -> anyhow::Res
         "Next: edit {RALPH_DIR}/PROMPT.md and {RALPH_DIR}/@fix_plan.md then run: {} ralph-widex run",
         widex_cmd_hint()
     );
-    println!("Progress: {RALPH_DIR}/@fix_progress.md is updated by the agent after every loop.");
+    println!("Progress: {RALPH_DIR}/@fix_progress.md is updated after every loop.");
+
+    Ok(())
+}
+
+async fn append_fix_progress_entry(
+    paths: &RalphPaths,
+    loop_number: u64,
+    exec: &ExecResult,
+    analysis: &Analysis,
+) -> anyhow::Result<()> {
+    // Ensure ralph still makes forward progress even if the model forgets to update the progress file.
+    let ts = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let summary = truncate(analysis.work_summary.as_str(), 160);
+    let exit_code = exec.exit_code;
+    let files_changed = exec.files_changed;
+    let error_count = exec.error_count;
+
+    let mut entry = String::new();
+    entry.push_str(&format!("\n- Loop {loop_number} ({ts}):\n"));
+    entry.push_str(&format!(
+        "  - Supervisor: exit_code={exit_code} files_changed={files_changed} errors={error_count} summary={summary}\n",
+    ));
+
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(paths.ralph_dir.join("@fix_progress.md"))
+        .await?;
+    file.write_all(entry.as_bytes()).await?;
 
     Ok(())
 }
@@ -312,7 +341,7 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
             loop_count,
             calls_made,
             opts.max_calls_per_hour,
-            "codex_exec",
+            "widex_exec",
             "running",
             "",
         )
@@ -341,12 +370,12 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
                         loop_count,
                         calls_made,
                         opts.max_calls_per_hour,
-                        "codex_exec",
+                        "widex_exec",
                         "exited",
-                        &format!("codex exec failed: {err:#}"),
+                        &format!("widex exec failed: {err:#}"),
                     )
                     .await?;
-                    append_log_line(&paths, "ERROR", &format!("codex exec failed: {err:#}"))
+                    append_log_line(&paths, "ERROR", &format!("widex exec failed: {err:#}"))
                         .await?;
                     break ExecResult {
                         exit_code: 1,
@@ -372,12 +401,12 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
                     &paths,
                     "WARN",
                     &format!(
-                        "codex exec produced no final message; retrying ({attempt}/{max_attempts})",
+                        "widex exec produced no final message; retrying ({attempt}/{max_attempts})",
                     ),
                 )
                 .await?;
 
-                // Each retry is another `codex exec` invocation, so it should count toward the
+                // Each retry is another `widex exec` invocation, so it should count toward the
                 // per-hour call cap.
                 let current_calls = read_calls_made(&paths).await?;
                 if current_calls >= opts.max_calls_per_hour {
@@ -409,7 +438,7 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
                     loop_count,
                     calls_made,
                     opts.max_calls_per_hour,
-                    "codex_exec",
+                    "widex_exec",
                     "running",
                     "",
                 )
@@ -458,6 +487,25 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
                 &exec.interrupt_reason,
             )
             .await?;
+            // Record the interruption so the next loop (or a restart) has context.
+            let interrupt_reason = exec.interrupt_reason.as_str();
+            let analysis = Analysis {
+                has_completion_signal: false,
+                is_test_only: false,
+                is_stuck: false,
+                has_progress: exec.files_changed > 0,
+                files_modified: exec.files_changed,
+                confidence_score: 0,
+                exit_signal: false,
+                work_summary: format!("Interrupted: {interrupt_reason}"),
+                output_length: exec
+                    .last_message
+                    .as_deref()
+                    .map(|s| s.len() as u64)
+                    .unwrap_or(0),
+                error_count: exec.error_count,
+            };
+            append_fix_progress_entry(&paths, loop_count, &exec, &analysis).await?;
             append_log_line(
                 &paths,
                 "WARN",
@@ -527,6 +575,8 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
         exit_signals.update_for_loop(loop_count, &analysis);
         write_json_atomic(&paths.exit_signals_file, &exit_signals).await?;
 
+        append_fix_progress_entry(&paths, loop_count, &exec, &analysis).await?;
+
         if opts.enable_circuit_breaker {
             let files_changed_for_circuit_breaker = if analysis.is_test_only {
                 1
@@ -582,7 +632,7 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
             append_log_line(
                 &paths,
                 "WARN",
-                &format!("codex exec failed with exit code {}", exec.exit_code),
+                &format!("widex exec failed with exit code {}", exec.exit_code),
             )
             .await?;
         }
@@ -670,7 +720,7 @@ fn normalize_output_last_message(
             // actionable error so the circuit breaker can stop infinite "no-progress" loops.
             if exit_code == 0 {
                 *error_count = error_count.saturating_add(1);
-                error_messages.push("codex exec produced no final message".to_string());
+                error_messages.push("widex exec produced no final message".to_string());
             }
             None
         }
@@ -833,7 +883,7 @@ async fn codex_exec_once(
     )
     .await?;
 
-    let mut child = cmd.spawn().context("Failed to spawn codex exec")?;
+    let mut child = cmd.spawn().context("Failed to spawn widex exec")?;
 
     // Compose stdin from the base prompt + a tiny control footer that:
     // - forces the agent to read plan/progress
@@ -877,7 +927,8 @@ async fn codex_exec_once(
                 let (exit_code, interrupt_reason) = graceful_shutdown_child(&mut child, reason).await?;
                 remove_file_if_exists(&paths.progress_file).await?;
                 let last_message = tokio::fs::read_to_string(&last_message_path).await.ok();
-                append_log_line(paths, "WARN", &format!("codex exec interrupted: {interrupt_reason}")).await?;
+                append_log_line(paths, "WARN", &format!("widex exec interrupted: {interrupt_reason}"))
+                    .await?;
                 let error_signature = compute_error_signature(&error_messages);
                 return Ok(ExecResult{
                     exit_code,
@@ -975,7 +1026,7 @@ async fn codex_exec_once(
                     last_output = format!("stderr: {}", truncate(&line, 120));
                 }
                 if opts.verbose {
-                    eprintln!("codex exec: {line}");
+                    eprintln!("widex exec: {line}");
                 }
             }
             status = child.wait() => {
@@ -989,7 +1040,7 @@ async fn codex_exec_once(
                     &mut error_messages,
                 );
                 let last_message = last_message.or_else(|| last_agent_message.clone());
-                append_log_line(paths, "INFO", &format!("codex exec exit code: {exit_code}")).await?;
+                append_log_line(paths, "INFO", &format!("widex exec exit code: {exit_code}")).await?;
                 let error_signature = compute_error_signature(&error_messages);
                 return Ok(ExecResult{
                     exit_code,
@@ -1007,10 +1058,11 @@ async fn codex_exec_once(
             _ = &mut timeout => {
                 let _ = child.kill().await;
                 remove_file_if_exists(&paths.progress_file).await?;
-                let msg = format!("codex exec timed out after {} minutes", opts.timeout_minutes);
+                let minutes = opts.timeout_minutes;
+                let msg = format!("widex exec timed out after {minutes} minutes");
                 error_count = error_count.saturating_add(1);
                 error_messages.push(msg.clone());
-                append_log_line(paths, "ERROR", "codex exec timed out").await?;
+                append_log_line(paths, "ERROR", "widex exec timed out").await?;
                 let error_signature = compute_error_signature(&error_messages);
                 return Ok(ExecResult{
                     exit_code: 124,
@@ -1039,7 +1091,7 @@ async fn codex_exec_once(
         &mut error_messages,
     );
     let last_message = last_message.or_else(|| last_agent_message);
-    append_log_line(paths, "INFO", &format!("codex exec exit code: {exit_code}")).await?;
+    append_log_line(paths, "INFO", &format!("widex exec exit code: {exit_code}")).await?;
     let error_signature = compute_error_signature(&error_messages);
 
     Ok(ExecResult {

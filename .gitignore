@@ -99,3 +99,6 @@ widex-custom/features/api-switchover/*.local.yaml
 # Local Codex homes (avoid committing API keys / auth state if CODEX_HOME is set inside the repo)
 .codex/
 .widex-codex/
+
+# Avoid accidentally committing auth state / API keys if a tool writes into the repo root.
+auth.json

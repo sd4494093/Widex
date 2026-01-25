@@ -305,7 +305,14 @@ async fn start_background(
     }
 
     // Spawn: `widex ralph-widex run ...`
-    let mut child = std::process::Command::new(cmd);
+    //
+    // Prefer routing through the wrapper (via $CODEX_CMD) so:
+    // - `--help` / usage strings show `widex` (argv[0]) instead of `codex`
+    // - CODEX_HOME isolation stays consistent across subprocesses
+    //
+    // Fall back to the current executable path when the wrapper is not available.
+    let child_cmd = std::env::var_os("CODEX_CMD").filter(|s| !s.is_empty());
+    let mut child = std::process::Command::new(child_cmd.as_deref().unwrap_or(cmd.as_os_str()));
     child.current_dir(cwd);
     child.arg("ralph-widex");
     child.arg("run");
@@ -397,7 +404,14 @@ async fn stop_background(cwd: &std::path::Path, args: StopArgs) -> anyhow::Resul
 }
 
 fn apply_run_args(cmd: &mut std::process::Command, args: &RunArgs) {
+    cmd.arg("--loops").arg(args.loops.to_string());
     cmd.arg("--calls").arg(args.max_calls_per_hour.to_string());
+    for phrase in &args.completion_phrases {
+        cmd.arg("--completion-phrase").arg(phrase);
+    }
+    if args.enable_circuit_breaker {
+        cmd.arg("--enable-circuit-breaker");
+    }
     cmd.arg("--prompt").arg(args.prompt_path.as_os_str());
     cmd.arg("--timeout-minutes")
         .arg(args.timeout_minutes.to_string());

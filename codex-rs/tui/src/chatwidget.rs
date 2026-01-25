@@ -23,12 +23,14 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
 use crate::version::CODEX_CLI_VERSION;
+use chrono::Timelike;
 use codex_app_server_protocol::AuthMode;
 use codex_backend_client::Client as BackendClient;
 use codex_core::ModelProviderInfo;
@@ -474,6 +476,8 @@ pub(crate) struct ChatWidget {
     suppress_session_configured_redraw: bool,
     // User messages queued while a turn is in progress
     queued_user_messages: VecDeque<UserMessage>,
+    // Ralph loop state for in-TUI autonomous iteration.
+    ralph_tui: Option<RalphTuiState>,
     // Pending notification to show when unfocused on next Draw
     pending_notification: Option<Notification>,
     /// When `Some`, the user has pressed a quit shortcut and the second press
@@ -537,6 +541,31 @@ pub(crate) struct ActiveCellTranscriptKey {
     /// are unchanged, which is how shimmer/spinner visuals can animate in the overlay without any
     /// underlying data change.
     pub(crate) animation_tick: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct RalphTuiState {
+    max_loops: u64,
+    current_loop: u64,
+    completion_phrases: Vec<String>,
+    in_flight: bool,
+    // Optional per-hour limiter for the number of Ralph turns (not tool calls).
+    max_calls_per_hour: Option<u64>,
+    call_window_key: String,
+    calls_made_in_window: u64,
+    // Per-turn watchdog that interrupts the current turn after the timeout.
+    timeout_minutes: Option<u64>,
+    // Guards against stale timeout timers from previous turns.
+    active_turn_nonce: u64,
+}
+
+#[derive(Debug, Clone)]
+struct RalphTuiConfig {
+    loops: u64,
+    completion_phrases: Vec<String>,
+    max_calls_per_hour: Option<u64>,
+    timeout_minutes: Option<u64>,
+    skip_git_repo_check: bool,
 }
 
 pub(crate) struct UserMessage {
@@ -893,6 +922,10 @@ impl ChatWidget {
         self.clear_unified_exec_processes();
         self.request_redraw();
 
+        if !from_replay {
+            self.on_ralph_tui_task_complete(last_agent_message.as_deref());
+        }
+
         if !from_replay && self.queued_user_messages.is_empty() {
             self.maybe_prompt_plan_implementation(last_agent_message.as_deref());
         }
@@ -1199,6 +1232,18 @@ impl ChatWidget {
     fn on_interrupted_turn(&mut self, reason: TurnAbortReason) {
         // Finalize, log a gentle prompt, and clear running state.
         self.finalize_turn();
+
+        if self.ralph_tui.as_ref().is_some_and(|state| state.in_flight) {
+            if reason != TurnAbortReason::ReviewEnded {
+                self.add_to_history(history_cell::new_error_event(
+                    "Conversation interrupted.".to_owned(),
+                ));
+            }
+            self.on_ralph_tui_task_complete(None);
+            self.maybe_send_next_queued_input();
+            self.request_redraw();
+            return;
+        }
 
         if reason != TurnAbortReason::ReviewEnded {
             self.add_to_history(history_cell::new_error_event(
@@ -2003,6 +2048,7 @@ impl ChatWidget {
             thread_id: None,
             forked_from: None,
             queued_user_messages: VecDeque::new(),
+            ralph_tui: None,
             show_welcome_banner: is_first_run,
             suppress_session_configured_redraw: false,
             pending_notification: None,
@@ -2123,6 +2169,7 @@ impl ChatWidget {
             thread_id: None,
             forked_from: None,
             queued_user_messages: VecDeque::new(),
+            ralph_tui: None,
             show_welcome_banner: false,
             suppress_session_configured_redraw: true,
             pending_notification: None,
@@ -2372,8 +2419,13 @@ impl ChatWidget {
                 self.app_event_tx.send(AppEvent::CodexOp(Op::Compact));
             }
             SlashCommand::RalphWidex => {
-                // Default behavior should not block the TUI; start in background.
-                self.run_ralph_widex(vec!["start".to_string()]);
+                self.start_ralph_tui(RalphTuiConfig {
+                    loops: 20,
+                    completion_phrases: vec!["所有任务已完成".to_string()],
+                    max_calls_per_hour: None,
+                    timeout_minutes: None,
+                    skip_git_repo_check: false,
+                });
             }
             SlashCommand::Review => {
                 self.open_review_popup();
@@ -2558,35 +2610,7 @@ impl ChatWidget {
                 }
             }
             SlashCommand::RalphWidex => {
-                let argv = shlex::split(trimmed)
-                    .filter(|v| !v.is_empty())
-                    .unwrap_or_else(|| vec![trimmed.to_string()]);
-                // For convenience, map `/ralph-widex` and `/ralph-widex run` to background start.
-                // Users can still run the foreground loop via `widex ralph-widex run` in a terminal.
-                let argv = if argv.is_empty() {
-                    vec![
-                        "start".to_string(),
-                        "--loops".to_string(),
-                        "20".to_string(),
-                        "--completion-phrase".to_string(),
-                        "所有任务已完成".to_string(),
-                    ]
-                } else if argv.first().is_some_and(|v| v == "run") {
-                    let mut out = vec!["start".to_string()];
-                    out.extend(argv.into_iter().skip(1));
-                    if !out.iter().any(|v| v == "--loops") {
-                        out.push("--loops".to_string());
-                        out.push("20".to_string());
-                    }
-                    if !out.iter().any(|v| v == "--completion-phrase") {
-                        out.push("--completion-phrase".to_string());
-                        out.push("所有任务已完成".to_string());
-                    }
-                    out
-                } else {
-                    argv
-                };
-                self.run_ralph_widex(argv);
+                self.dispatch_ralph_tui_command(trimmed);
             }
             SlashCommand::Review if !trimmed.is_empty() => {
                 self.submit_op(Op::Review {
@@ -3001,7 +3025,23 @@ impl ChatWidget {
     ///
     /// This is used for explicit quit commands (`/quit`, `/exit`, `/logout`) and for
     /// the double-press Ctrl+C/Ctrl+D quit shortcut.
-    fn request_quit_without_confirmation(&self) {
+    fn request_quit_without_confirmation(&mut self) {
+        if let Some(state) = self.ralph_tui.as_ref() {
+            let max = if state.max_loops == 0 {
+                "infinite".to_string()
+            } else {
+                state.max_loops.to_string()
+            };
+            self.add_info_message(
+                format!(
+                    "Ralph loop is active ({}/{max}). Use /ralph-widex stop before exiting.",
+                    state.current_loop
+                ),
+                None,
+            );
+            return;
+        }
+
         self.app_event_tx
             .send(AppEvent::Exit(ExitMode::ShutdownFirst));
     }
@@ -3104,6 +3144,374 @@ impl ChatWidget {
             .map(|process| process.command_display.clone())
             .collect();
         self.add_to_history(history_cell::new_unified_exec_processes_output(processes));
+    }
+
+    fn dispatch_ralph_tui_command(&mut self, args: &str) {
+        let argv = shlex::split(args)
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| vec![args.to_string()]);
+
+        if argv.iter().any(|a| a == "-h" || a == "--help") {
+            self.add_info_message(
+                "Ralph-Widex (TUI)\n\n\
+Usage:\n\
+  /ralph-widex start [--loops N] [--completion-phrase TEXT]...\n\
+  /ralph-widex stop\n\
+  /ralph-widex status\n\
+\n\
+Advanced (CLI passthrough):\n\
+  /ralph-widex daemon <args...>\n\
+    (runs: widex ralph-widex <args...>)"
+                    .to_string(),
+                None,
+            );
+            return;
+        }
+
+        let Some((first, rest)) = argv.split_first() else {
+            self.start_ralph_tui(RalphTuiConfig {
+                loops: 20,
+                completion_phrases: vec!["所有任务已完成".to_string()],
+                max_calls_per_hour: None,
+                timeout_minutes: None,
+                skip_git_repo_check: false,
+            });
+            return;
+        };
+
+        match first.as_str() {
+            "stop" => self.stop_ralph_tui("stopped by user"),
+            "status" => self.print_ralph_tui_status(),
+            "daemon" => self.run_ralph_widex(rest.to_vec()),
+            "start" | "run" => {
+                let cfg = parse_ralph_tui_args(rest);
+                self.start_ralph_tui(cfg);
+            }
+            _ => {
+                // Treat unknown subcommand as a shorthand for `start ...`.
+                let mut tokens = vec![first.clone()];
+                tokens.extend_from_slice(rest);
+                let cfg = parse_ralph_tui_args(&tokens);
+                self.start_ralph_tui(cfg);
+            }
+        }
+    }
+
+    fn start_ralph_tui(&mut self, mut cfg: RalphTuiConfig) {
+        if self.ralph_tui.is_some() {
+            self.add_error_message(
+                "Ralph loop already running. Use /ralph-widex stop first.".to_string(),
+            );
+            return;
+        }
+
+        if cfg.completion_phrases.is_empty() {
+            cfg.completion_phrases.push("所有任务已完成".to_string());
+        }
+
+        let ralph_dir = self.config.cwd.join(".ralph");
+        let prompt_path = ralph_dir.join("PROMPT.md");
+        if !prompt_path.exists() {
+            self.add_error_message(format!(
+                "Missing {} (run `widex ralph-widex init` first).",
+                prompt_path.display()
+            ));
+            return;
+        }
+
+        if !cfg.skip_git_repo_check && !self.config.cwd.join(".git").exists() {
+            self.add_error_message(
+                "Not inside a git repository. Use --skip-git-repo-check to override.".to_string(),
+            );
+            return;
+        }
+
+        // Best-effort: ensure expected files exist so the prompt can reliably reference them.
+        let _ = std::fs::create_dir_all(ralph_dir.join("logs"));
+        let fix_progress = ralph_dir.join("@fix_progress.md");
+        if !fix_progress.exists() {
+            let _ = std::fs::write(&fix_progress, "# Ralph Fix Progress\n\n");
+        }
+        // Clear STOP so a previous run doesn't immediately stop the loop.
+        let _ = std::fs::remove_file(ralph_dir.join("STOP"));
+
+        let now = Local::now();
+        let call_window_key = now.format("%Y%m%d%H").to_string();
+
+        let state = RalphTuiState {
+            max_loops: cfg.loops,
+            current_loop: 1,
+            completion_phrases: cfg.completion_phrases.clone(),
+            in_flight: false,
+            max_calls_per_hour: cfg.max_calls_per_hour,
+            call_window_key,
+            calls_made_in_window: 0,
+            timeout_minutes: cfg.timeout_minutes,
+            active_turn_nonce: 0,
+        };
+        self.ralph_tui = Some(state);
+
+        let max = if cfg.loops == 0 {
+            "infinite".to_string()
+        } else {
+            cfg.loops.to_string()
+        };
+        let calls = cfg
+            .max_calls_per_hour
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "unlimited".to_string());
+        let timeout = cfg
+            .timeout_minutes
+            .map(|n| format!("{n}m"))
+            .unwrap_or_else(|| "none".to_string());
+        self.add_info_message(
+            format!(
+                "Ralph loop started (loops={max}, calls/hour={calls}, timeout={timeout}, completion={}).",
+                cfg.completion_phrases.join(" | ")
+            ),
+            Some(
+                "It will keep iterating inside this Widex session. Use /ralph-widex stop to stop."
+                    .to_string(),
+            ),
+        );
+
+        self.enqueue_ralph_tui_iteration();
+    }
+
+    fn stop_ralph_tui(&mut self, reason: &str) {
+        if self.ralph_tui.take().is_none() {
+            self.add_info_message("Ralph loop is not running.".to_string(), None);
+            return;
+        }
+
+        self.add_info_message(format!("Ralph loop stopped: {reason}."), None);
+    }
+
+    fn print_ralph_tui_status(&mut self) {
+        let Some(state) = self.ralph_tui.as_ref() else {
+            self.add_info_message("Ralph loop: inactive.".to_string(), None);
+            return;
+        };
+        let max = if state.max_loops == 0 {
+            "infinite".to_string()
+        } else {
+            state.max_loops.to_string()
+        };
+        self.add_info_message(
+            format!(
+                "Ralph loop: active (loop {}/{max}). Completion phrases: {}",
+                state.current_loop,
+                state.completion_phrases.join(" | ")
+            ),
+            None,
+        );
+    }
+
+    fn enqueue_ralph_tui_iteration(&mut self) {
+        let now = Local::now();
+
+        let mut wait_for_reset: Option<(u64, u64)> = None; // (wait_secs, max)
+        let mut next_prompt: Option<(String, Option<u64>, u64)> = None; // (prompt, timeout_minutes, nonce)
+
+        {
+            let Some(state) = self.ralph_tui.as_mut() else {
+                return;
+            };
+            if state.in_flight {
+                return;
+            }
+
+            // Reset call window if the hour changed.
+            let window = now.format("%Y%m%d%H").to_string();
+            if state.call_window_key != window {
+                state.call_window_key = window;
+                state.calls_made_in_window = 0;
+            }
+
+            if let Some(max) = state.max_calls_per_hour
+                && max != 0
+                && state.calls_made_in_window >= max
+            {
+                let Some(base) = now
+                    .with_minute(0)
+                    .and_then(|t| t.with_second(0))
+                    .and_then(|t| t.with_nanosecond(0))
+                else {
+                    return;
+                };
+                let next_hour = base + chrono::Duration::hours(1);
+                let wait_secs = (next_hour - now).num_seconds().max(1) as u64;
+                wait_for_reset = Some((wait_secs, max));
+            } else {
+                let max = if state.max_loops == 0 {
+                    "infinite".to_string()
+                } else {
+                    state.max_loops.to_string()
+                };
+                let phrases = state.completion_phrases.join(" | ");
+                let text = format!(
+                    "Ralph-Widex loop {}/{}.\n\n\
+Read and follow:\n\
+- .ralph/PROMPT.md\n\
+- .ralph/@fix_plan.md\n\
+- .ralph/@fix_progress.md\n\n\
+After you make progress, append a short update to `.ralph/@fix_progress.md`.\n\
+If all tasks are complete, print one of these completion phrases in your FINAL assistant message (exact text):\n\
+{phrases}\n",
+                    state.current_loop, max
+                );
+
+                state.in_flight = true;
+                state.calls_made_in_window = state.calls_made_in_window.saturating_add(1);
+                state.active_turn_nonce = state.active_turn_nonce.saturating_add(1);
+                let nonce = state.active_turn_nonce;
+                next_prompt = Some((text, state.timeout_minutes, nonce));
+            }
+        }
+
+        if let Some((wait_secs, max)) = wait_for_reset {
+            let calls_made = self
+                .ralph_tui
+                .as_ref()
+                .map(|s| s.calls_made_in_window)
+                .unwrap_or_default();
+            self.add_info_message(
+                format!(
+                    "Ralph reached calls/hour limit ({calls_made}/{max}); waiting {wait_secs}s for reset."
+                ),
+                None,
+            );
+            let tx = self.app_event_tx.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(wait_secs)).await;
+                tx.send(AppEvent::RalphTuiWake);
+            });
+            return;
+        }
+
+        let Some((text, timeout_minutes, nonce)) = next_prompt else {
+            return;
+        };
+
+        self.queue_user_message(text.into());
+
+        if let Some(timeout) = timeout_minutes
+            && timeout != 0
+        {
+            let tx = self.app_event_tx.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(timeout.saturating_mul(60))).await;
+                tx.send(AppEvent::RalphTuiTimeout { nonce });
+            });
+        }
+    }
+
+    pub(crate) fn on_ralph_tui_wake(&mut self) {
+        if self.ralph_tui.is_none() {
+            return;
+        }
+        self.enqueue_ralph_tui_iteration();
+        self.maybe_send_next_queued_input();
+        self.request_redraw();
+    }
+
+    pub(crate) fn on_ralph_tui_timeout(&mut self, nonce: u64) {
+        let Some(state) = self.ralph_tui.as_ref() else {
+            return;
+        };
+        if !state.in_flight {
+            return;
+        }
+        if state.active_turn_nonce != nonce {
+            return;
+        }
+        if !self.bottom_pane.is_task_running() {
+            return;
+        }
+
+        self.add_to_history(history_cell::new_error_event(
+            "Ralph turn timed out; interrupting this turn and continuing.".to_string(),
+        ));
+        self.submit_op(Op::Interrupt);
+        self.request_redraw();
+    }
+
+    fn on_ralph_tui_task_complete(&mut self, last_agent_message: Option<&str>) {
+        let stop_file = self.config.cwd.join(".ralph").join("STOP");
+        let stop_file_present = stop_file.exists();
+        let mut stop_reason: Option<&'static str> = None;
+        let mut next_prompt: Option<String> = None;
+
+        {
+            let Some(state) = self.ralph_tui.as_mut() else {
+                return;
+            };
+            if !state.in_flight {
+                return;
+            }
+
+            state.in_flight = false;
+
+            let completion_seen =
+                completion_phrase_seen(last_agent_message, &state.completion_phrases);
+            let loop_num = state.current_loop;
+            let max_loops = state.max_loops;
+
+            // Best-effort supervisor progress marker (the agent should also update this file).
+            let progress_path = self.config.cwd.join(".ralph").join("@fix_progress.md");
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&progress_path)
+            {
+                let ts = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                let _ = writeln!(
+                    f,
+                    "\n- Loop {loop_num} ({ts}): (supervisor) completion_seen={completion_seen}",
+                );
+            }
+
+            // Stop precedence: STOP file > completion phrase > max loops.
+            if stop_file_present {
+                stop_reason = Some("STOP file");
+            } else if completion_seen {
+                stop_reason = Some("completion phrase seen");
+            } else if max_loops != 0 && loop_num >= max_loops {
+                stop_reason = Some("reached max loops");
+            } else {
+                state.current_loop = state.current_loop.saturating_add(1);
+
+                let max = if state.max_loops == 0 {
+                    "infinite".to_string()
+                } else {
+                    state.max_loops.to_string()
+                };
+                let phrases = state.completion_phrases.join(" | ");
+                next_prompt = Some(format!(
+                    "Ralph-Widex loop {}/{}.\n\n\
+Read and follow:\n\
+- .ralph/PROMPT.md\n\
+- .ralph/@fix_plan.md\n\
+- .ralph/@fix_progress.md\n\n\
+After you make progress, append a short update to `.ralph/@fix_progress.md`.\n\
+If all tasks are complete, print one of these completion phrases in your FINAL assistant message (exact text):\n\
+{phrases}\n",
+                    state.current_loop, max
+                ));
+
+                state.in_flight = true;
+            }
+        }
+
+        if let Some(reason) = stop_reason {
+            self.ralph_tui = None;
+            self.add_info_message(format!("Ralph loop stopped: {reason}."), None);
+            return;
+        }
+
+        if let Some(text) = next_prompt {
+            self.queue_user_message(text.into());
+        }
     }
 
     fn run_ralph_widex(&mut self, argv: Vec<String>) {
@@ -5247,6 +5655,96 @@ async fn fetch_rate_limits(base_url: String, auth: CodexAuth) -> Option<RateLimi
             None
         }
     }
+}
+
+fn parse_ralph_tui_args(args: &[String]) -> RalphTuiConfig {
+    let mut loops: Option<u64> = None;
+    let mut completion_phrases: Vec<String> = Vec::new();
+    let mut max_calls_per_hour: Option<u64> = None;
+    let mut timeout_minutes: Option<u64> = None;
+    let mut skip_git_repo_check = false;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--loops" => {
+                if let Some(val) = args.get(i + 1) {
+                    match val.parse::<u64>() {
+                        Ok(n) => loops = Some(n),
+                        Err(_) => {}
+                    }
+                    i += 2;
+                    continue;
+                }
+            }
+            "--completion-phrase" => {
+                if let Some(val) = args.get(i + 1) {
+                    completion_phrases.push(val.to_string());
+                    i += 2;
+                    continue;
+                }
+            }
+            "--calls" => {
+                if let Some(val) = args.get(i + 1) {
+                    if let Ok(n) = val.parse::<u64>() {
+                        max_calls_per_hour = Some(n);
+                    }
+                    i += 2;
+                    continue;
+                }
+            }
+            "--timeout-minutes" => {
+                if let Some(val) = args.get(i + 1) {
+                    if let Ok(n) = val.parse::<u64>() {
+                        timeout_minutes = Some(n);
+                    }
+                    i += 2;
+                    continue;
+                }
+            }
+            "--skip-git-repo-check" => {
+                skip_git_repo_check = true;
+                i += 1;
+                continue;
+            }
+            other => {
+                let _ = other;
+            }
+        }
+        i += 1;
+    }
+
+    let loops = loops.unwrap_or(20);
+    if completion_phrases.is_empty() {
+        completion_phrases.push("所有任务已完成".to_string());
+    }
+    RalphTuiConfig {
+        loops,
+        completion_phrases,
+        max_calls_per_hour,
+        timeout_minutes,
+        skip_git_repo_check,
+    }
+}
+
+fn completion_phrase_seen(message: Option<&str>, phrases: &[String]) -> bool {
+    let Some(message) = message else {
+        return false;
+    };
+    if phrases.is_empty() {
+        return false;
+    }
+
+    let message = message.trim();
+    if message.is_empty() {
+        return false;
+    }
+
+    let message_lower = message.to_lowercase();
+    phrases.iter().any(|p| {
+        let p = p.trim();
+        !p.is_empty() && message_lower.contains(&p.to_lowercase())
+    })
 }
 
 #[cfg(test)]

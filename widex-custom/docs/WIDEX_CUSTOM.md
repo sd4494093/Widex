@@ -121,33 +121,46 @@ git push origin widex
 - `templates/`：Rust 原生实现会直接复用这里的模板内容生成 `.ralph/`
 - `bin/`、`lib/`：早期 shell 版实现遗留（不作为运行路径，只保留作参考）
 
-运行期文件（Rust 版会写入/读取）：
+运行期文件（两种模式共用约定；部分仅 CLI 模式使用）：
 
-- `.ralph/PROMPT.md`：Ralph 提示词（每轮 `widex exec` 都会读取；Ralph 会在运行时追加一段“Loop Control”指令）
+- `.ralph/PROMPT.md`：Ralph 提示词（TUI 模式每轮提示模型去读；CLI 模式每轮 `widex exec` 读取）
 - `.ralph/@fix_plan.md`：计划（每轮执行前要求读取）
-- `.ralph/@fix_progress.md`：进度（每轮结束要求追加更新，用于“中断后继续/跨轮迭代”）
-- `.ralph/status.json`：loop 状态（含 rate limit 信息）
-- `.ralph/progress.json`：当前 `widex exec` 的实时进度（执行中才存在）
-- `.ralph/.response_analysis`：每轮分析结果（退出检测/进展/错误）
-- `.ralph/.exit_signals`：用于观测“test-only / completion 信号”的累积记录
-- `.ralph/.circuit_breaker_state` / `.ralph/.circuit_breaker_history`：熔断器状态与历史
-- `.ralph/STOP`：若存在，loop 会尽快退出；Rust 版也会在 `widex exec` 运行中或 rate-limit 等待期间检测到 STOP，并触发 graceful shutdown
-- `.ralph/ralph_output_schema.json`：Ralph 结构化输出的 JSON Schema（用于 `widex exec --output-schema`）
+- `.ralph/@fix_progress.md`：进度（每轮结束都会追加更新：supervisor 会强制追加一条，agent 也会被提示追加，用于“中断后继续/跨轮迭代”）
+- `.ralph/STOP`：若存在，请求停止
+  - TUI 模式：在当前 turn 结束/中断时生效（推荐直接 `/ralph-widex stop`）
+  - CLI 模式：会在 `widex exec` 运行中或 rate-limit 等待期间检测到 STOP，并触发 graceful shutdown
+- CLI 模式专用：
+  - `.ralph/status.json`：loop 状态（含 rate limit 信息）
+  - `.ralph/progress.json`：当前 `widex exec` 的实时进度（执行中才存在）
+  - `.ralph/.response_analysis`：每轮分析结果（退出检测/进展/错误）
+  - `.ralph/.exit_signals`：用于观测“test-only / completion 信号”的累积记录
+  - `.ralph/.circuit_breaker_state` / `.ralph/.circuit_breaker_history`：熔断器状态与历史
+  - `.ralph/ralph_output_schema.json`：Ralph 结构化输出的 JSON Schema（用于 `widex exec --output-schema`）
 
 用途：
 
-- 在 TUI 内通过 `/ralph-widex` 启动一个“自主开发循环”（Ralph loop），底层会反复调用 `widex exec`
-  并使用当前 repo 的 `.ralph/PROMPT.md` 作为提示词。
+- 在 TUI 内通过 `/ralph-widex start ...` 启动一个“自主开发循环”（Ralph loop），**每一轮都是一个正常的 Widex turn**：
+  - 你能在 Widex 前台看到每轮的完整交互过程（提示词、工具调用、命令执行等）
+  - 一轮结束（或被中断）后自动触发下一轮，直到跑满 N 轮或命中完成词
 - 核心目标（必须满足）：
-  - **跑满 N 轮**：除 STOP/SIGTERM/Ctrl-C 外，不会因为 `widex exec` 超时/失败/退出而提前停机
+  - **跑满 N 轮**：除 `/ralph-widex stop` / `.ralph/STOP`（以及真正退出 Widex 进程）外，不会因为 turn 的成功/失败/超时/中断而提前停止
   - **完成词提前退出**：通过 `--completion-phrase` 指定一个或多个完成词，最终消息包含任意完成词即可提前退出
-- 约定：每轮必须更新 `.ralph/@fix_progress.md`，用于“中断后继续/跨轮迭代”的上下文承接（由 ralph 运行时注入指令约束）
+- 中断语义（TUI 模式）：
+  - `Esc` / `Ctrl+C`：只中断当前 turn，然后继续下一轮
+  - 停止整个循环：`/ralph-widex stop`
+- 常用参数（TUI 模式）：
+  - `--loops N`：最多迭代 N 轮
+  - `--completion-phrase TEXT`：完成词（可重复）
+  - `--timeout-minutes N`：每轮 watchdog（超时会 Interrupt 当前 turn 并继续）
+  - `--calls N`：每小时最多 N 个 Ralph turn（到达后等待到整点继续）
+  - `--skip-git-repo-check`：允许在非 git repo 目录运行
+- 约定：每轮都会更新 `.ralph/@fix_progress.md`，用于“中断后继续/跨轮迭代”的上下文承接（由 ralph 运行时注入指令 + supervisor 强制追加保障）
 - 支持 `/ralph-widex init` 初始化当前目录的 `.ralph/` 结构（模板来源于 `widex-custom/features/ralph-widex/templates/`）。
-- 支持 `/ralph-widex monitor` 在终端查看 `.ralph/status.json` 的实时状态面板。
+- CLI 模式仍保留 `widex ralph-widex run/start/monitor`（更适合 headless/无人值守；会写 `.ralph/status.json` 等文件）。
 
 现状（widex 分支）：
 
-- TUI 的 `/ralph-widex` **只调用 Rust 原生实现**：`widex ralph-widex ...`（无需安装 shell 脚本）。
+- TUI 的 `/ralph-widex` 是 **原生前台循环**（不再依赖 shell，不再以后台 supervisor + `widex exec` 作为默认路径）。
 - `widex-custom/features/ralph-widex/` 的 shell 版仅作为历史参考保留（不再作为兜底/回退路径；不保证可用性）。
 
 ### 3.3 Ralph（生产级 Rust 重构规划）
@@ -176,12 +189,12 @@ Widex 的生产级目标：把 Ralph 做成 **原生 Widex 功能**（原生 sla
 
 - `widex ralph-widex init`：生成 `.ralph/`（复用 templates，但由 Rust 写入）
 - `widex ralph-widex run`：运行 loop（内部调用 `widex exec --json ...`；写 status/progress/log）
-- `widex ralph-widex start`：后台启动 loop（不阻塞 TUI/终端；会写入 `.ralph/ralph_widex.pid`）
+- `widex ralph-widex start`：后台启动 loop（CLI/headless 用；会写入 `.ralph/ralph_widex.pid`）
 - `widex ralph-widex stop`：请求停机（创建 `.ralph/STOP`，并 best-effort 发送 SIGTERM）
 - `widex ralph-widex monitor`：读取 `.ralph/status.json` + `.ralph/logs/ralph.log`（先 CLI 版，后续可内置到 TUI）
   - `run` 运行时会写入 `.ralph/ralph_widex.pid`（PID 文件；正常退出会删除）
 
-阶段 2：TUI `/ralph-widex` 只调用 Rust 版（不再安装/执行 shell 脚本，也不提供 shell fallback）。
+阶段 2（已完成）：TUI `/ralph-widex` 变为 **原生前台循环**（在同一个 Widex 会话内自动迭代，每轮可见），不再安装/执行 shell 脚本，也不提供 shell fallback。
 
 阶段 3：把 monitor/状态面板做成 TUI 内置视图（不再需要独立 `monitor` 进程）。
 

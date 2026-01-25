@@ -47,9 +47,11 @@
 
 ### E. Ralph Widex（强制）
 
-- `/ralph-widex` 在 widex 中**只走 Rust 原生实现**（`widex ralph-widex ...`）；不要再引入 shell 兜底路径。
+- `/ralph-widex` 在 widex 中**只走 Rust 原生实现**；不要再引入 shell 兜底路径。
 - `widex-custom/features/ralph-widex/bin/` 与 `lib/` 仅作为历史参考保留（不保证可用性）；任何新能力都应落在 `codex-rs/ralph-widex/`。
-- 交互体验：TUI 的 `/ralph-widex` 默认应启动后台 loop（等价于 `widex ralph-widex start`），避免阻塞 TUI。
+- 交互体验：TUI 的 `/ralph-widex start ...` 必须在**当前 Widex 会话内前台迭代**（每轮可见工具调用/输出），不要再默认做成后台 supervisor 进程。
+  - `Esc`/`Ctrl+C`：只中断当前 turn，继续下一轮
+  - `/ralph-widex stop`：停止整个循环
 
 ### F. 不在这里放 Rust 代码规范（说明）
 

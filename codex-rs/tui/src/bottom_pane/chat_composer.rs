@@ -1819,7 +1819,7 @@ impl ChatComposer {
                 && let Some((_n, cmd)) =
                     Self::built_in_slash_commands_for_input(self.collaboration_modes_enabled)
                         .find(|(command_name, _)| *command_name == name)
-                && cmd == SlashCommand::Review
+                && matches!(cmd, SlashCommand::Review | SlashCommand::RalphWidex)
             {
                 self.textarea.set_text_clearing_elements("");
                 return Some(InputResult::CommandWithArgs(cmd, rest.to_string()));
@@ -4002,6 +4002,56 @@ mod tests {
                 panic!("expected command dispatch after Tab completion, got literal queue")
             }
             InputResult::None => panic!("expected Command result for '/diff'"),
+        }
+        assert!(composer.textarea.is_empty());
+    }
+
+    #[test]
+    fn slash_ralph_widex_with_args_dispatches_command_with_args() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+
+        // Type `/ralph-widex start` in a human-like way. The space moves the cursor beyond the
+        // '/name' token, which hides the slash popup; Enter should still dispatch.
+        type_chars_humanlike(
+            &mut composer,
+            &[
+                '/', 'r', 'a', 'l', 'p', 'h', '-', 'w', 'i', 'd', 'e', 'x', ' ', 's', 't', 'a',
+                'r', 't',
+            ],
+        );
+
+        let (result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        match result {
+            InputResult::CommandWithArgs(cmd, rest) => {
+                assert_eq!(cmd.command(), "ralph-widex");
+                assert_eq!(rest, "start");
+            }
+            InputResult::Command(cmd) => {
+                panic!(
+                    "expected args dispatch, got command without args: {}",
+                    cmd.command()
+                )
+            }
+            InputResult::Submitted { text, .. } => {
+                panic!("expected command dispatch, got literal submit: {text}")
+            }
+            InputResult::Queued { .. } => {
+                panic!("expected command dispatch, got queue")
+            }
+            InputResult::None => panic!("expected CommandWithArgs result for '/ralph-widex start'"),
         }
         assert!(composer.textarea.is_empty());
     }

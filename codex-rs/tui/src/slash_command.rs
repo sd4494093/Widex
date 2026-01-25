@@ -49,7 +49,7 @@ impl SlashCommand {
             SlashCommand::New => "start a new chat during a conversation",
             SlashCommand::Init => "create an AGENTS.md file with instructions for Codex",
             SlashCommand::Compact => "summarize conversation to prevent hitting the context limit",
-            SlashCommand::RalphWidex => "start an autonomous loop (Ralph) using widex exec",
+            SlashCommand::RalphWidex => "start an autonomous loop (Ralph) inside Widex",
             SlashCommand::Review => "review my current changes and find issues",
             SlashCommand::Resume => "resume a saved chat",
             SlashCommand::Fork => "fork the current chat",
@@ -87,7 +87,6 @@ impl SlashCommand {
             | SlashCommand::Fork
             | SlashCommand::Init
             | SlashCommand::Compact
-            | SlashCommand::RalphWidex
             // | SlashCommand::Undo
             | SlashCommand::Model
             | SlashCommand::Approvals
@@ -105,6 +104,7 @@ impl SlashCommand {
             | SlashCommand::Feedback
             | SlashCommand::Quit
             | SlashCommand::Exit => true,
+            SlashCommand::RalphWidex => true,
             SlashCommand::Rollout => true,
             SlashCommand::TestApproval => true,
             SlashCommand::Collab => true,

@@ -957,6 +957,12 @@ impl App {
             AppEvent::CommitTick => {
                 self.chat_widget.on_commit_tick();
             }
+            AppEvent::RalphTuiWake => {
+                self.chat_widget.on_ralph_tui_wake();
+            }
+            AppEvent::RalphTuiTimeout { nonce } => {
+                self.chat_widget.on_ralph_tui_timeout(nonce);
+            }
             AppEvent::CodexEvent(event) => {
                 if !self.external_approval_routes.is_empty() {
                     // Store the events while the approval is pending.
