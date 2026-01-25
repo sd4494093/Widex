@@ -61,6 +61,7 @@ pub(crate) struct RunOptions {
     pub(crate) session_expiry_hours: u64,
     pub(crate) skip_git_repo_check: bool,
     pub(crate) full_auto: bool,
+    pub(crate) bypass_approvals_and_sandbox: bool,
     pub(crate) verbose: bool,
     pub(crate) use_output_schema: bool,
     pub(crate) disable_mcp: bool,
@@ -762,7 +763,9 @@ async fn codex_exec_once(
     if opts.skip_git_repo_check {
         cmd.arg("--skip-git-repo-check");
     }
-    if opts.full_auto {
+    if opts.bypass_approvals_and_sandbox {
+        cmd.arg("--dangerously-bypass-approvals-and-sandbox");
+    } else if opts.full_auto {
         cmd.arg("--full-auto");
     }
     if let Some(session_id) = &session_id {

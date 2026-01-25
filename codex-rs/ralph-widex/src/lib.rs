@@ -78,6 +78,13 @@ pub struct RunArgs {
     #[arg(long = "no-full-auto", default_value_t = false)]
     pub no_full_auto: bool,
 
+    /// Pass `--dangerously-bypass-approvals-and-sandbox` to the child `widex exec`.
+    ///
+    /// This avoids interactive approval prompts that can cause the exec process to hang until
+    /// `--timeout-minutes` is hit.
+    #[arg(long = "exec-bypass-approvals-and-sandbox", default_value_t = false)]
+    pub exec_bypass_approvals_and_sandbox: bool,
+
     /// Print extra debug info to stderr.
     #[arg(long = "verbose", default_value_t = false)]
     pub verbose: bool,
@@ -142,6 +149,7 @@ impl Default for RunArgs {
             session_expiry_hours: 24,
             skip_git_repo_check: false,
             no_full_auto: false,
+            exec_bypass_approvals_and_sandbox: false,
             verbose: false,
             no_output_schema: false,
             disable_mcp: false,
@@ -220,6 +228,7 @@ pub async fn run_main(cli: Cli, default_codex_cmd: PathBuf) -> anyhow::Result<()
                 session_expiry_hours: args.session_expiry_hours,
                 skip_git_repo_check: args.skip_git_repo_check,
                 full_auto: !args.no_full_auto,
+                bypass_approvals_and_sandbox: args.exec_bypass_approvals_and_sandbox,
                 verbose: args.verbose,
                 use_output_schema: !args.no_output_schema,
                 disable_mcp: args.disable_mcp,
@@ -382,6 +391,9 @@ fn apply_run_args(cmd: &mut std::process::Command, args: &RunArgs) {
     }
     if args.no_full_auto {
         cmd.arg("--no-full-auto");
+    }
+    if args.exec_bypass_approvals_and_sandbox {
+        cmd.arg("--exec-bypass-approvals-and-sandbox");
     }
     if args.verbose {
         cmd.arg("--verbose");
