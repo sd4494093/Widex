@@ -130,6 +130,8 @@ widex ralph-widex run --no-output-schema
 
 这会导致“无进展”误判并触发熔断器。`ralph-widex` 默认会在这种情况下**自动重试一次**（同一 loop 内，计入 calls/hour）。
 
+另外：当 `--output-last-message` 落盘为空，但 stdout 的 JSONL 事件流里能看到 `AgentMessage` 时，`ralph-widex` 会自动用事件流里的 `AgentMessage` 作为本轮 `last_message` 的兜底（减少误判）。
+
 可调整重试次数（重试次数 N 表示“最多额外重试 N 次”，总尝试次数 = N + 1）：
 
 ```bash
