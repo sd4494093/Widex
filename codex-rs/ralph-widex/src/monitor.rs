@@ -155,16 +155,15 @@ async fn render_once(paths: &RalphPaths, interval_secs: u64) -> anyhow::Result<(
     println!("Recent activity:");
     println!("----------------");
 
-    let log_path = paths.logs_dir.join("ralph.log");
-    match tokio::fs::read_to_string(&log_path).await {
-        Ok(contents) => {
+    let (log_path, contents) = read_log_contents(paths).await;
+    match contents {
+        Some(contents) => {
+            println!("Log:        {}", log_path.display());
             for line in tail_lines(&contents, 12) {
                 println!("{line}");
             }
         }
-        Err(_) => {
-            println!("No log file found: {}", log_path.display());
-        }
+        None => println!("No log file found: {}", log_path.display()),
     }
 
     println!();
@@ -214,7 +213,7 @@ pub(crate) async fn print_status_once(
     } else {
         println!();
         println!("Status file not found: {}", paths.status_file.display());
-        println!("Run: widex ralph-widex init");
+        println!("Run: widex ralph-widex init (or /ralph-widex init in TUI)");
     }
 
     if let Some(pid) = pid {
@@ -275,7 +274,37 @@ pub(crate) async fn print_status_once(
         }
     }
 
+    println!();
+    println!("Recent activity:");
+    println!("----------------");
+
+    let (log_path, contents) = read_log_contents(&paths).await;
+    match contents {
+        Some(contents) => {
+            println!("Log:        {}", log_path.display());
+            for line in tail_lines(&contents, tail_lines_count) {
+                println!("{line}");
+            }
+        }
+        None => println!("No log file found: {}", log_path.display()),
+    }
+
     Ok(())
+}
+
+async fn read_log_contents(paths: &RalphPaths) -> (std::path::PathBuf, Option<String>) {
+    let primary = paths.logs_dir.join("ralph.log");
+    if let Ok(contents) = tokio::fs::read_to_string(&primary).await {
+        return (primary, Some(contents));
+    }
+
+    // Back-compat: older daemon builds redirected stdout/stderr here.
+    let daemon = paths.logs_dir.join("ralph_widex_daemon.log");
+    if let Ok(contents) = tokio::fs::read_to_string(&daemon).await {
+        return (daemon, Some(contents));
+    }
+
+    (primary, None)
 }
 
 async fn read_json<T: for<'de> Deserialize<'de>>(path: &std::path::Path) -> anyhow::Result<T> {

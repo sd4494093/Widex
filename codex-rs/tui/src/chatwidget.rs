@@ -734,11 +734,26 @@ impl ChatWidget {
     }
 
     fn restore_reasoning_status_header(&mut self) {
+        if let Some(header) = self.ralph_status_header() {
+            self.set_status_header(header);
+            return;
+        }
+
         if let Some(header) = extract_first_bold(&self.reasoning_buffer) {
             self.set_status_header(header);
         } else if self.bottom_pane.is_task_running() {
             self.set_status_header(String::from("Working"));
         }
+    }
+
+    fn ralph_status_header(&self) -> Option<String> {
+        let state = self.ralph_tui.as_ref()?;
+        let max = if state.max_loops == 0 {
+            "inf".to_string()
+        } else {
+            state.max_loops.to_string()
+        };
+        Some(format!("Ralph {}/{}", state.current_loop, max))
     }
 
     fn flush_unified_exec_wait_streak(&mut self) {
@@ -2896,6 +2911,19 @@ impl ChatWidget {
 
         let mut items: Vec<UserInput> = Vec::new();
 
+        // UX guard: if a `/ralph-widex ...` command reached the model input path (e.g., pasted with
+        // leading whitespace or otherwise not parsed as a slash command), handle it locally instead
+        // of letting the agent attempt to run it as a shell command.
+        let trimmed = text.trim_start();
+        if trimmed == "/ralph-widex" || trimmed.starts_with("/ralph-widex ") {
+            let rest = trimmed
+                .strip_prefix("/ralph-widex")
+                .unwrap_or(trimmed)
+                .trim_start();
+            self.dispatch_ralph_tui_command(rest);
+            return;
+        }
+
         // Special-case: "!cmd" executes a local shell command instead of sending to the model.
         if let Some(stripped) = text.strip_prefix('!') {
             let cmd = stripped.trim();
@@ -3555,6 +3583,10 @@ Advanced (CLI passthrough):\n\
             ),
         );
 
+        if let Some(header) = self.ralph_status_header() {
+            self.set_status_header(header);
+        }
+
         self.enqueue_ralph_tui_iteration();
     }
 
@@ -3581,6 +3613,7 @@ Advanced (CLI passthrough):\n\
         let _ = append_ralph_tui_log_line(&log_path, "INFO", &format!("stopped: {reason}"));
 
         self.add_info_message(format!("Ralph loop stopped: {reason}."), None);
+        self.restore_reasoning_status_header();
     }
 
     fn print_ralph_tui_status(&mut self) {
@@ -3998,6 +4031,7 @@ After you make progress, append a short update to `.ralph/@fix_progress.md` unde
 
             self.ralph_tui = None;
             self.add_info_message(format!("Ralph loop stopped: {reason}."), None);
+            self.restore_reasoning_status_header();
             return;
         }
 

@@ -1,0 +1,120 @@
+# Grok 集成（Widex 落地：VectorEngine / Chat Completions）
+
+> 目标：在 **widex** 分支长期开发（运行/测试/使用都在这里），同时可周期性同步上游 `main`，并保留/演进 Grok 集成与 Widex 自定义配置。
+
+本工作区（当前仓库）落地结果：
+
+- 已在 `codex-rs/` 内加入内置 provider：`grok-vectorengine`（VectorEngine 中转，OpenAI Chat Completions 兼容）。
+- 已将 `grok-*` 模型加入 picker 预设（例如 `grok-4.1` / `grok-4-1-fast-*`）。
+- 已把“会话内切到 grok-* 模型时自动切 provider；切走时回到 openai/openai-proxy”落到 core。
+- 已在 Chat Completions 请求构造层对 VectorEngine 的已知限制做 best-effort 兼容（图像输入降级为文本提示）。
+
+
+## 1. 总体架构：把 Grok 当成一个 Chat Completions Provider
+
+Codex 主干抽象大致是：
+
+- Provider（模型提供方）负责：`base_url`、headers、重试、stream idle timeout 等
+- Wire API（线协议）负责：请求/响应 JSON schema 与 streaming 解析
+  - OpenAI Responses：`/v1/responses` + SSE
+  - OpenAI Chat：`/v1/chat/completions` + SSE
+  - Gemini：`/models/{api_model}:streamGenerateContent?alt=sse` + SSE（widex 自增 wire）
+
+Grok（通过 VectorEngine 中转）当前走的是：
+
+- `wire_api = "chat"`（复用既有 OpenAI Chat Completions wire；不新增 wire）
+- 请求：`POST https://api.vectorengine.ai/v1/chat/completions`
+- streaming：`text/event-stream`，以 `data: {json}` 连续输出，最终以 `data: [DONE]` 结束
+
+这样做的收益是：尽量复用 Codex 的 session/tool router/TUI，把变更集中在“provider 配置 + 少量兼容逻辑”层。
+
+
+## 2. 本仓实现：按“配置层 -> 协议层 -> 请求构造 -> 流式解析 -> UI”列出落点
+
+### 2.1 配置/Provider 层（内置 grok-vectorengine）
+
+- `codex-rs/core/src/model_provider_info.rs`
+  - `built_in_model_providers()` 新增内置 provider：`grok-vectorengine`
+    - `base_url`: `https://api.vectorengine.ai/v1`
+    - `wire_api`: `chat`
+    - `requires_openai_auth = true`（复用 OpenAI 认证槽位：`OPENAI_API_KEY` -> `Authorization: Bearer ...`）
+
+### 2.2 模型预设层（picker 可见）
+
+- `codex-rs/core/src/models_manager/model_presets.rs`
+  - 新增模型预设（show_in_picker = true）：
+    - `grok-4.1`
+    - `grok-4-1-fast-reasoning`
+    - `grok-4-1-fast-non-reasoning`
+
+### 2.3 认证层（auth.json + env 优先级 + Switchover 推荐）
+
+由于 `grok-vectorengine` 走 OpenAI Chat Completions wire，当前使用的认证字段仍是 `openai_api_key`：
+
+- 直接使用：设置 `OPENAI_API_KEY=<VectorEngine key>`
+- 推荐使用：API Switchover 用 `GROK_API_KEY` 映射到 `openai_api_key`（避免和 OpenAI 官方 key 混用）
+  - 示例模板：`widex-custom/features/api-switchover/api_config.example.yaml`
+
+> Widex 会把第一次切换时读到的 key 缓存进 `${CODEX_HOME}/auth.json`（`WIDEX_SAVED_API_KEYS`），后续可以 unset env 仍可切换。
+
+### 2.4 会话层（切模型自动切 provider；切走自动回退）
+
+- `codex-rs/core/src/codex.rs`
+  - 当 model 以 `grok-` 开头，且当前 provider 是 `openai/openai-proxy` 时：自动切换到 `grok-vectorengine`
+  - 从 `grok-*` 切回非 `grok-*` 时：若当前 provider 为 `grok-vectorengine`，自动回退到 `openai-proxy`（若存在）否则回退到 `openai`
+
+### 2.5 请求构造层（Prompt/Tools -> Chat Completions JSON；图像降级）
+
+- `codex-rs/codex-api/src/requests/chat.rs`
+  - 复用 Chat Completions 的 messages/tools 构造逻辑
+  - VectorEngine 的 Grok 端点当前对 `content: [{type:"image_url", ...}]` payload 可能会忽略（文本-only）。因此当 model 以 `grok-` 开头且输入包含图片时：
+    - 不发送多模态结构化 `image_url` 数组
+    - 追加 best-effort 文本提示：`[image_url: ...]`（避免整条用户消息“被吃掉”）
+
+### 2.6 流式解析层（Chat SSE -> ResponseEvent）
+
+- `codex-rs/codex-api/src/sse/chat.rs`
+  - 解析 Chat Completions SSE：
+    - `choices[].delta.content`（string 或 array） -> `ResponseEvent::OutputTextDelta`
+    - `choices[].delta.reasoning`（若存在） -> `ResponseEvent::ReasoningContentDelta`
+    - `choices[].delta.tool_calls` + `finish_reason = tool_calls` -> `ResponseItem::FunctionCall`
+    - `data: [DONE]` 或连接 close -> `ResponseEvent::Completed`
+
+### 2.7 UI 支持（现状）
+
+- picker 中可直接选择 `grok-*` 预设模型
+- 图像输入在 `grok-*` 上会降级为文本提示（见 2.5）；如需真正的多模态，需要 VectorEngine 侧支持并在请求构造层放开
+
+
+## 3. 使用方式（最小可用）
+
+方式 A（最简单，直接跑）：
+
+- `export OPENAI_API_KEY=<VectorEngine key>`
+- 启动 widex，并选择/切换模型为任一 `grok-*`（会话会自动切换到 `grok-vectorengine` provider）
+
+方式 B（推荐，和 OpenAI 官方 key 解耦）：
+
+- 配置 `${CODEX_HOME}/api_switchover.yaml`（可从 `widex-custom/features/api-switchover/api_config.example.yaml` 拷贝）
+- `export GROK_API_KEY=<VectorEngine key>`
+- 在 TUI 中使用 `/model grok-4.1`（或其它 `grok-*`）触发自动切换
+
+
+## 4. 测试/验证（本仓）
+
+Grok 集成通常只涉及 core/codex-api（不新增 wire）：
+
+- `cd codex-rs && just fmt`
+- `cd codex-rs && cargo test -p codex-api`
+- `cd codex-rs && cargo test -p codex-core --test suite list_models`
+
+
+## 5. 后续：按同一模板继续演进（Grok “更多能力”）
+
+按“配置层 -> 协议层 -> 请求构造 -> 流式解析 -> UI 支持”推进，候选项：
+
+- tools/function calling：tool schema、tool choice、tool-call delta 的兼容性验证
+- 多模态：image input / image output（若 VectorEngine 支持，需要解除 2.5 的降级逻辑）
+- reasoning 参数映射：effort/temperature/top_p 等与 Grok 参数如何对应
+- token/usage 解析：stream/非 stream 情况下 usage 的提取与 UI 展示
+- 错误码/重试策略：429/5xx 的指数退避、请求超时、SSE 断流重连等

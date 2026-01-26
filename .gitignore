@@ -103,5 +103,8 @@ widex-custom/features/api-switchover/*.local.yaml
 # Ralph loop state (per-project, generated)
 .ralph/
 
+# Local git worktrees (we keep them under .worktrees/ for convenience)
+.worktrees/
+
 # Avoid accidentally committing auth state / API keys if a tool writes into the repo root.
 auth.json
