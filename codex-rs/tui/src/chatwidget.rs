@@ -3295,7 +3295,7 @@ Advanced (CLI passthrough):\n\
         let prompt_path = ralph_dir.join("PROMPT.md");
         if !prompt_path.exists() {
             self.add_error_message(format!(
-                "Missing {} (run `widex ralph-widex init` first).",
+                "Missing {} (run `/ralph-widex init` first).",
                 prompt_path.display()
             ));
             return;
