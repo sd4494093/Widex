@@ -31,6 +31,8 @@ git push origin widex
 
 更多说明见：`widex-custom/docs/DUAL_CLI.md`。
 
+补充：MCP 配置也随 `CODEX_HOME` 隔离（widex：`~/.widex-codex/config.toml`；官方 npm codex：`~/.codex/config.toml`）。
+
 
 ## 统一约束：新增任何模型/Provider 必须按层实现
 

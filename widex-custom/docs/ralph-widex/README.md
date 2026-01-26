@@ -310,6 +310,15 @@ widex ralph-widex run --exec-disable web_search_request
 widex ralph-widex run --disable-mcp
 ```
 
+- 更推荐的“生产做法”：只禁用坏掉的 server（保留 playwright / chrome-devtools 等正常 MCP）。
+  Widex 的 MCP 配置在 `${CODEX_HOME}/config.toml`（默认 `~/.widex-codex/config.toml`；不要修改官方 npm codex 的 `~/.codex/config.toml`）。
+  例如禁用 `mindsdb`：
+
+```toml
+[mcp_servers.mindsdb]
+enabled = false
+```
+
 - 如果你在 `.ralph/logs/codex_stderr_*.log` 或 monitor 的 Output 里反复看到：
   `Custom tool call output is missing for call id: ...`
   这通常是“继续（resume）旧 thread 时历史里存在缺失的 tool output”导致的内部修复日志。

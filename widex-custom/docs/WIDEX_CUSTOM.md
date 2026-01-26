@@ -213,6 +213,13 @@ Widex 的生产级目标：把 Ralph 做成 **原生 Widex 功能**（原生 sla
 - 超时不致命：当单次 `widex exec` 触发 `--timeout-minutes` 超时，Rust 版会将其视为本轮失败（exit code 124）并继续下一轮；
   若持续超时/持续同错，会被熔断器收敛（避免无限消耗）。
 - MCP 排查：如遇 rmcp serde / JsonRpcMessage 类错误，可用 `widex ralph-widex run --disable-mcp` 临时禁用已配置的 MCP servers（设置 `mcp_servers.<name>.enabled=false`），避免 JSON-RPC framing 被破坏。
+  - 配置文件位置：Widex 使用 `${CODEX_HOME}/config.toml`（默认 `~/.widex-codex/config.toml`）；不要修改官方 npm codex 的 `~/.codex/config.toml`。
+  - 推荐做法：只禁用坏掉的 server（保留 playwright / chrome-devtools 等正常 MCP），例如：
+
+    ```toml
+    [mcp_servers.mindsdb]
+    enabled = false
+    ```
 - 继续（resume）旧会话时，Codex 可能会在 stderr 输出 `Custom tool call output is missing for call id: ...` 之类的内部修复日志；ralph-widex 会忽略这类日志，不会将其计入同错熔断。
 - graceful shutdown：支持 Ctrl-C（SIGINT）与 SIGTERM；会尝试向子进程发送对应信号并在超时后强制终止，
   同时更新 `.ralph/status.json` 为 `shutdown/exited`。

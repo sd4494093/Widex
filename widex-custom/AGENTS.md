@@ -44,6 +44,7 @@
 
 - 继续保留官方 npm `codex`，不要让 widex 的配置/schema 破坏它。
 - widex 运行请使用 `widex-custom/bin/widex`（它会默认隔离 `CODEX_HOME=~/.widex-codex`，并在缺 binary 时自动 release 构建）。
+- MCP 配置也随 `CODEX_HOME` 隔离：widex 用 `~/.widex-codex/config.toml`；官方 npm codex 用 `~/.codex/config.toml`（不要混用/互改）。
 
 ### E. Ralph Widex（强制）
 
