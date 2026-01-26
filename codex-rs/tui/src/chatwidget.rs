@@ -2764,6 +2764,15 @@ impl ChatWidget {
                 )));
                 return;
             }
+
+            // UX guard: `/ralph-widex ...` is a TUI slash command, not a shell command. Users
+            // sometimes type `!/ralph-widex ...` by accident; treat it as the slash command.
+            if cmd == "/ralph-widex" || cmd.starts_with("/ralph-widex ") {
+                let rest = cmd.strip_prefix("/ralph-widex").unwrap_or(cmd).trim_start();
+                self.dispatch_ralph_tui_command(rest);
+                return;
+            }
+
             self.submit_op(Op::RunUserShellCommand {
                 command: cmd.to_string(),
             });
@@ -3335,6 +3344,24 @@ Advanced (CLI passthrough):\n\
         };
         self.ralph_tui = Some(state);
 
+        // Best-effort: write a status file compatible with `widex ralph-widex monitor`, so
+        // monitoring works even when running the TUI loop.
+        if let Some(state) = self.ralph_tui.as_ref() {
+            let max_calls = state.max_calls_per_hour.unwrap_or(0);
+            let status_path = ralph_dir.join("status.json");
+            let log_path = ralph_dir.join("logs").join("ralph.log");
+            let _ = write_ralph_tui_status(
+                &status_path,
+                "starting",
+                "running",
+                "",
+                state.current_loop,
+                state.calls_made_in_window,
+                max_calls,
+            );
+            let _ = append_ralph_tui_log_line(&log_path, "INFO", "starting");
+        }
+
         let max = if cfg.loops == 0 {
             "infinite".to_string()
         } else {
@@ -3370,10 +3397,26 @@ Advanced (CLI passthrough):\n\
     }
 
     fn stop_ralph_tui(&mut self, reason: &str) {
-        if self.ralph_tui.take().is_none() {
+        let Some(state) = self.ralph_tui.take() else {
             self.add_info_message("Ralph loop is not running.".to_string(), None);
             return;
-        }
+        };
+
+        let ralph_dir = self.config.cwd.join(".ralph");
+        let status_path = ralph_dir.join("status.json");
+        let log_path = ralph_dir.join("logs").join("ralph.log");
+        let max_calls = state.max_calls_per_hour.unwrap_or(0);
+        let last_action = "stopped by user";
+        let _ = write_ralph_tui_status(
+            &status_path,
+            last_action,
+            "stopped",
+            reason,
+            state.current_loop,
+            state.calls_made_in_window,
+            max_calls,
+        );
+        let _ = append_ralph_tui_log_line(&log_path, "INFO", &format!("stopped: {reason}"));
 
         self.add_info_message(format!("Ralph loop stopped: {reason}."), None);
     }
@@ -3540,7 +3583,7 @@ Read and follow:\n\
 - .ralph/PROMPT.md\n\
 - .ralph/@fix_plan.md\n\
 - .ralph/@fix_progress.md\n\n\
-After you make progress, append a short update to `.ralph/@fix_progress.md`.\n\
+After you make progress, append a short update to `.ralph/@fix_progress.md` under the `## Notes (editable)` section (above `<!-- RALPH_WIDEX_AUTOLOG_START -->`). Never edit the auto log section.\n\
 {completion_instruction}",
                     state.current_loop, max
                 );
@@ -3584,6 +3627,23 @@ After you make progress, append a short update to `.ralph/@fix_progress.md`.\n\
             && let Err(err) = write_ralph_fix_progress_event(&ralph_dir, event)
         {
             self.add_error_message(format!("Failed to update .ralph/@fix_progress.md: {err}"));
+        }
+
+        if let Some(state) = self.ralph_tui.as_ref() {
+            let max_calls = state.max_calls_per_hour.unwrap_or(0);
+            let status_path = ralph_dir.join("status.json");
+            let log_path = ralph_dir.join("logs").join("ralph.log");
+            let last_action = format!("loop {} start", state.current_loop);
+            let _ = write_ralph_tui_status(
+                &status_path,
+                &last_action,
+                "running",
+                "",
+                state.current_loop,
+                state.calls_made_in_window,
+                max_calls,
+            );
+            let _ = append_ralph_tui_log_line(&log_path, "INFO", &last_action);
         }
 
         self.queue_user_message(text.into());
@@ -3720,7 +3780,7 @@ Read and follow:\n\
 - .ralph/PROMPT.md\n\
 - .ralph/@fix_plan.md\n\
 - .ralph/@fix_progress.md\n\n\
-After you make progress, append a short update to `.ralph/@fix_progress.md`.\n\
+After you make progress, append a short update to `.ralph/@fix_progress.md` under the `## Notes (editable)` section (above `<!-- RALPH_WIDEX_AUTOLOG_START -->`). Never edit the auto log section.\n\
 {completion_instruction}",
                     state.current_loop, max
                 ));
@@ -3740,17 +3800,62 @@ After you make progress, append a short update to `.ralph/@fix_progress.md`.\n\
         };
 
         let ralph_dir = self.config.cwd.join(".ralph");
+        let loop_num = fix_progress_event.loop_number;
         if let Err(err) = write_ralph_fix_progress_event(&ralph_dir, fix_progress_event) {
             self.add_error_message(format!("Failed to update .ralph/@fix_progress.md: {err}"));
         }
 
         if let Some(reason) = stop_reason {
+            if let Some(state) = self.ralph_tui.as_ref() {
+                let status_path = ralph_dir.join("status.json");
+                let log_path = ralph_dir.join("logs").join("ralph.log");
+                let max_calls = state.max_calls_per_hour.unwrap_or(0);
+
+                let (status, exit_reason) = match reason {
+                    "STOP file" => ("stopped", "STOP file"),
+                    "completion signal seen" => ("completed", "completion signal seen"),
+                    "reached max loops" => ("exited", "reached max loops"),
+                    _ => ("exited", reason),
+                };
+                let last_action = format!("loop {loop_num} end");
+                let _ = write_ralph_tui_status(
+                    &status_path,
+                    &last_action,
+                    status,
+                    exit_reason,
+                    loop_num,
+                    state.calls_made_in_window,
+                    max_calls,
+                );
+                let _ = append_ralph_tui_log_line(
+                    &log_path,
+                    "INFO",
+                    &format!("Stopping: {exit_reason}"),
+                );
+            }
+
             self.ralph_tui = None;
             self.add_info_message(format!("Ralph loop stopped: {reason}."), None);
             return;
         }
 
         if let Some(text) = next_prompt {
+            if let Some(state) = self.ralph_tui.as_ref() {
+                let status_path = ralph_dir.join("status.json");
+                let log_path = ralph_dir.join("logs").join("ralph.log");
+                let max_calls = state.max_calls_per_hour.unwrap_or(0);
+                let last_action = format!("loop {loop_num} end");
+                let _ = write_ralph_tui_status(
+                    &status_path,
+                    &last_action,
+                    "running",
+                    "",
+                    state.current_loop,
+                    state.calls_made_in_window,
+                    max_calls,
+                );
+                let _ = append_ralph_tui_log_line(&log_path, "INFO", &last_action);
+            }
             self.queue_user_message(text.into());
         }
     }
@@ -6109,6 +6214,76 @@ fn render_ralph_fix_progress_autolog(events: &[RalphFixProgressEvent]) -> String
     }
 
     out
+}
+
+#[derive(Debug, serde::Serialize)]
+struct RalphTuiStatusFile {
+    timestamp: String,
+    mode: String,
+    loop_count: u64,
+    calls_made_this_hour: u64,
+    max_calls_per_hour: u64,
+    last_action: String,
+    status: String,
+    exit_reason: String,
+    next_reset: String,
+}
+
+fn next_hour_boundary_string() -> String {
+    let now = Local::now();
+    let next = (now + chrono::Duration::hours(1))
+        .with_minute(0)
+        .and_then(|t| t.with_second(0))
+        .and_then(|t| t.with_nanosecond(0))
+        .unwrap_or_else(|| now + chrono::Duration::hours(1));
+    next.format("%H:%M:%S").to_string()
+}
+
+fn write_ralph_tui_status(
+    path: &Path,
+    last_action: &str,
+    status: &str,
+    exit_reason: &str,
+    loop_count: u64,
+    calls_made_this_hour: u64,
+    max_calls_per_hour: u64,
+) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    let file = RalphTuiStatusFile {
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        mode: "tui".to_string(),
+        loop_count,
+        calls_made_this_hour,
+        max_calls_per_hour,
+        last_action: last_action.to_string(),
+        status: status.to_string(),
+        exit_reason: exit_reason.to_string(),
+        next_reset: next_hour_boundary_string(),
+    };
+
+    let data = serde_json::to_vec_pretty(&file).map_err(std::io::Error::other)?;
+    let tmp_path = path.with_extension("json.tmp");
+    std::fs::write(&tmp_path, [&data[..], b"\n"].concat())?;
+    std::fs::rename(&tmp_path, path)?;
+    Ok(())
+}
+
+fn append_ralph_tui_log_line(path: &Path, level: &str, message: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    let ts = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let line = format!("[{ts}] [{level}] {message}\n");
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    file.write_all(line.as_bytes())?;
+    Ok(())
 }
 
 fn parse_ralph_tui_args(args: &[String]) -> RalphTuiConfig {

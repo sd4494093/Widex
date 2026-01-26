@@ -72,6 +72,7 @@ widex --ask-for-approval never --sandbox danger-full-access -m gpt-5.2
 - 说明：
   - **TUI 前台模式**：主要依赖 `.ralph/PROMPT.md` / `.ralph/@fix_plan.md` / `.ralph/@fix_progress.md`，并支持用 `.ralph/STOP` 请求停止（在当前 turn 结束/中断时生效）。
   - **CLI 监督者模式**：会额外维护 `.ralph/status.json` / `.ralph/progress.json` / `.ralph/logs/*` 等可观测文件（用于 `widex ralph-widex monitor`）。
+  - **补充**：TUI 前台模式也会 best-effort 写 `.ralph/status.json` + `.ralph/logs/ralph.log`，方便用 `widex ralph-widex monitor` 观察（但不会写 `.ralph/progress.json`）。
 
 - `.ralph/PROMPT.md`：Ralph 主提示词（你会改它）
 - `.ralph/@fix_plan.md`：当前待办/计划（你会改它）
@@ -298,6 +299,7 @@ widex ralph-widex run --exec-disable web_search_request
 ## 8) 常见排查
 
 - loop 没反应：看 `.ralph/status.json` 和 `.ralph/logs/ralph.log`
+- `bash: /ralph-widex: No such file or directory`：你把 `/ralph-widex ...` 当成了本地 shell 命令执行（通常是输入了 `!` 前缀）。`/ralph-widex` 是 **Widex TUI slash 命令**，请在 TUI 输入框里直接输入（不要加 `!`）。
 - 想看每次 `widex exec` 的详细事件：打开 `.ralph/logs/codex_events_*.jsonl`
 - 熔断器打开：看 `.ralph/.circuit_breaker_state`（里面有 reason）；修复后重跑即可（必要时可删除 `.ralph/.circuit_breaker_state` 重置）
 - 强制停止：`touch .ralph/STOP`，并确认进程退出后可删除 STOP 再次启动
