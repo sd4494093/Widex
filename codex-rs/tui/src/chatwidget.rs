@@ -3200,6 +3200,7 @@ impl ChatWidget {
             self.add_info_message(
                 "Ralph-Widex (TUI)\n\n\
 Usage:\n\
+  /ralph-widex init [--overwrite]\n\
   /ralph-widex start [--loops N] [--calls N] [--timeout-minutes N] [--skip-git-repo-check]\n\
                     [--completion-phrase TEXT]... [--completion-mode MODE]\n\
                     [--completion-regex PATTERN]...\n\
@@ -3229,6 +3230,12 @@ Advanced (CLI passthrough):\n\
         };
 
         match first.as_str() {
+            "init" => {
+                // Delegate to the Rust-native CLI init (creates .ralph/ in the current directory).
+                let mut argv = vec!["init".to_string()];
+                argv.extend(rest.iter().cloned());
+                self.run_ralph_widex(argv);
+            }
             "stop" => self.stop_ralph_tui("stopped by user"),
             "status" => self.print_ralph_tui_status(),
             "daemon" => self.run_ralph_widex(rest.to_vec()),

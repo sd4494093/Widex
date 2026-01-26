@@ -29,8 +29,9 @@
 在任意项目目录（建议是 git repo 根）中：
 
 ```bash
-# 初始化 .ralph/
+# 初始化 .ralph/（二选一）
 widex ralph-widex init
+# 或在 TUI 内：/ralph-widex init
 
 # 编辑提示词和计划（以及可选的完成词）
 $EDITOR .ralph/PROMPT.md
