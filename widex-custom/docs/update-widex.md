@@ -17,8 +17,11 @@ git remote -v
 
 确保至少有：
 
-- `origin` 指向你们 fork（例如 `git@github.com:sd4494094/Widex.git`）
+- `origin` 指向你们 fork（例如 `git@github-sd4494093:sd4494093/Widex.git`）
 - `upstream` 指向上游（例如 `git@github.com:openai/codex.git`）
+
+注：如果你们用“多 GitHub 账号/多 SSH key”方案，`github-sd4494093` 这类 host alias 取决于
+`~/.ssh/config`；如果没做 alias，也可以用标准的 `git@github.com:sd4494093/Widex.git`。
 
 并且工作区干净：
 
@@ -76,9 +79,10 @@ cargo test -p codex-core --lib
 
 （完整 `cargo test --all-features` 通常更慢，按需要在 CI 或专门窗口执行。）
 
-## 3) 本地重建 Widex 二进制（可选，但推荐）
+## 3) 本地重建 Widex（底层 codex 二进制）（可选，但推荐）
 
-你们的 `widex` wrapper 默认用 `widex-release` profile（更快），通常只需要：
+你们的 `widex` wrapper 会在需要时重建它依赖的 `codex` 二进制；默认用 `widex-release`
+profile（更快），通常只需要：
 
 ```bash
 # 触发自动构建（若缺 binary 或你想强制 rebuild）
