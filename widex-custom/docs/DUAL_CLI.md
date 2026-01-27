@@ -92,5 +92,34 @@ WIDEX_USE_SCCACHE=1 widex --version
 
 Notes
 
-- The widex TUI will look for the API switchover YAML at `${CODEX_HOME}/api_switchover.yaml`.
-- Keep secrets out of the repo: API keys should live in `${CODEX_HOME}/auth.json` or environment variables.
+- Widex keeps its config isolated via `CODEX_HOME` (default: `~/.widex-codex`). Official `codex` uses `~/.codex`.
+- API switchover config (Widex):
+  - `$WIDEX_API_SWITCHER_CONFIG` (override)
+  - `${CODEX_HOME}/api_switchover.yaml` (default)
+- Startup behavior (Widex): before the first request, Widex resolves the switchover plan for the
+  startup model and applies the same provider/key switching behavior as `/model` (see
+  `codex-rs/tui/src/app.rs:957`).
+
+How `config.toml` relates to `api_switchover.yaml`
+
+1) `${CODEX_HOME}/config.toml` defines providers (how to connect)
+
+- `model_providers.<provider_id>` controls connection details: `base_url`, `wire_api` (`responses`/`chat`/`gemini`), headers, retries, etc.
+- It does NOT decide which provider to use for a given model, and it does NOT switch keys.
+- By default it also does NOT load/store real API keys; it only points at env vars (`env_key`) or other explicit fields (e.g. `experimental_bearer_token`).
+
+2) `${CODEX_HOME}/api_switchover.yaml` defines routing + keys (which provider/key for which model)
+
+- When you run `/model <name>` in the TUI, Widex resolves a `profile` via `models` / `rules` / `default_profile`.
+- The profile's `provider_id` must match a `model_providers.<provider_id>` entry in `config.toml` (or a built-in provider id).
+- The profile's `auth.*` pulls keys from env (recommended) or saved cache and writes the active key into `${CODEX_HOME}/auth.json`.
+  - Widex caches multiple keys per profile under `WIDEX_SAVED_API_KEYS` so switching does not lose keys.
+
+If you do not want to export env vars each time, you can either:
+
+- export once + `/model` once (so Widex caches into `${CODEX_HOME}/auth.json`), then unset, or
+- pre-seed `${CODEX_HOME}/auth.json` with `OPENAI_API_KEY` / `GEMINI_API_KEY` and the per-profile
+  `WIDEX_SAVED_API_KEYS` entries.
+
+Keep secrets out of the repo: do not commit real keys in YAML/TOML; treat `auth.json` as a local
+private file (recommended permissions: `0600`).

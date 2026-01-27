@@ -85,10 +85,26 @@ git push origin widex
 
 配置发现顺序（TUI）：
 
-1. `CODEX_API_SWITCHER_CONFIG`
-2. `WIDEX_API_SWITCHER_CONFIG`
-3. `${CODEX_HOME}/api_switchover.yaml`
-4. `<cwd>/widex-custom/features/api-switchover/api_config.yaml`（仅用于仓库本地开发）
+1. `WIDEX_API_SWITCHER_CONFIG`
+2. `${CODEX_HOME}/api_switchover.yaml`
+
+### 3.0 config.toml vs api_switchover.yaml（必须理解的绑定关系）
+
+1) `${CODEX_HOME}/config.toml`：定义“有哪些 provider”以及“怎么连”
+
+- `model_providers.<provider_id>` 决定走哪个 `base_url`、`wire_api`（`responses`/`chat`/`gemini`）、headers、重试等。
+- 它不负责按 model 选择 provider，也不负责“切 key”。
+- **默认也不会从 `config.toml` 读取/保存真实 API key**：这里只会配置“从哪个 env var 读取 key”（`env_key`）或少数“直连/程序化”字段（例如 `experimental_bearer_token`）。
+  - 你在 `config.toml` 里写的类似 `[model_providers.<id>.env]` 的自定义段落不会被 Widex/Codex 识别（等价于注释/无效配置）。
+
+2) `${CODEX_HOME}/api_switchover.yaml`：定义“选了哪个 model 时用哪个 profile/provider + 用哪把 key”
+
+- `/model <name>` 时，switchover 根据 `models` / `rules` / `default_profile` 选中一个 profile。
+- `profile.provider_id` 会去引用 `config.toml` 里的 `model_providers.<provider_id>`（或内置 provider id）。
+- `profile.auth.*` 会把对应 key（从 env 或缓存里取）写入 `${CODEX_HOME}/auth.json`。
+  - Widex 额外用 `WIDEX_SAVED_API_KEYS` 缓存“每个 profile 多把 key”，避免切换丢 key。
+
+绑定点：`api_switchover.yaml` 里的 `provider_id` 必须在 `config.toml` 的 `model_providers` 里存在（或是内置 provider id）。
 
 安全策略（关键）：
 
@@ -111,6 +127,24 @@ git push origin widex
 1) 临时 export `GROK_API_KEY/GEMINI_API_KEY/...` 切换一次
 2) 切换成功后 unset env
 3) 之后依然可以在 widex 内来回切模型/provider，不会丢失之前保存的 key
+
+### 3.1.1 启动时自动应用 switchover（不需要先进 TUI 手动 `/model` 才生效）
+
+为了避免“启动后必须先 `/model` 切一次才能把 provider/key 切正确”的体验问题，Widex 会在**第一条请求发出前**
+对当前启动模型做一次 switchover resolve，并同步 provider/key（行为对齐 `/model`）。
+
+- 代码：`codex-rs/tui/src/app.rs:957`
+
+### 3.1.2 不想 export：可以预先写入 `${CODEX_HOME}/auth.json`
+
+如果你不希望在启动 Widex 前临时 `export PP_CODEX / GROK_API_KEY / GEMINI_API_KEY`，也不希望进 TUI 后再分别
+`/model gpt-...`、`/model grok-...`、`/model gemini-...` 各切一次来“存 key”，可以直接把 key 写入
+`${CODEX_HOME}/auth.json`：
+
+- 当前生效 key：`OPENAI_API_KEY` / `GEMINI_API_KEY`
+- 多 key 缓存：`WIDEX_SAVED_API_KEYS`（按 profile 维度保存）
+
+安全提示：不要把任何真实 key 写进 repo；`auth.json` 属于本机私有文件（建议权限 `0600`），并定期轮换 key。
 
 ### 3.2 Ralph for Widex（/ralph-widex）
 

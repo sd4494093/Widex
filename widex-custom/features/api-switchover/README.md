@@ -15,17 +15,15 @@ This folder contains a YAML-driven "API/provider switcher" for widex that can be
 
 The TUI searches for the config in this order:
 
-1. `$CODEX_API_SWITCHER_CONFIG`
-2. `$WIDEX_API_SWITCHER_CONFIG`
-3. `$CODEX_HOME/api_switchover.yaml`
-4. `<cwd>/widex-custom/features/api-switchover/api_config.yaml` (useful for repo-local dev)
+1. `$WIDEX_API_SWITCHER_CONFIG`
+2. `$CODEX_HOME/api_switchover.yaml`
 
 ## Setup
 
 1) Copy the template:
 
 ```bash
-cp widex-custom/features/api-switchover/api_config.example.yaml ~/.codex/api_switchover.yaml
+cp widex-custom/features/api-switchover/api_config.example.yaml ~/.widex-codex/api_switchover.yaml
 ```
 
 2) Export keys (recommended) or fill literals in your local yaml (do not commit secrets):
@@ -35,7 +33,10 @@ export OPENAI_API_KEY='sk-...'
 export GEMINI_API_KEY='...'
 ```
 
-3) Ensure the provider ids referenced by the yaml exist in `~/.codex/config.toml` under
+If you do not want to keep env vars around, you can export them once, switch once (so Widex
+caches them into `${CODEX_HOME}/auth.json`), then unset them.
+
+3) Ensure the provider ids referenced by the yaml exist in `${CODEX_HOME}/config.toml` under
 `model_providers` (built-ins: `openai`, `gemini`, `ollama`, `lmstudio`).
 
 ## Notes

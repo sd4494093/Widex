@@ -103,6 +103,21 @@ use toml::Value as TomlValue;
 const EXTERNAL_EDITOR_HINT: &str = "Save and close external editor to continue.";
 const THREAD_EVENT_CHANNEL_CAPACITY: usize = 1024;
 
+fn api_switchover_config_path_for_codex_home(codex_home: &Path) -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("WIDEX_API_SWITCHER_CONFIG") {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return Some(PathBuf::from(trimmed));
+        }
+    }
+
+    let codex_home_path = codex_home.join("api_switchover.yaml");
+    if codex_home_path.exists() {
+        return Some(codex_home_path);
+    }
+    None
+}
+
 #[derive(Debug, Clone)]
 pub struct AppExitInfo {
     pub token_usage: TokenUsage,
@@ -643,29 +658,7 @@ impl App {
     }
 
     fn api_switchover_config_path(&self) -> Option<PathBuf> {
-        if let Ok(path) = std::env::var("CODEX_API_SWITCHER_CONFIG") {
-            let trimmed = path.trim();
-            if !trimmed.is_empty() {
-                return Some(PathBuf::from(trimmed));
-            }
-        }
-        if let Ok(path) = std::env::var("WIDEX_API_SWITCHER_CONFIG") {
-            let trimmed = path.trim();
-            if !trimmed.is_empty() {
-                return Some(PathBuf::from(trimmed));
-            }
-        }
-
-        let codex_home_path = self.config.codex_home.join("api_switchover.yaml");
-        if codex_home_path.exists() {
-            return Some(codex_home_path);
-        }
-
-        let repo_path = self
-            .config
-            .cwd
-            .join("widex-custom/features/api-switchover/api_config.yaml");
-        repo_path.exists().then_some(repo_path)
+        api_switchover_config_path_for_codex_home(&self.config.codex_home)
     }
 
     fn ensure_thread_channel(&mut self, thread_id: ThreadId) -> &mut ThreadEventChannel {
@@ -961,6 +954,142 @@ impl App {
             model = updated_model;
         }
 
+        // Apply API switchover on startup so Widex honors the same routing logic as `/model`,
+        // without requiring users to manually toggle models just to activate the right provider/key.
+        //
+        // This runs before the first request so the initial model uses the resolved provider and
+        // (optionally) persisted auth.json key updates.
+        let mut startup_switchover_warnings: Vec<String> = Vec::new();
+        if let Some(config_path) = api_switchover_config_path_for_codex_home(&config.codex_home) {
+            match ApiSwitchoverConfig::load_from_path(&config_path) {
+                Ok(cfg) => match cfg.resolve_codex_plan_for_model(&model) {
+                    Ok(Some(plan)) => {
+                        if let Some(next_provider_id) = plan.provider_id.clone() {
+                            if let Some(provider) = config.model_providers.get(&next_provider_id) {
+                                config.model_provider_id = next_provider_id.clone();
+                                config.model_provider = provider.clone();
+                            } else {
+                                startup_switchover_warnings.push(format!(
+                                    "API switchover profile `{}` references provider `{next_provider_id}`, but it is not present in config.toml `model_providers`.",
+                                    plan.profile_id
+                                ));
+                            }
+                        }
+
+                        if plan.auth.wants_openai_api_key || plan.auth.wants_gemini_api_key {
+                            let mut auth = load_auth_dot_json(
+                                &config.codex_home,
+                                config.cli_auth_credentials_store_mode,
+                            )
+                            .unwrap_or(None)
+                            .unwrap_or(AuthDotJson {
+                                openai_api_key: None,
+                                gemini_api_key: None,
+                                widex_saved_api_keys: Default::default(),
+                                tokens: None,
+                                last_refresh: None,
+                            });
+
+                            let mut changed = false;
+                            let openai_cache_key =
+                                format!("profile:{}:OPENAI_API_KEY", plan.profile_id);
+                            let gemini_cache_key =
+                                format!("profile:{}:GEMINI_API_KEY", plan.profile_id);
+
+                            let openai_key = plan.auth.openai_api_key.clone();
+                            let gemini_key = plan.auth.gemini_api_key.clone();
+
+                            if plan.auth.wants_openai_api_key {
+                                if let Some(key) = openai_key {
+                                    if auth
+                                        .widex_saved_api_keys
+                                        .get(&openai_cache_key)
+                                        .is_none_or(|saved| saved != &key)
+                                    {
+                                        auth.widex_saved_api_keys
+                                            .insert(openai_cache_key, key.clone());
+                                        changed = true;
+                                    }
+                                    if auth.openai_api_key.as_deref() != Some(key.as_str()) {
+                                        auth.openai_api_key = Some(key);
+                                        changed = true;
+                                    }
+                                } else if let Some(saved) =
+                                    auth.widex_saved_api_keys.get(&openai_cache_key)
+                                    && auth.openai_api_key.as_deref() != Some(saved.as_str())
+                                {
+                                    auth.openai_api_key = Some(saved.clone());
+                                    changed = true;
+                                } else if !auth.widex_saved_api_keys.contains_key(&openai_cache_key)
+                                {
+                                    startup_switchover_warnings.push(format!(
+                                        "API switchover profile `{}` requires OPENAI_API_KEY, but none was provided and no saved key was found.\n\nHint: set the env var referenced by api_switchover.yaml once (or populate auth.json), then Widex can reuse the saved key on future runs.",
+                                        plan.profile_id
+                                    ));
+                                }
+                            }
+
+                            if plan.auth.wants_gemini_api_key {
+                                if let Some(key) = gemini_key {
+                                    if auth
+                                        .widex_saved_api_keys
+                                        .get(&gemini_cache_key)
+                                        .is_none_or(|saved| saved != &key)
+                                    {
+                                        auth.widex_saved_api_keys
+                                            .insert(gemini_cache_key, key.clone());
+                                        changed = true;
+                                    }
+                                    if auth.gemini_api_key.as_deref() != Some(key.as_str()) {
+                                        auth.gemini_api_key = Some(key);
+                                        changed = true;
+                                    }
+                                } else if let Some(saved) =
+                                    auth.widex_saved_api_keys.get(&gemini_cache_key)
+                                    && auth.gemini_api_key.as_deref() != Some(saved.as_str())
+                                {
+                                    auth.gemini_api_key = Some(saved.clone());
+                                    changed = true;
+                                } else if !auth.widex_saved_api_keys.contains_key(&gemini_cache_key)
+                                {
+                                    startup_switchover_warnings.push(format!(
+                                        "API switchover profile `{}` requires GEMINI_API_KEY, but none was provided and no saved key was found.\n\nHint: set the env var referenced by api_switchover.yaml once (or populate auth.json), then Widex can reuse the saved key on future runs.",
+                                        plan.profile_id
+                                    ));
+                                }
+                            }
+
+                            if changed {
+                                if let Err(err) = save_auth(
+                                    &config.codex_home,
+                                    &auth,
+                                    config.cli_auth_credentials_store_mode,
+                                ) {
+                                    startup_switchover_warnings.push(format!(
+                                        "Failed to persist auth.json updates from api switchover: {err}"
+                                    ));
+                                } else {
+                                    auth_manager.reload();
+                                }
+                            }
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
+                        startup_switchover_warnings.push(format!(
+                            "Failed to resolve api switchover for startup model `{model}`: {err}"
+                        ));
+                    }
+                },
+                Err(err) => {
+                    startup_switchover_warnings.push(format!(
+                        "Failed to load api switchover config at {}: {err}",
+                        config_path.display()
+                    ));
+                }
+            }
+        }
+
         let auth = auth_manager.auth().await;
         let auth_ref = auth.as_ref();
         let otel_manager = OtelManager::new(
@@ -1055,6 +1184,10 @@ impl App {
                 ChatWidget::new_from_existing(init, forked.thread, forked.session_configured)
             }
         };
+
+        for warning in startup_switchover_warnings {
+            chat_widget.add_error_message(warning);
+        }
 
         chat_widget.maybe_prompt_windows_sandbox_enable();
 

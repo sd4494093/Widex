@@ -4980,7 +4980,7 @@ fn ralph_fix_progress_regenerate_preserves_notes_and_is_idempotent() {
 ";
     std::fs::write(ralph_dir.join("@fix_progress.md"), notes_only).expect("write fix_progress");
 
-    let events = vec![RalphFixProgressEvent {
+    let events = [RalphFixProgressEvent {
         ts: "2026-01-01 00:00:00".to_string(),
         loop_number: 1,
         kind: RalphFixProgressEventKind::Start,
