@@ -3574,7 +3574,7 @@ async fn try_run_sampling_request(
                         thread_id: sess.conversation_id.to_string(),
                         turn_id: turn_context.sub_id.clone(),
                         item_id: active.id(),
-                        delta: delta.clone(),
+                        delta,
                     };
                     sess.send_event(&turn_context, EventMsg::AgentMessageContentDelta(event))
                         .await;

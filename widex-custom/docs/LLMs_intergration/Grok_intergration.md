@@ -9,6 +9,11 @@
 - 已把“会话内切到 grok-* 模型时自动切 provider；切走时回到 openai/openai-proxy”落到 core。
 - 已在 Chat Completions 请求构造层对 VectorEngine 的已知限制做 best-effort 兼容（图像输入降级为文本提示）。
 
+安全边界（必须遵守）：
+
+- 不要把任何真实 key 写进 git 管理的文件（含 `widex-custom/`、`.ralph/`、任何 YAML/TOML/JSON）。
+- 推荐使用 env：`GROK_API_KEY`，并通过 API Switchover 映射到 `openai_api_key`（避免污染 `OPENAI_API_KEY`）。
+
 
 ## 1. 总体架构：把 Grok 当成一个 Chat Completions Provider
 
@@ -37,7 +42,7 @@ Grok（通过 VectorEngine 中转）当前走的是：
   - `built_in_model_providers()` 新增内置 provider：`grok-vectorengine`
     - `base_url`: `https://api.vectorengine.ai/v1`
     - `wire_api`: `chat`
-    - `requires_openai_auth = true`（复用 OpenAI 认证槽位：`OPENAI_API_KEY` -> `Authorization: Bearer ...`）
+    - `requires_openai_auth = true`（复用 OpenAI 认证槽位：`openai_api_key` -> `Authorization: Bearer ...`）
 
 ### 2.2 模型预设层（picker 可见）
 
@@ -51,7 +56,6 @@ Grok（通过 VectorEngine 中转）当前走的是：
 
 由于 `grok-vectorengine` 走 OpenAI Chat Completions wire，当前使用的认证字段仍是 `openai_api_key`：
 
-- 直接使用：设置 `OPENAI_API_KEY=<VectorEngine key>`
 - 推荐使用：API Switchover 用 `GROK_API_KEY` 映射到 `openai_api_key`（避免和 OpenAI 官方 key 混用）
   - 示例模板：`widex-custom/features/api-switchover/api_config.example.yaml`
 
@@ -67,7 +71,7 @@ Grok（通过 VectorEngine 中转）当前走的是：
 
 - `codex-rs/codex-api/src/requests/chat.rs`
   - 复用 Chat Completions 的 messages/tools 构造逻辑
-  - VectorEngine 的 Grok 端点当前对 `content: [{type:"image_url", ...}]` payload 可能会忽略（文本-only）。因此当 model 以 `grok-` 开头且输入包含图片时：
+  - VectorEngine 的 Grok 端点当前对 `content: [{type:\"image_url\", ...}]` payload 可能会忽略（文本-only）。因此当 model 以 `grok-` 开头且输入包含图片时：
     - 不发送多模态结构化 `image_url` 数组
     - 追加 best-effort 文本提示：`[image_url: ...]`（避免整条用户消息“被吃掉”）
 
@@ -88,16 +92,40 @@ Grok（通过 VectorEngine 中转）当前走的是：
 
 ## 3. 使用方式（最小可用）
 
-方式 A（最简单，直接跑）：
-
-- `export OPENAI_API_KEY=<VectorEngine key>`
-- 启动 widex，并选择/切换模型为任一 `grok-*`（会话会自动切换到 `grok-vectorengine` provider）
-
-方式 B（推荐，和 OpenAI 官方 key 解耦）：
+推荐方式（和 OpenAI 官方 key 解耦）：
 
 - 配置 `${CODEX_HOME}/api_switchover.yaml`（可从 `widex-custom/features/api-switchover/api_config.example.yaml` 拷贝）
 - `export GROK_API_KEY=<VectorEngine key>`
 - 在 TUI 中使用 `/model grok-4.1`（或其它 `grok-*`）触发自动切换
+  - 切换成功后可 `unset GROK_API_KEY`；widex 会使用缓存的 `WIDEX_SAVED_API_KEYS`（见 2.3）
+
+可选（非交互）：
+
+- `cd codex-rs && cargo run -p codex-api-switchover -- --config ${CODEX_HOME}/api_switchover.yaml apply --model grok-4-1-fast-non-reasoning --set-model`
+  - 作用：把 switchover 的 provider + key 写入 `${CODEX_HOME}`（不在仓库里落盘任何 secret）
+
+### 3.1 TUI / CLI 冒烟验证（推荐）
+
+目标：用最少步骤确认 **模型切换 + 流式输出** 正常工作。
+
+1) 启动 TUI（两种方式任选其一）：
+
+- 已安装二进制：运行 `codex`
+- 源码运行：`cd codex-rs && cargo run --bin codex --`
+
+2) 在 TUI 输入框中执行：
+
+- `/model grok-4-1-fast-non-reasoning`（或 `grok-4.1` / 其它 `grok-*`）
+- 然后发送一句话，例如：`ping`
+
+3) 验收标准：
+
+- 能看到逐步流式输出（而不是卡住/一次性返回）。
+- 结束后能正常回到可输入状态（流式完成）。
+
+可选（非交互）：
+
+- `codex exec "ping"`（用于快速验证能跑通一轮请求；不覆盖 TUI 的渲染/交互路径）
 
 
 ## 4. 测试/验证（本仓）
@@ -106,7 +134,12 @@ Grok 集成通常只涉及 core/codex-api（不新增 wire）：
 
 - `cd codex-rs && just fmt`
 - `cd codex-rs && cargo test -p codex-api`
-- `cd codex-rs && cargo test -p codex-core --test suite list_models`
+- `cd codex-rs && cargo test -p codex-core --test all list_models_returns -- --test-threads=1`
+
+说明（Linux）：
+
+- `codex-core` 的集成测试需要 workspace 二进制 `codex-linux-sandbox`；若本机尚未构建过，可先运行：
+  - `cd codex-rs && cargo build -p codex-linux-sandbox --bin codex-linux-sandbox`
 
 
 ## 5. 后续：按同一模板继续演进（Grok “更多能力”）

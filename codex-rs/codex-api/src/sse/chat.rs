@@ -429,6 +429,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn completes_on_done_sentinel_with_whitespace() {
+        let events = collect_events("event: message\ndata:   [DONE]  \n\n").await;
+        assert_matches!(&events[..], [ResponseEvent::Completed { .. }]);
+    }
+
+    #[tokio::test]
+    async fn ignores_empty_data_frames() {
+        let body = "event: message\ndata:\n\n\
+            event: message\ndata: \n\n\
+            event: message\ndata: [DONE]\n\n";
+        let events = collect_events(body).await;
+        assert_matches!(&events[..], [ResponseEvent::Completed { .. }]);
+    }
+
+    #[tokio::test]
+    async fn parses_multiline_data_json_frames() {
+        let body = "event: message\n\
+            data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}\n\
+            data: ]}\n\n\
+            event: message\n\
+            data: [DONE]\n\n";
+        let events = collect_events(body).await;
+
+        assert_matches!(
+            &events[..],
+            [
+                ResponseEvent::OutputItemAdded(ResponseItem::Message { .. }),
+                ResponseEvent::OutputTextDelta(delta),
+                ResponseEvent::OutputItemDone(ResponseItem::Message { .. }),
+                ResponseEvent::Completed { .. }
+            ] if delta == "hi"
+        );
+    }
+
+    #[tokio::test]
     async fn concatenates_tool_call_arguments_across_deltas() {
         let delta_name = json!({
             "choices": [{

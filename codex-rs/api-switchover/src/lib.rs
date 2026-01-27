@@ -183,12 +183,22 @@ impl CodexAuthConfig {
                 .map(SecretSource::resolve_optional)
                 .transpose()?
                 .flatten(),
+            openai_api_key_env: self
+                .openai_api_key
+                .as_ref()
+                .and_then(SecretSource::env_var_name)
+                .map(str::to_string),
             gemini_api_key: self
                 .gemini_api_key
                 .as_ref()
                 .map(SecretSource::resolve_optional)
                 .transpose()?
                 .flatten(),
+            gemini_api_key_env: self
+                .gemini_api_key
+                .as_ref()
+                .and_then(SecretSource::env_var_name)
+                .map(str::to_string),
             wants_openai_api_key,
             wants_gemini_api_key,
         })
@@ -205,7 +215,9 @@ pub struct ResolvedPlan {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResolvedAuth {
     pub openai_api_key: Option<String>,
+    pub openai_api_key_env: Option<String>,
     pub gemini_api_key: Option<String>,
+    pub gemini_api_key_env: Option<String>,
     pub wants_openai_api_key: bool,
     pub wants_gemini_api_key: bool,
 }
@@ -234,6 +246,13 @@ impl SecretSource {
                 }
                 Ok(Some(trimmed.to_string()))
             }
+        }
+    }
+
+    fn env_var_name(&self) -> Option<&str> {
+        match self {
+            Self::Env { env } => Some(env.as_str()),
+            Self::Literal(_) => None,
         }
     }
 }
@@ -272,7 +291,9 @@ codex:
                 provider_id: Some("openai".to_string()),
                 auth: ResolvedAuth {
                     openai_api_key: Some("sk-test".to_string()),
+                    openai_api_key_env: None,
                     gemini_api_key: None,
+                    gemini_api_key_env: None,
                     wants_openai_api_key: true,
                     wants_gemini_api_key: false,
                 },
@@ -303,5 +324,41 @@ codex:
             .expect("plan");
         assert_eq!(plan.profile_id, "gem");
         assert_eq!(plan.provider_id.as_deref(), Some("gemini"));
+    }
+
+    #[test]
+    fn captures_env_var_names_for_configured_keys() {
+        let yaml = r#"
+version: 1
+codex:
+  profiles:
+    grok:
+      provider_id: grok-vectorengine
+      auth:
+        openai_api_key:
+          env: GROK_API_KEY
+        gemini_api_key:
+          env: GEMINI_API_KEY
+  models:
+    grok-4.1: grok
+"#;
+        let tmp = NamedTempFile::new().expect("tmpfile");
+        std::fs::write(tmp.path(), yaml).expect("write");
+        let cfg = ApiSwitchoverConfig::load_from_path(tmp.path()).expect("parse");
+
+        let plan = cfg
+            .resolve_codex_plan_for_model("grok-4.1")
+            .expect("resolve")
+            .expect("plan");
+        assert_eq!(
+            plan.auth.openai_api_key_env.as_deref(),
+            Some("GROK_API_KEY")
+        );
+        assert_eq!(
+            plan.auth.gemini_api_key_env.as_deref(),
+            Some("GEMINI_API_KEY")
+        );
+        assert!(plan.auth.wants_openai_api_key);
+        assert!(plan.auth.wants_gemini_api_key);
     }
 }

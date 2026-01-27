@@ -213,7 +213,7 @@ async fn omits_reasoning_when_none_present() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn attaches_reasoning_to_previous_assistant() {
+async fn ignores_reasoning_after_assistant() {
     skip_if_no_network!();
 
     let body = run_request(vec![
@@ -226,11 +226,11 @@ async fn attaches_reasoning_to_previous_assistant() {
     let assistant = first_assistant(&messages);
 
     assert_eq!(assistant["content"], Value::String("a1".into()));
-    assert_eq!(assistant["reasoning"], Value::String("rA".into()));
+    assert!(assistant.get("reasoning").is_none());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn attaches_reasoning_to_function_call_anchor() {
+async fn ignores_reasoning_after_function_call_anchor() {
     skip_if_no_network!();
 
     let body = run_request(vec![
@@ -242,7 +242,7 @@ async fn attaches_reasoning_to_function_call_anchor() {
     let messages = messages_from(&body);
     let assistant = first_assistant(&messages);
 
-    assert_eq!(assistant["reasoning"], Value::String("rFunc".into()));
+    assert!(assistant.get("reasoning").is_none());
     let tool_calls = match assistant["tool_calls"].as_array() {
         Some(arr) => arr,
         None => panic!("tool call list missing"),
@@ -252,7 +252,7 @@ async fn attaches_reasoning_to_function_call_anchor() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn attaches_reasoning_to_local_shell_call() {
+async fn ignores_reasoning_after_local_shell_call() {
     skip_if_no_network!();
 
     let body = run_request(vec![
@@ -264,7 +264,7 @@ async fn attaches_reasoning_to_local_shell_call() {
     let messages = messages_from(&body);
     let assistant = first_assistant(&messages);
 
-    assert_eq!(assistant["reasoning"], Value::String("rShell".into()));
+    assert!(assistant.get("reasoning").is_none());
     assert_eq!(
         assistant["tool_calls"][0]["type"],
         Value::String("local_shell_call".into())
@@ -314,6 +314,25 @@ async fn skips_empty_reasoning_segments() {
     let messages = messages_from(&body);
     let assistant = first_assistant(&messages);
     assert!(assistant.get("reasoning").is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_completions_request_is_minimal_and_omits_nonstandard_fields() {
+    skip_if_no_network!();
+
+    let body = run_request(vec![user_message("u1")]).await;
+    let mut keys: Vec<_> = body
+        .as_object()
+        .expect("json object")
+        .keys()
+        .cloned()
+        .collect();
+    keys.sort();
+
+    // VectorEngine/Grok's Chat Completions endpoint is OpenAI-compatible; keep the request shape minimal.
+    // In particular, we must not send nonstandard fields like `reasoning`.
+    assert_eq!(keys, vec!["messages", "model", "stream", "tools"]);
+    assert!(body.get("tool_choice").is_none());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

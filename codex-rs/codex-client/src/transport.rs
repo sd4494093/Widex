@@ -11,6 +11,7 @@ use futures::stream::BoxStream;
 use http::HeaderMap;
 use http::Method;
 use http::StatusCode;
+use serde_json::Value;
 use tracing::Level;
 use tracing::enabled;
 use tracing::trace;
@@ -123,12 +124,15 @@ impl ReqwestTransport {
 impl HttpTransport for ReqwestTransport {
     async fn execute(&self, req: Request) -> Result<Response, TransportError> {
         if enabled!(Level::TRACE) {
-            trace!(
-                "{} to {}: {}",
-                req.method,
-                req.url,
-                req.body.as_ref().unwrap_or_default()
-            );
+            match req.body.as_ref() {
+                Some(body) => trace!(
+                    method = %req.method,
+                    url = %req.url,
+                    body_keys = ?json_body_keys(body),
+                    "HTTP request"
+                ),
+                None => trace!(method = %req.method, url = %req.url, "HTTP request"),
+            }
         }
 
         let url = req.url.clone();
@@ -155,12 +159,15 @@ impl HttpTransport for ReqwestTransport {
 
     async fn stream(&self, req: Request) -> Result<StreamResponse, TransportError> {
         if enabled!(Level::TRACE) {
-            trace!(
-                "{} to {}: {}",
-                req.method,
-                req.url,
-                req.body.as_ref().unwrap_or_default()
-            );
+            match req.body.as_ref() {
+                Some(body) => trace!(
+                    method = %req.method,
+                    url = %req.url,
+                    body_keys = ?json_body_keys(body),
+                    "HTTP request"
+                ),
+                None => trace!(method = %req.method, url = %req.url, "HTTP request"),
+            }
         }
 
         let url = req.url.clone();
@@ -185,5 +192,34 @@ impl HttpTransport for ReqwestTransport {
             headers,
             bytes: Box::pin(stream),
         })
+    }
+}
+
+fn json_body_keys(body: &Value) -> Vec<String> {
+    match body.as_object() {
+        Some(obj) => {
+            let mut keys = obj.keys().cloned().collect::<Vec<_>>();
+            keys.sort();
+            keys
+        }
+        None => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn json_body_keys_returns_only_top_level_keys() {
+        let secret = "secret-token-should-not-appear-in-keys";
+        let keys = json_body_keys(&json!({
+            "model": "grok-4.1",
+            "messages": [{"role": "user", "content": secret}],
+        }));
+
+        assert_eq!(keys, vec!["messages".to_string(), "model".to_string()]);
+        assert!(!keys.iter().any(|k| k.contains(secret)));
     }
 }

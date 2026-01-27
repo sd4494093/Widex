@@ -5,13 +5,11 @@ use crate::requests::headers::insert_header;
 use crate::requests::headers::subagent_header;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputContentItem;
-use codex_protocol::models::ReasoningItemContent;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::SessionSource;
 use http::HeaderMap;
 use serde_json::Value;
 use serde_json::json;
-use std::collections::HashMap;
 
 /// Assembled request body plus headers for Chat Completions streaming calls.
 pub struct ChatRequest {
@@ -59,97 +57,9 @@ impl<'a> ChatRequestBuilder<'a> {
         let mut messages = Vec::<Value>::new();
         messages.push(json!({"role": "system", "content": self.instructions}));
 
-        let input = self.input;
-        let mut reasoning_by_anchor_index: HashMap<usize, String> = HashMap::new();
-        let mut last_emitted_role: Option<&str> = None;
-        for item in input {
-            match item {
-                ResponseItem::Message { role, .. } => last_emitted_role = Some(role.as_str()),
-                ResponseItem::FunctionCall { .. } | ResponseItem::LocalShellCall { .. } => {
-                    last_emitted_role = Some("assistant")
-                }
-                ResponseItem::FunctionCallOutput { .. } => last_emitted_role = Some("tool"),
-                ResponseItem::Reasoning { .. } | ResponseItem::Other => {}
-                ResponseItem::CustomToolCall { .. } => {}
-                ResponseItem::CustomToolCallOutput { .. } => {}
-                ResponseItem::WebSearchCall { .. } => {}
-                ResponseItem::GhostSnapshot { .. } => {}
-                ResponseItem::Compaction { .. } => {}
-            }
-        }
-
-        let mut last_user_index: Option<usize> = None;
-        for (idx, item) in input.iter().enumerate() {
-            if let ResponseItem::Message { role, .. } = item
-                && role == "user"
-            {
-                last_user_index = Some(idx);
-            }
-        }
-
-        if !matches!(last_emitted_role, Some("user")) {
-            for (idx, item) in input.iter().enumerate() {
-                if let Some(u_idx) = last_user_index
-                    && idx <= u_idx
-                {
-                    continue;
-                }
-
-                if let ResponseItem::Reasoning {
-                    content: Some(items),
-                    ..
-                } = item
-                {
-                    let mut text = String::new();
-                    for entry in items {
-                        match entry {
-                            ReasoningItemContent::ReasoningText { text: segment }
-                            | ReasoningItemContent::Text { text: segment } => {
-                                text.push_str(segment)
-                            }
-                        }
-                    }
-                    if text.trim().is_empty() {
-                        continue;
-                    }
-
-                    let mut attached = false;
-                    if idx > 0
-                        && let ResponseItem::Message { role, .. } = &input[idx - 1]
-                        && role == "assistant"
-                    {
-                        reasoning_by_anchor_index
-                            .entry(idx - 1)
-                            .and_modify(|v| v.push_str(&text))
-                            .or_insert(text.clone());
-                        attached = true;
-                    }
-
-                    if !attached && idx + 1 < input.len() {
-                        match &input[idx + 1] {
-                            ResponseItem::FunctionCall { .. }
-                            | ResponseItem::LocalShellCall { .. } => {
-                                reasoning_by_anchor_index
-                                    .entry(idx + 1)
-                                    .and_modify(|v| v.push_str(&text))
-                                    .or_insert(text.clone());
-                            }
-                            ResponseItem::Message { role, .. } if role == "assistant" => {
-                                reasoning_by_anchor_index
-                                    .entry(idx + 1)
-                                    .and_modify(|v| v.push_str(&text))
-                                    .or_insert(text.clone());
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-        }
-
         let mut last_assistant_text: Option<String> = None;
 
-        for (idx, item) in input.iter().enumerate() {
+        for item in self.input {
             match item {
                 ResponseItem::Message { role, content, .. } => {
                     let mut text = String::new();
@@ -205,14 +115,7 @@ impl<'a> ChatRequestBuilder<'a> {
                         json!(text)
                     };
 
-                    let mut msg = json!({"role": role, "content": content_value});
-                    if role == "assistant"
-                        && let Some(reasoning) = reasoning_by_anchor_index.get(&idx)
-                        && let Some(obj) = msg.as_object_mut()
-                    {
-                        obj.insert("reasoning".to_string(), json!(reasoning));
-                    }
-                    messages.push(msg);
+                    messages.push(json!({"role": role, "content": content_value}));
                 }
                 ResponseItem::FunctionCall {
                     name,
@@ -220,7 +123,6 @@ impl<'a> ChatRequestBuilder<'a> {
                     call_id,
                     ..
                 } => {
-                    let reasoning = reasoning_by_anchor_index.get(&idx).map(String::as_str);
                     let tool_call = json!({
                         "id": call_id,
                         "type": "function",
@@ -229,7 +131,7 @@ impl<'a> ChatRequestBuilder<'a> {
                             "arguments": arguments,
                         }
                     });
-                    push_tool_call_message(&mut messages, tool_call, reasoning);
+                    push_tool_call_message(&mut messages, tool_call);
                 }
                 ResponseItem::LocalShellCall {
                     id,
@@ -237,14 +139,13 @@ impl<'a> ChatRequestBuilder<'a> {
                     status,
                     action,
                 } => {
-                    let reasoning = reasoning_by_anchor_index.get(&idx).map(String::as_str);
                     let tool_call = json!({
                         "id": id.clone().unwrap_or_default(),
                         "type": "local_shell_call",
                         "status": status,
                         "action": action,
                     });
-                    push_tool_call_message(&mut messages, tool_call, reasoning);
+                    push_tool_call_message(&mut messages, tool_call);
                 }
                 ResponseItem::FunctionCallOutput { call_id, output } => {
                     let content_value = if let Some(items) = &output.content_items {
@@ -285,8 +186,7 @@ impl<'a> ChatRequestBuilder<'a> {
                             "input": input,
                         }
                     });
-                    let reasoning = reasoning_by_anchor_index.get(&idx).map(String::as_str);
-                    push_tool_call_message(&mut messages, tool_call, reasoning);
+                    push_tool_call_message(&mut messages, tool_call);
                 }
                 ResponseItem::CustomToolCallOutput { call_id, output } => {
                     messages.push(json!({
@@ -331,7 +231,7 @@ impl<'a> ChatRequestBuilder<'a> {
     }
 }
 
-fn push_tool_call_message(messages: &mut Vec<Value>, tool_call: Value, reasoning: Option<&str>) {
+fn push_tool_call_message(messages: &mut Vec<Value>, tool_call: Value) {
     // Chat Completions requires that tool calls are grouped into a single assistant message
     // (with `tool_calls: [...]`) followed by tool role responses.
     if let Some(Value::Object(obj)) = messages.last_mut()
@@ -340,32 +240,14 @@ fn push_tool_call_message(messages: &mut Vec<Value>, tool_call: Value, reasoning
         && let Some(tool_calls) = obj.get_mut("tool_calls").and_then(Value::as_array_mut)
     {
         tool_calls.push(tool_call);
-        if let Some(reasoning) = reasoning {
-            if let Some(Value::String(existing)) = obj.get_mut("reasoning") {
-                if !existing.is_empty() {
-                    existing.push('\n');
-                }
-                existing.push_str(reasoning);
-            } else {
-                obj.insert(
-                    "reasoning".to_string(),
-                    Value::String(reasoning.to_string()),
-                );
-            }
-        }
         return;
     }
 
-    let mut msg = json!({
+    let msg = json!({
         "role": "assistant",
         "content": null,
         "tool_calls": [tool_call],
     });
-    if let Some(reasoning) = reasoning
-        && let Some(obj) = msg.as_object_mut()
-    {
-        obj.insert("reasoning".to_string(), json!(reasoning));
-    }
     messages.push(msg);
 }
 

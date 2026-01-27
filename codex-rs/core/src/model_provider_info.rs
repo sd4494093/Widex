@@ -156,10 +156,14 @@ impl ModelProviderInfo {
             .unwrap_or_else(|| default_base_url.to_string());
 
         let headers = self.build_header_map()?;
+        // VectorEngine (used for Grok) can occasionally return transient 429s; enable bounded
+        // retries with exponential backoff + jitter for that provider while keeping the
+        // global default conservative.
+        let retry_429 = base_url.contains("vectorengine.ai");
         let retry = ApiRetryConfig {
             max_attempts: self.request_max_retries(),
             base_delay: Duration::from_millis(200),
-            retry_429: false,
+            retry_429,
             retry_5xx: true,
             retry_transport: true,
         };
@@ -565,5 +569,28 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
                 "expected {base_url} not to be detected as Azure"
             );
         }
+    }
+
+    #[test]
+    fn retries_429_for_vectorengine_chat_providers() {
+        let provider = ModelProviderInfo {
+            name: "Grok (VectorEngine)".into(),
+            base_url: Some("https://api.vectorengine.ai/v1".into()),
+            env_key: None,
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            wire_api: WireApi::Chat,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: Some(2),
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            requires_openai_auth: true,
+        };
+
+        let api = provider.to_api_provider(None).expect("api provider");
+        assert_eq!(api.retry.retry_429, true);
+        assert_eq!(api.retry.max_attempts, 2);
     }
 }

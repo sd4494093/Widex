@@ -462,6 +462,8 @@ impl ModelClientSession {
         let api_prompt = build_api_prompt(prompt, instructions, tools_json);
         let conversation_id = self.state.conversation_id.to_string();
         let session_source = self.state.session_source.clone();
+        let mut model_slug = self.state.model_info.slug.clone();
+        let mut attempted_fallback = false;
 
         let mut auth_recovery = auth_manager
             .as_ref()
@@ -483,7 +485,7 @@ impl ModelClientSession {
 
             let stream_result = client
                 .stream_prompt(
-                    &self.state.model_info.slug,
+                    &model_slug,
                     &api_prompt,
                     Some(conversation_id.clone()),
                     Some(session_source.clone()),
@@ -497,6 +499,23 @@ impl ModelClientSession {
                 {
                     handle_unauthorized(status, &mut auth_recovery).await?;
                     continue;
+                }
+                Err(err @ ApiError::Transport(TransportError::Http { status, .. }))
+                    if status == StatusCode::TOO_MANY_REQUESTS =>
+                {
+                    if !attempted_fallback
+                        && let Some(fallback) = grok_fallback_model(&model_slug, status)
+                    {
+                        attempted_fallback = true;
+                        warn!(
+                            from_model = model_slug,
+                            fallback_model = fallback,
+                            "Retrying Chat Completions with fallback model after HTTP 429"
+                        );
+                        model_slug = fallback.to_string();
+                        continue;
+                    }
+                    return Err(map_api_error(err));
                 }
                 Err(err) => return Err(map_api_error(err)),
             }
@@ -812,5 +831,45 @@ impl SseTelemetry for ApiTelemetry {
         duration: Duration,
     ) {
         self.otel_manager.log_sse_event(result, duration);
+    }
+}
+
+fn grok_fallback_model(model: &str, status: StatusCode) -> Option<&'static str> {
+    if status != StatusCode::TOO_MANY_REQUESTS {
+        return None;
+    }
+    if model != "grok-4.1" {
+        return None;
+    }
+    Some("grok-4-1-fast-non-reasoning")
+}
+
+#[cfg(test)]
+mod grok_fallback_tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn falls_back_from_grok_4_1_on_429() {
+        assert_eq!(
+            grok_fallback_model("grok-4.1", StatusCode::TOO_MANY_REQUESTS),
+            Some("grok-4-1-fast-non-reasoning")
+        );
+    }
+
+    #[test]
+    fn does_not_fall_back_for_other_models() {
+        assert_eq!(
+            grok_fallback_model("grok-4-1-fast-reasoning", StatusCode::TOO_MANY_REQUESTS),
+            None
+        );
+    }
+
+    #[test]
+    fn does_not_fall_back_for_other_status_codes() {
+        assert_eq!(
+            grok_fallback_model("grok-4.1", StatusCode::BAD_REQUEST),
+            None
+        );
     }
 }

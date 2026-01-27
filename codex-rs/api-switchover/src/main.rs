@@ -111,18 +111,30 @@ fn main() -> anyhow::Result<()> {
                         if plan.auth.openai_api_key.is_some() {
                             println!("auth: OPENAI_API_KEY (set)");
                         } else {
-                            println!(
-                                "auth: OPENAI_API_KEY (missing env; will use saved if available)"
-                            );
+                            if let Some(env) = plan.auth.openai_api_key_env.as_deref() {
+                                println!(
+                                    "auth: OPENAI_API_KEY (missing env: {env}; will use saved if available)"
+                                );
+                            } else {
+                                println!(
+                                    "auth: OPENAI_API_KEY (missing env; will use saved if available)"
+                                );
+                            }
                         }
                     }
                     if plan.auth.wants_gemini_api_key {
                         if plan.auth.gemini_api_key.is_some() {
                             println!("auth: GEMINI_API_KEY (set)");
                         } else {
-                            println!(
-                                "auth: GEMINI_API_KEY (missing env; will use saved if available)"
-                            );
+                            if let Some(env) = plan.auth.gemini_api_key_env.as_deref() {
+                                println!(
+                                    "auth: GEMINI_API_KEY (missing env: {env}; will use saved if available)"
+                                );
+                            } else {
+                                println!(
+                                    "auth: GEMINI_API_KEY (missing env; will use saved if available)"
+                                );
+                            }
                         }
                     }
                 }
@@ -180,9 +192,15 @@ fn main() -> anyhow::Result<()> {
                     } else if let Some(saved) = auth.widex_saved_api_keys.get(&openai_cache_key) {
                         auth.openai_api_key = Some(saved.clone());
                     } else {
+                        let missing_env = plan
+                            .auth
+                            .openai_api_key_env
+                            .as_deref()
+                            .unwrap_or("OPENAI_API_KEY");
                         anyhow::bail!(
-                            "Profile `{}` requires OPENAI_API_KEY, but env was missing and no saved key was found",
-                            plan.profile_id
+                            "Profile `{}` requires OPENAI_API_KEY, but env `{}` was missing and no saved key was found",
+                            plan.profile_id,
+                            missing_env
                         );
                     }
                 }
@@ -195,9 +213,15 @@ fn main() -> anyhow::Result<()> {
                     } else if let Some(saved) = auth.widex_saved_api_keys.get(&gemini_cache_key) {
                         auth.gemini_api_key = Some(saved.clone());
                     } else {
+                        let missing_env = plan
+                            .auth
+                            .gemini_api_key_env
+                            .as_deref()
+                            .unwrap_or("GEMINI_API_KEY");
                         anyhow::bail!(
-                            "Profile `{}` requires GEMINI_API_KEY, but env was missing and no saved key was found",
-                            plan.profile_id
+                            "Profile `{}` requires GEMINI_API_KEY, but env `{}` was missing and no saved key was found",
+                            plan.profile_id,
+                            missing_env
                         );
                     }
                 }
