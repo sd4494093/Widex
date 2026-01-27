@@ -756,6 +756,20 @@ impl ChatWidget {
         Some(format!("Ralph {}/{}", state.current_loop, max))
     }
 
+    fn ralph_completion_summary(state: &RalphTuiState) -> String {
+        match state.completion_mode {
+            RalphCompletionMode::Contains => {
+                format!("contains: {}", state.completion_phrases.join(" | "))
+            }
+            RalphCompletionMode::PromiseTag => {
+                format!("promise-tag: {}", state.completion_phrases.join(" | "))
+            }
+            RalphCompletionMode::Regex => {
+                format!("regex: {}", state.completion_regex_patterns.join(" | "))
+            }
+        }
+    }
+
     fn flush_unified_exec_wait_streak(&mut self) {
         let Some(wait) = self.unified_exec_wait_streak.take() else {
             return;
@@ -3546,8 +3560,12 @@ Advanced (CLI passthrough):\n\
                 "running",
                 "",
                 state.current_loop,
+                state.max_loops,
                 state.calls_made_in_window,
                 max_calls,
+                state.timeout_minutes.unwrap_or(0),
+                &Self::ralph_completion_summary(state),
+                state.in_flight,
             );
             let _ = append_ralph_tui_log_line(&log_path, "INFO", "starting");
         }
@@ -3607,8 +3625,12 @@ Advanced (CLI passthrough):\n\
             "stopped",
             reason,
             state.current_loop,
+            state.max_loops,
             state.calls_made_in_window,
             max_calls,
+            state.timeout_minutes.unwrap_or(0),
+            &Self::ralph_completion_summary(&state),
+            state.in_flight,
         );
         let _ = append_ralph_tui_log_line(&log_path, "INFO", &format!("stopped: {reason}"));
 
@@ -3835,8 +3857,12 @@ After you make progress, append a short update to `.ralph/@fix_progress.md` unde
                 "running",
                 "",
                 state.current_loop,
+                state.max_loops,
                 state.calls_made_in_window,
                 max_calls,
+                state.timeout_minutes.unwrap_or(0),
+                &Self::ralph_completion_summary(state),
+                state.in_flight,
             );
             let _ = append_ralph_tui_log_line(&log_path, "INFO", &last_action);
         }
@@ -4019,8 +4045,12 @@ After you make progress, append a short update to `.ralph/@fix_progress.md` unde
                     status,
                     exit_reason,
                     loop_num,
+                    state.max_loops,
                     state.calls_made_in_window,
                     max_calls,
+                    state.timeout_minutes.unwrap_or(0),
+                    &Self::ralph_completion_summary(state),
+                    state.in_flight,
                 );
                 let _ = append_ralph_tui_log_line(
                     &log_path,
@@ -4047,8 +4077,12 @@ After you make progress, append a short update to `.ralph/@fix_progress.md` unde
                     "running",
                     "",
                     state.current_loop,
+                    state.max_loops,
                     state.calls_made_in_window,
                     max_calls,
+                    state.timeout_minutes.unwrap_or(0),
+                    &Self::ralph_completion_summary(state),
+                    state.in_flight,
                 );
                 let _ = append_ralph_tui_log_line(&log_path, "INFO", &last_action);
             }
@@ -6567,8 +6601,12 @@ struct RalphTuiStatusFile {
     timestamp: String,
     mode: String,
     loop_count: u64,
+    max_loops: u64,
     calls_made_this_hour: u64,
     max_calls_per_hour: u64,
+    timeout_minutes: u64,
+    completion: String,
+    in_flight: bool,
     last_action: String,
     status: String,
     exit_reason: String,
@@ -6591,8 +6629,12 @@ fn write_ralph_tui_status(
     status: &str,
     exit_reason: &str,
     loop_count: u64,
+    max_loops: u64,
     calls_made_this_hour: u64,
     max_calls_per_hour: u64,
+    timeout_minutes: u64,
+    completion: &str,
+    in_flight: bool,
 ) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -6602,8 +6644,12 @@ fn write_ralph_tui_status(
         timestamp: chrono::Utc::now().to_rfc3339(),
         mode: "tui".to_string(),
         loop_count,
+        max_loops,
         calls_made_this_hour,
         max_calls_per_hour,
+        timeout_minutes,
+        completion: completion.to_string(),
+        in_flight,
         last_action: last_action.to_string(),
         status: status.to_string(),
         exit_reason: exit_reason.to_string(),

@@ -84,9 +84,14 @@ pub(crate) struct RunOptions {
 #[derive(Debug, serde::Serialize)]
 struct StatusFile {
     timestamp: String,
+    mode: String,
     loop_count: u64,
+    max_loops: u64,
     calls_made_this_hour: u64,
     max_calls_per_hour: u64,
+    timeout_minutes: u64,
+    completion: String,
+    in_flight: bool,
     last_action: String,
     status: String,
     exit_reason: String,
@@ -356,6 +361,8 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
                 "max_loops",
                 "completed",
                 "Reached max loops",
+                &opts,
+                false,
             )
             .await?;
             append_log_line(
@@ -381,6 +388,8 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
                 "shutdown",
                 "exited",
                 &format!("Interrupted: {reason:?}"),
+                &opts,
+                false,
             )
             .await?;
             append_log_line(
@@ -402,6 +411,8 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
                 "stop_file",
                 "exited",
                 "STOP file present",
+                &opts,
+                false,
             )
             .await?;
             append_log_line(&paths, "WARN", "STOP file present; stopping loop.").await?;
@@ -418,6 +429,8 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
                 "circuit_breaker",
                 "exited",
                 &state.reason,
+                &opts,
+                false,
             )
             .await?;
             append_log_line(
@@ -439,6 +452,8 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
                 "rate_limited",
                 "waiting",
                 "",
+                &opts,
+                false,
             )
             .await?;
             append_log_line(
@@ -461,6 +476,8 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
                     "shutdown",
                     "exited",
                     &format!("Interrupted: {reason:?}"),
+                    &opts,
+                    false,
                 )
                 .await?;
                 append_log_line(
@@ -483,6 +500,8 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
             "widex_exec",
             "running",
             "",
+            &opts,
+            true,
         )
         .await?;
         append_log_line(
@@ -522,6 +541,8 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
                         "widex_exec",
                         "exited",
                         &format!("widex exec failed: {err:#}"),
+                        &opts,
+                        false,
                     )
                     .await?;
                     append_log_line(&paths, "ERROR", &format!("widex exec failed: {err:#}"))
@@ -567,6 +588,8 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
                         "rate_limited",
                         "waiting",
                         "",
+                        &opts,
+                        false,
                     )
                     .await?;
                     append_log_line(
@@ -590,6 +613,8 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
                     "widex_exec",
                     "running",
                     "",
+                    &opts,
+                    true,
                 )
                 .await?;
                 append_log_line(
@@ -634,6 +659,8 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
                 "shutdown",
                 "exited",
                 &exec.interrupt_reason,
+                &opts,
+                false,
             )
             .await?;
             // Record the interruption so the next loop (or a restart) has context.
@@ -771,6 +798,8 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
                     "circuit_breaker",
                     "exited",
                     &cb_outcome.state.reason,
+                    &opts,
+                    false,
                 )
                 .await?;
                 append_log_line(
@@ -792,6 +821,8 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
                 "complete",
                 "completed",
                 "Completion signal seen",
+                &opts,
+                false,
             )
             .await?;
             append_log_line(&paths, "SUCCESS", "Completion signal seen; stopping loop.").await?;
@@ -820,6 +851,8 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
                     "shutdown",
                     "exited",
                     &format!("Interrupted: {reason:?}"),
+                    &opts,
+                    false,
                 ).await?;
                 append_log_line(
                     &paths,
@@ -1827,15 +1860,24 @@ async fn update_status(
     last_action: &str,
     status: &str,
     exit_reason: &str,
+    opts: &RunOptions,
+    in_flight: bool,
 ) -> anyhow::Result<()> {
     let now = chrono::Utc::now().to_rfc3339();
     let next_reset = next_hour_boundary_string();
 
+    let completion = render_completion_summary(opts);
+
     let file = StatusFile {
         timestamp: now,
+        mode: "daemon".to_string(),
         loop_count,
+        max_loops: opts.max_loops,
         calls_made_this_hour: calls_made,
         max_calls_per_hour: max_calls,
+        timeout_minutes: opts.timeout_minutes,
+        completion,
+        in_flight,
         last_action: last_action.to_string(),
         status: status.to_string(),
         exit_reason: exit_reason.to_string(),
@@ -1843,6 +1885,29 @@ async fn update_status(
     };
 
     write_json_atomic(&paths.status_file, &file).await
+}
+
+fn render_completion_summary(opts: &RunOptions) -> String {
+    let phrases = opts
+        .completion_phrases
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(" | ");
+
+    match opts.completion_mode {
+        crate::CompletionMode::Contains => format!("contains: {phrases}"),
+        crate::CompletionMode::PromiseTag => format!("promise-tag: {phrases}"),
+        crate::CompletionMode::Regex => {
+            let patterns = opts
+                .completion_regexes
+                .iter()
+                .map(regex::Regex::as_str)
+                .collect::<Vec<_>>()
+                .join(" | ");
+            format!("regex: {patterns}")
+        }
+    }
 }
 
 fn current_hour_stamp() -> String {

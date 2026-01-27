@@ -5,10 +5,15 @@ use tokio::time;
 
 #[derive(Debug, Deserialize)]
 struct StatusFile {
+    mode: Option<String>,
     status: Option<String>,
     loop_count: Option<u64>,
+    max_loops: Option<u64>,
     calls_made_this_hour: Option<u64>,
     max_calls_per_hour: Option<u64>,
+    timeout_minutes: Option<u64>,
+    completion: Option<String>,
+    in_flight: Option<bool>,
     last_action: Option<String>,
     next_reset: Option<String>,
 }
@@ -94,14 +99,36 @@ async fn render_once(paths: &RalphPaths, interval_secs: u64) -> anyhow::Result<(
         if status_str == "running" && pid.is_some() && !pid_is_running {
             status_str = "exited".to_string();
         }
+        let mode = status.mode.unwrap_or_else(|| "unknown".to_string());
         let loop_count = status.loop_count.unwrap_or(0);
+        let max_loops = status.max_loops.unwrap_or(0);
         let calls_made = status.calls_made_this_hour.unwrap_or(0);
         let max_calls = status.max_calls_per_hour.unwrap_or(0);
         let next_reset = status.next_reset.unwrap_or_default();
+        let timeout = status.timeout_minutes.unwrap_or(0);
+        let completion = status.completion.unwrap_or_default();
+        let in_flight = status.in_flight.unwrap_or(false);
 
         println!("Status:     {status_str}");
-        println!("Loop:       {loop_count}");
-        println!("Calls:      {calls_made}/{max_calls} (next reset: {next_reset})");
+        println!("Mode:       {mode}");
+        if max_loops == 0 {
+            println!("Loop:       {loop_count}/infinite");
+        } else {
+            println!("Loop:       {loop_count}/{max_loops}");
+        }
+        println!(
+            "Calls:      {calls_made}/{} (next reset: {next_reset})",
+            format_calls_limit(max_calls)
+        );
+        if timeout == 0 {
+            println!("Timeout:    none");
+        } else {
+            println!("Timeout:    {timeout}m");
+        }
+        if !completion.trim().is_empty() {
+            println!("Completion: {completion}");
+        }
+        println!("In flight:  {}", if in_flight { "yes" } else { "no" });
         if let Some(last) = status.last_action.filter(|v| !v.is_empty()) {
             println!("Last:       {last}");
         }
@@ -198,15 +225,37 @@ pub(crate) async fn print_status_once(
         if status_str == "running" && pid.is_some() && !pid_is_running {
             status_str = "exited".to_string();
         }
+        let mode = status.mode.unwrap_or_else(|| "unknown".to_string());
         let loop_count = status.loop_count.unwrap_or(0);
+        let max_loops = status.max_loops.unwrap_or(0);
         let calls_made = status.calls_made_this_hour.unwrap_or(0);
         let max_calls = status.max_calls_per_hour.unwrap_or(0);
         let next_reset = status.next_reset.unwrap_or_default();
+        let timeout = status.timeout_minutes.unwrap_or(0);
+        let completion = status.completion.unwrap_or_default();
+        let in_flight = status.in_flight.unwrap_or(false);
 
         println!();
         println!("Status:     {status_str}");
-        println!("Loop:       {loop_count}");
-        println!("Calls:      {calls_made}/{max_calls} (next reset: {next_reset})");
+        println!("Mode:       {mode}");
+        if max_loops == 0 {
+            println!("Loop:       {loop_count}/infinite");
+        } else {
+            println!("Loop:       {loop_count}/{max_loops}");
+        }
+        println!(
+            "Calls:      {calls_made}/{} (next reset: {next_reset})",
+            format_calls_limit(max_calls)
+        );
+        if timeout == 0 {
+            println!("Timeout:    none");
+        } else {
+            println!("Timeout:    {timeout}m");
+        }
+        if !completion.trim().is_empty() {
+            println!("Completion: {completion}");
+        }
+        println!("In flight:  {}", if in_flight { "yes" } else { "no" });
         if let Some(last) = status.last_action.filter(|v| !v.is_empty()) {
             println!("Last:       {last}");
         }
@@ -290,6 +339,14 @@ pub(crate) async fn print_status_once(
     }
 
     Ok(())
+}
+
+fn format_calls_limit(max_calls: u64) -> String {
+    if max_calls == 0 {
+        "unlimited".to_string()
+    } else {
+        max_calls.to_string()
+    }
 }
 
 async fn read_log_contents(paths: &RalphPaths) -> (std::path::PathBuf, Option<String>) {
