@@ -3537,18 +3537,9 @@ Advanced (CLI passthrough):\n\
         // Best-effort: write a status file compatible with `widex ralph-widex monitor`, so
         // monitoring works even when running the TUI loop.
         if let Some(state) = self.ralph_tui.as_ref() {
-            let max_calls = state.max_calls_per_hour.unwrap_or(0);
             let status_path = ralph_dir.join("status.json");
             let log_path = ralph_dir.join("logs").join("ralph.log");
-            let _ = write_ralph_tui_status(
-                &status_path,
-                "starting",
-                "running",
-                "",
-                state.current_loop,
-                state.calls_made_in_window,
-                max_calls,
-            );
+            let _ = write_ralph_tui_status(&status_path, state, "starting", "running", "");
             let _ = append_ralph_tui_log_line(&log_path, "INFO", "starting");
         }
 
@@ -3591,25 +3582,22 @@ Advanced (CLI passthrough):\n\
     }
 
     fn stop_ralph_tui(&mut self, reason: &str) {
-        let Some(state) = self.ralph_tui.take() else {
+        let Some(mut state) = self.ralph_tui.take() else {
             self.add_info_message("Ralph loop is not running.".to_string(), None);
             return;
         };
 
+        // If the loop is in-flight, interrupt the current turn so stopping takes effect quickly.
+        if state.in_flight && self.bottom_pane.is_task_running() {
+            self.submit_op(Op::Interrupt);
+        }
+        state.in_flight = false;
+
         let ralph_dir = self.config.cwd.join(".ralph");
         let status_path = ralph_dir.join("status.json");
         let log_path = ralph_dir.join("logs").join("ralph.log");
-        let max_calls = state.max_calls_per_hour.unwrap_or(0);
         let last_action = "stopped by user";
-        let _ = write_ralph_tui_status(
-            &status_path,
-            last_action,
-            "stopped",
-            reason,
-            state.current_loop,
-            state.calls_made_in_window,
-            max_calls,
-        );
+        let _ = write_ralph_tui_status(&status_path, &state, last_action, "stopped", reason);
         let _ = append_ralph_tui_log_line(&log_path, "INFO", &format!("stopped: {reason}"));
 
         self.add_info_message(format!("Ralph loop stopped: {reason}."), None);
@@ -3825,19 +3813,10 @@ After you make progress, append a short update to `.ralph/@fix_progress.md` unde
         }
 
         if let Some(state) = self.ralph_tui.as_ref() {
-            let max_calls = state.max_calls_per_hour.unwrap_or(0);
             let status_path = ralph_dir.join("status.json");
             let log_path = ralph_dir.join("logs").join("ralph.log");
             let last_action = format!("loop {} start", state.current_loop);
-            let _ = write_ralph_tui_status(
-                &status_path,
-                &last_action,
-                "running",
-                "",
-                state.current_loop,
-                state.calls_made_in_window,
-                max_calls,
-            );
+            let _ = write_ralph_tui_status(&status_path, state, &last_action, "running", "");
             let _ = append_ralph_tui_log_line(&log_path, "INFO", &last_action);
         }
 
@@ -4004,7 +3983,6 @@ After you make progress, append a short update to `.ralph/@fix_progress.md` unde
             if let Some(state) = self.ralph_tui.as_ref() {
                 let status_path = ralph_dir.join("status.json");
                 let log_path = ralph_dir.join("logs").join("ralph.log");
-                let max_calls = state.max_calls_per_hour.unwrap_or(0);
 
                 let (status, exit_reason) = match reason {
                     "STOP file" => ("stopped", "STOP file"),
@@ -4013,15 +3991,8 @@ After you make progress, append a short update to `.ralph/@fix_progress.md` unde
                     _ => ("exited", reason),
                 };
                 let last_action = format!("loop {loop_num} end");
-                let _ = write_ralph_tui_status(
-                    &status_path,
-                    &last_action,
-                    status,
-                    exit_reason,
-                    loop_num,
-                    state.calls_made_in_window,
-                    max_calls,
-                );
+                let _ =
+                    write_ralph_tui_status(&status_path, state, &last_action, status, exit_reason);
                 let _ = append_ralph_tui_log_line(
                     &log_path,
                     "INFO",
@@ -4039,17 +4010,8 @@ After you make progress, append a short update to `.ralph/@fix_progress.md` unde
             if let Some(state) = self.ralph_tui.as_ref() {
                 let status_path = ralph_dir.join("status.json");
                 let log_path = ralph_dir.join("logs").join("ralph.log");
-                let max_calls = state.max_calls_per_hour.unwrap_or(0);
                 let last_action = format!("loop {loop_num} end");
-                let _ = write_ralph_tui_status(
-                    &status_path,
-                    &last_action,
-                    "running",
-                    "",
-                    state.current_loop,
-                    state.calls_made_in_window,
-                    max_calls,
-                );
+                let _ = write_ralph_tui_status(&status_path, state, &last_action, "running", "");
                 let _ = append_ralph_tui_log_line(&log_path, "INFO", &last_action);
             }
             self.queue_user_message(text.into());
@@ -5861,6 +5823,12 @@ After you make progress, append a short update to `.ralph/@fix_progress.md` unde
     /// Otherwise it should be routed to the active view and not attempt to quit.
     fn on_ctrl_d(&mut self) -> bool {
         let key = key_hint::ctrl(KeyCode::Char('d'));
+        if self.ralph_tui.is_some() {
+            self.bottom_pane.clear_quit_shortcut_hint();
+            self.quit_shortcut_expires_at = None;
+            self.quit_shortcut_key = None;
+            return false;
+        }
         if !DOUBLE_PRESS_QUIT_SHORTCUT_ENABLED {
             if !self.bottom_pane.composer_is_empty() || !self.bottom_pane.no_modal_or_popup_active()
             {
@@ -5914,6 +5882,10 @@ After you make progress, append a short update to `.ralph/@fix_progress.md` unde
 
     pub(crate) fn composer_is_empty(&self) -> bool {
         self.bottom_pane.composer_is_empty()
+    }
+
+    pub(crate) fn is_ralph_tui_active(&self) -> bool {
+        self.ralph_tui.is_some()
     }
 
     pub(crate) fn submit_user_message_with_mode(
@@ -6368,6 +6340,7 @@ const RALPH_FIX_PROGRESS_AUTOLOG_JSONL: &str = ".fix_progress.autolog.jsonl";
 const RALPH_FIX_PROGRESS_AUTOLOG_START: &str = "<!-- RALPH_WIDEX_AUTOLOG_START -->";
 const RALPH_FIX_PROGRESS_AUTOLOG_END: &str = "<!-- RALPH_WIDEX_AUTOLOG_END -->";
 const RALPH_FIX_PROGRESS_AUTOLOG_MAX_EVENTS: usize = 200;
+const RALPH_FIX_PROGRESS_REGENERATE_MAX_ATTEMPTS: usize = 10;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -6426,7 +6399,12 @@ impl RalphFixProgressEvent {
 fn ensure_ralph_fix_progress_file(ralph_dir: &Path) -> std::io::Result<()> {
     let md_path = ralph_dir.join("@fix_progress.md");
     if md_path.exists() {
-        return Ok(());
+        // Treat an empty/truncated file as missing so we can recover.
+        if let Ok(existing) = std::fs::read_to_string(&md_path)
+            && !existing.trim().is_empty()
+        {
+            return Ok(());
+        }
     }
 
     let content = "\
@@ -6471,44 +6449,67 @@ fn write_ralph_fix_progress_event(
 
 fn regenerate_ralph_fix_progress_md(ralph_dir: &Path) -> std::io::Result<()> {
     let md_path = ralph_dir.join("@fix_progress.md");
-    let mut contents = match std::fs::read_to_string(&md_path) {
-        Ok(v) => v,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+    for attempt in 0..RALPH_FIX_PROGRESS_REGENERATE_MAX_ATTEMPTS {
+        let mut original = match std::fs::read_to_string(&md_path) {
+            Ok(v) => v,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                ensure_ralph_fix_progress_file(ralph_dir)?;
+                std::fs::read_to_string(&md_path)?
+            }
+            Err(err) => return Err(err),
+        };
+
+        if original.trim().is_empty() {
             ensure_ralph_fix_progress_file(ralph_dir)?;
-            std::fs::read_to_string(&md_path)?
+            original = std::fs::read_to_string(&md_path)?;
         }
-        Err(err) => return Err(err),
-    };
-    if contents.trim().is_empty() {
-        ensure_ralph_fix_progress_file(ralph_dir)?;
-        contents = std::fs::read_to_string(&md_path)?;
-    }
+        let mut contents = original.clone();
 
-    if !contents.contains(RALPH_FIX_PROGRESS_AUTOLOG_START)
-        || !contents.contains(RALPH_FIX_PROGRESS_AUTOLOG_END)
-    {
-        contents.push_str("\n\n");
-        contents.push_str(RALPH_FIX_PROGRESS_AUTOLOG_START);
-        contents.push('\n');
-        contents.push('\n');
-        contents.push_str(RALPH_FIX_PROGRESS_AUTOLOG_END);
-        contents.push('\n');
-    }
+        if !contents.contains(RALPH_FIX_PROGRESS_AUTOLOG_START)
+            || !contents.contains(RALPH_FIX_PROGRESS_AUTOLOG_END)
+        {
+            contents.push_str("\n\n");
+            contents.push_str(RALPH_FIX_PROGRESS_AUTOLOG_START);
+            contents.push('\n');
+            contents.push('\n');
+            contents.push_str(RALPH_FIX_PROGRESS_AUTOLOG_END);
+            contents.push('\n');
+        }
 
-    let (before, after) = match contents.split_once(RALPH_FIX_PROGRESS_AUTOLOG_START) {
-        Some((before, rest)) => match rest.split_once(RALPH_FIX_PROGRESS_AUTOLOG_END) {
-            Some((_old, after)) => (before.to_string(), after.to_string()),
+        let (before, after) = match contents.split_once(RALPH_FIX_PROGRESS_AUTOLOG_START) {
+            Some((before, rest)) => match rest.split_once(RALPH_FIX_PROGRESS_AUTOLOG_END) {
+                Some((_old, after)) => (before.to_string(), after.to_string()),
+                None => (contents.clone(), String::new()),
+            },
             None => (contents.clone(), String::new()),
-        },
-        None => (contents.clone(), String::new()),
-    };
+        };
 
-    let events = read_ralph_fix_progress_events(ralph_dir);
-    let autolog = render_ralph_fix_progress_autolog(&events);
-    let new_contents = format!(
-        "{before}{RALPH_FIX_PROGRESS_AUTOLOG_START}\n{autolog}\n{RALPH_FIX_PROGRESS_AUTOLOG_END}{after}"
-    );
-    std::fs::write(md_path, new_contents)
+        let events = read_ralph_fix_progress_events(ralph_dir);
+        let autolog = render_ralph_fix_progress_autolog(&events);
+        let new_contents = format!(
+            "{before}{RALPH_FIX_PROGRESS_AUTOLOG_START}\n{autolog}\n{RALPH_FIX_PROGRESS_AUTOLOG_END}{after}"
+        );
+
+        // Optimistic concurrency: if the user/agent is appending Notes while we're regenerating the
+        // Auto log section, retry instead of overwriting their changes.
+        let current = std::fs::read_to_string(&md_path).unwrap_or_default();
+        if current != original {
+            if attempt + 1 < RALPH_FIX_PROGRESS_REGENERATE_MAX_ATTEMPTS {
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+            return Err(std::io::Error::other(
+                "failed to regenerate @fix_progress.md: file changed during update",
+            ));
+        }
+
+        codex_core::path_utils::write_atomically(&md_path, &new_contents)?;
+        return Ok(());
+    }
+
+    Err(std::io::Error::other(
+        "failed to regenerate @fix_progress.md: too many retries",
+    ))
 }
 
 fn read_ralph_fix_progress_events(ralph_dir: &Path) -> Vec<RalphFixProgressEvent> {
@@ -6566,9 +6567,19 @@ fn render_ralph_fix_progress_autolog(events: &[RalphFixProgressEvent]) -> String
 struct RalphTuiStatusFile {
     timestamp: String,
     mode: String,
+    loop_current: u64,
+    max_loops: u64,
+    in_flight: bool,
     loop_count: u64,
     calls_made_this_hour: u64,
     max_calls_per_hour: u64,
+    next_reset_in_seconds: u64,
+    timeout_minutes: u64,
+    completion_mode: String,
+    completion_phrases: Vec<String>,
+    completion_regexes: Vec<String>,
+    last_abort_reason: Option<String>,
+    timed_out: bool,
     last_action: String,
     status: String,
     exit_reason: String,
@@ -6585,14 +6596,26 @@ fn next_hour_boundary_string() -> String {
     next.format("%H:%M:%S").to_string()
 }
 
+fn seconds_until_next_hour_boundary() -> u64 {
+    let now = Local::now();
+    let next = (now + chrono::Duration::hours(1))
+        .with_minute(0)
+        .and_then(|t| t.with_second(0))
+        .and_then(|t| t.with_nanosecond(0))
+        .unwrap_or_else(|| now + chrono::Duration::hours(1));
+
+    (next - now)
+        .to_std()
+        .unwrap_or_else(|_| std::time::Duration::from_secs(0))
+        .as_secs()
+}
+
 fn write_ralph_tui_status(
     path: &Path,
+    state: &RalphTuiState,
     last_action: &str,
     status: &str,
     exit_reason: &str,
-    loop_count: u64,
-    calls_made_this_hour: u64,
-    max_calls_per_hour: u64,
 ) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -6601,9 +6624,24 @@ fn write_ralph_tui_status(
     let file = RalphTuiStatusFile {
         timestamp: chrono::Utc::now().to_rfc3339(),
         mode: "tui".to_string(),
-        loop_count,
-        calls_made_this_hour,
-        max_calls_per_hour,
+        loop_current: state.current_loop,
+        max_loops: state.max_loops,
+        in_flight: state.in_flight,
+        loop_count: state.current_loop,
+        calls_made_this_hour: state.calls_made_in_window,
+        max_calls_per_hour: state.max_calls_per_hour.unwrap_or(0),
+        next_reset_in_seconds: seconds_until_next_hour_boundary(),
+        timeout_minutes: state.timeout_minutes.unwrap_or(0),
+        completion_mode: match state.completion_mode {
+            RalphCompletionMode::Contains => "contains",
+            RalphCompletionMode::PromiseTag => "promise-tag",
+            RalphCompletionMode::Regex => "regex",
+        }
+        .to_string(),
+        completion_phrases: state.completion_phrases.clone(),
+        completion_regexes: state.completion_regex_patterns.clone(),
+        last_abort_reason: state.last_abort_reason.clone(),
+        timed_out: state.turn_timed_out,
         last_action: last_action.to_string(),
         status: status.to_string(),
         exit_reason: exit_reason.to_string(),
@@ -6740,10 +6778,12 @@ fn completion_signal_seen(
             if phrases.is_empty() {
                 return false;
             }
-            let message_lower = message.to_lowercase();
+            // ASCII-only lowercasing avoids Unicode case-folding quirks while still keeping
+            // non-ASCII completion phrases (e.g. Chinese) stable.
+            let message_lower = message.to_ascii_lowercase();
             phrases.iter().any(|p| {
                 let p = p.trim();
-                !p.is_empty() && message_lower.contains(&p.to_lowercase())
+                !p.is_empty() && message_lower.contains(&p.to_ascii_lowercase())
             })
         }
         RalphCompletionMode::PromiseTag => completion_promise_tag_seen(message, phrases),

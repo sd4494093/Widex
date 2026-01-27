@@ -5,12 +5,24 @@ use tokio::time;
 
 #[derive(Debug, Deserialize)]
 struct StatusFile {
+    mode: Option<String>,
     status: Option<String>,
+    in_flight: Option<bool>,
+    loop_current: Option<u64>,
+    max_loops: Option<u64>,
     loop_count: Option<u64>,
     calls_made_this_hour: Option<u64>,
     max_calls_per_hour: Option<u64>,
+    next_reset_in_seconds: Option<u64>,
     last_action: Option<String>,
+    exit_reason: Option<String>,
     next_reset: Option<String>,
+    timeout_minutes: Option<u64>,
+    completion_mode: Option<String>,
+    completion_phrases: Option<Vec<String>>,
+    completion_regexes: Option<Vec<String>>,
+    last_abort_reason: Option<String>,
+    timed_out: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -94,16 +106,70 @@ async fn render_once(paths: &RalphPaths, interval_secs: u64) -> anyhow::Result<(
         if status_str == "running" && pid.is_some() && !pid_is_running {
             status_str = "exited".to_string();
         }
-        let loop_count = status.loop_count.unwrap_or(0);
+        let loop_current = status.loop_current.or(status.loop_count).unwrap_or(0);
+        let max_loops = status.max_loops.unwrap_or(0);
+        let max_loops = if max_loops == 0 {
+            "inf".to_string()
+        } else {
+            max_loops.to_string()
+        };
+        let in_flight = status.in_flight.unwrap_or(false);
         let calls_made = status.calls_made_this_hour.unwrap_or(0);
         let max_calls = status.max_calls_per_hour.unwrap_or(0);
+        let max_calls = if max_calls == 0 {
+            "unlimited".to_string()
+        } else {
+            max_calls.to_string()
+        };
         let next_reset = status.next_reset.unwrap_or_default();
+        let reset_in = status.next_reset_in_seconds.unwrap_or(0);
+        let timeout = status.timeout_minutes.unwrap_or(0);
+        let timed_out = status.timed_out.unwrap_or(false);
 
         println!("Status:     {status_str}");
-        println!("Loop:       {loop_count}");
-        println!("Calls:      {calls_made}/{max_calls} (next reset: {next_reset})");
+        if let Some(mode) = status.mode.as_deref().filter(|v| !v.is_empty()) {
+            println!("Mode:       {mode}");
+        }
+        println!("Loop:       {loop_current}/{max_loops}");
+        println!("In flight:  {in_flight}");
+        println!(
+            "Calls/hour: {calls_made}/{max_calls} (reset in: {reset_in}s, next reset: {next_reset})"
+        );
+        if timeout == 0 {
+            println!("Timeout:    none");
+        } else {
+            println!("Timeout:    {timeout}m");
+        }
+        if let Some(mode) = status.completion_mode.as_deref().filter(|v| !v.is_empty()) {
+            let phrases: &[String] = status.completion_phrases.as_deref().unwrap_or(&[]);
+            let regexes: &[String] = status.completion_regexes.as_deref().unwrap_or(&[]);
+            let completion = if mode == "regex" {
+                regexes.join(" | ")
+            } else if mode == "promise-tag" {
+                phrases.join(" | ")
+            } else {
+                phrases.join(" | ")
+            };
+            if !completion.is_empty() {
+                println!("Completion: {mode} ({completion})");
+            } else {
+                println!("Completion: {mode}");
+            }
+        }
+        if let Some(abort) = status
+            .last_abort_reason
+            .as_deref()
+            .filter(|v| !v.is_empty())
+        {
+            println!("Last abort: {abort} (timed_out={timed_out})");
+        } else if timed_out {
+            println!("Last abort: timeout (timed_out=true)");
+        }
         if let Some(last) = status.last_action.filter(|v| !v.is_empty()) {
             println!("Last:       {last}");
+        }
+        if let Some(exit_reason) = status.exit_reason.as_deref().filter(|v| !v.is_empty()) {
+            println!("Exit:       {exit_reason}");
         }
     } else {
         println!("Status file not found: {}", paths.status_file.display());
@@ -198,17 +264,71 @@ pub(crate) async fn print_status_once(
         if status_str == "running" && pid.is_some() && !pid_is_running {
             status_str = "exited".to_string();
         }
-        let loop_count = status.loop_count.unwrap_or(0);
+        let loop_current = status.loop_current.or(status.loop_count).unwrap_or(0);
+        let max_loops = status.max_loops.unwrap_or(0);
+        let max_loops = if max_loops == 0 {
+            "inf".to_string()
+        } else {
+            max_loops.to_string()
+        };
+        let in_flight = status.in_flight.unwrap_or(false);
         let calls_made = status.calls_made_this_hour.unwrap_or(0);
         let max_calls = status.max_calls_per_hour.unwrap_or(0);
+        let max_calls = if max_calls == 0 {
+            "unlimited".to_string()
+        } else {
+            max_calls.to_string()
+        };
         let next_reset = status.next_reset.unwrap_or_default();
+        let reset_in = status.next_reset_in_seconds.unwrap_or(0);
+        let timeout = status.timeout_minutes.unwrap_or(0);
+        let timed_out = status.timed_out.unwrap_or(false);
 
         println!();
         println!("Status:     {status_str}");
-        println!("Loop:       {loop_count}");
-        println!("Calls:      {calls_made}/{max_calls} (next reset: {next_reset})");
+        if let Some(mode) = status.mode.as_deref().filter(|v| !v.is_empty()) {
+            println!("Mode:       {mode}");
+        }
+        println!("Loop:       {loop_current}/{max_loops}");
+        println!("In flight:  {in_flight}");
+        println!(
+            "Calls/hour: {calls_made}/{max_calls} (reset in: {reset_in}s, next reset: {next_reset})"
+        );
+        if timeout == 0 {
+            println!("Timeout:    none");
+        } else {
+            println!("Timeout:    {timeout}m");
+        }
+        if let Some(mode) = status.completion_mode.as_deref().filter(|v| !v.is_empty()) {
+            let phrases: &[String] = status.completion_phrases.as_deref().unwrap_or(&[]);
+            let regexes: &[String] = status.completion_regexes.as_deref().unwrap_or(&[]);
+            let completion = if mode == "regex" {
+                regexes.join(" | ")
+            } else if mode == "promise-tag" {
+                phrases.join(" | ")
+            } else {
+                phrases.join(" | ")
+            };
+            if !completion.is_empty() {
+                println!("Completion: {mode} ({completion})");
+            } else {
+                println!("Completion: {mode}");
+            }
+        }
+        if let Some(abort) = status
+            .last_abort_reason
+            .as_deref()
+            .filter(|v| !v.is_empty())
+        {
+            println!("Last abort: {abort} (timed_out={timed_out})");
+        } else if timed_out {
+            println!("Last abort: timeout (timed_out=true)");
+        }
         if let Some(last) = status.last_action.filter(|v| !v.is_empty()) {
             println!("Last:       {last}");
+        }
+        if let Some(exit_reason) = status.exit_reason.as_deref().filter(|v| !v.is_empty()) {
+            println!("Exit:       {exit_reason}");
         }
     } else {
         println!();
@@ -255,22 +375,6 @@ pub(crate) async fn print_status_once(
         println!("Widex exec: running ({elapsed}s elapsed)");
         if !last_output.is_empty() {
             println!("Output:     {last_output}");
-        }
-    }
-
-    println!();
-    println!("Recent activity:");
-    println!("----------------");
-
-    let log_path = paths.logs_dir.join("ralph.log");
-    match tokio::fs::read_to_string(&log_path).await {
-        Ok(contents) => {
-            for line in tail_lines(&contents, tail_lines_count) {
-                println!("{line}");
-            }
-        }
-        Err(_) => {
-            println!("No log file found: {}", log_path.display());
         }
     }
 

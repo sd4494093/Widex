@@ -84,9 +84,20 @@ pub(crate) struct RunOptions {
 #[derive(Debug, serde::Serialize)]
 struct StatusFile {
     timestamp: String,
+    mode: String,
+    loop_current: u64,
+    max_loops: u64,
+    in_flight: bool,
     loop_count: u64,
     calls_made_this_hour: u64,
     max_calls_per_hour: u64,
+    next_reset_in_seconds: u64,
+    timeout_minutes: u64,
+    completion_mode: String,
+    completion_phrases: Vec<String>,
+    completion_regexes: Vec<String>,
+    last_abort_reason: Option<String>,
+    timed_out: bool,
     last_action: String,
     status: String,
     exit_reason: String,
@@ -151,6 +162,7 @@ const FIX_PROGRESS_AUTOLOG_JSONL: &str = ".fix_progress.autolog.jsonl";
 const FIX_PROGRESS_AUTOLOG_START: &str = "<!-- RALPH_WIDEX_AUTOLOG_START -->";
 const FIX_PROGRESS_AUTOLOG_END: &str = "<!-- RALPH_WIDEX_AUTOLOG_END -->";
 const FIX_PROGRESS_AUTOLOG_MAX_EVENTS: usize = 200;
+const FIX_PROGRESS_REGENERATE_MAX_ATTEMPTS: usize = 10;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -225,40 +237,68 @@ async fn record_fix_progress_event(
 
 async fn regenerate_fix_progress_md(paths: &RalphPaths) -> anyhow::Result<()> {
     let md_path = paths.ralph_dir.join("@fix_progress.md");
-    let mut contents = match tokio::fs::read_to_string(&md_path).await {
-        Ok(v) => v,
-        Err(_) => TEMPLATE_FIX_PROGRESS.to_string(),
-    };
+    for attempt in 0..FIX_PROGRESS_REGENERATE_MAX_ATTEMPTS {
+        let original = tokio::fs::read_to_string(&md_path)
+            .await
+            .unwrap_or_else(|_| String::new());
+        let mut contents = if original.trim().is_empty() {
+            TEMPLATE_FIX_PROGRESS.to_string()
+        } else {
+            original.clone()
+        };
 
-    if !contents.contains(FIX_PROGRESS_AUTOLOG_START)
-        || !contents.contains(FIX_PROGRESS_AUTOLOG_END)
-    {
-        // Back-compat for early templates: treat everything as "notes" and append a protected section.
-        contents.push_str("\n\n");
-        contents.push_str(FIX_PROGRESS_AUTOLOG_START);
-        contents.push('\n');
-        contents.push('\n');
-        contents.push_str(FIX_PROGRESS_AUTOLOG_END);
-        contents.push('\n');
+        if !contents.contains(FIX_PROGRESS_AUTOLOG_START)
+            || !contents.contains(FIX_PROGRESS_AUTOLOG_END)
+        {
+            // Back-compat for early templates: treat everything as "notes" and append a protected section.
+            contents.push_str("\n\n");
+            contents.push_str(FIX_PROGRESS_AUTOLOG_START);
+            contents.push('\n');
+            contents.push('\n');
+            contents.push_str(FIX_PROGRESS_AUTOLOG_END);
+            contents.push('\n');
+        }
+
+        let (before, after) = match contents.split_once(FIX_PROGRESS_AUTOLOG_START) {
+            Some((before, rest)) => match rest.split_once(FIX_PROGRESS_AUTOLOG_END) {
+                Some((_old_autolog, after)) => (before.to_string(), after.to_string()),
+                None => (contents.clone(), String::new()),
+            },
+            None => (contents.clone(), String::new()),
+        };
+
+        let events = read_fix_progress_events(paths).await?;
+        let autolog = render_fix_progress_autolog(&events);
+        let new_contents = format!(
+            "{before}{FIX_PROGRESS_AUTOLOG_START}\n{autolog}\n{FIX_PROGRESS_AUTOLOG_END}{after}"
+        );
+
+        // Optimistic concurrency: if Notes were updated between our read and write, retry to avoid
+        // clobbering append-only user content.
+        let current = tokio::fs::read_to_string(&md_path)
+            .await
+            .unwrap_or_else(|_| String::new());
+        if !current.trim().is_empty() && current != original {
+            if attempt + 1 < FIX_PROGRESS_REGENERATE_MAX_ATTEMPTS {
+                time::sleep(time::Duration::from_millis(5)).await;
+                continue;
+            }
+            anyhow::bail!(
+                "Failed to regenerate {}: file changed during update",
+                md_path.display()
+            );
+        }
+
+        tokio::fs::write(&md_path, new_contents)
+            .await
+            .with_context(|| format!("Failed to write {}", md_path.display()))?;
+        return Ok(());
     }
 
-    let (before, after) = match contents.split_once(FIX_PROGRESS_AUTOLOG_START) {
-        Some((before, rest)) => match rest.split_once(FIX_PROGRESS_AUTOLOG_END) {
-            Some((_old_autolog, after)) => (before.to_string(), after.to_string()),
-            None => (contents.clone(), String::new()),
-        },
-        None => (contents.clone(), String::new()),
-    };
-
-    let events = read_fix_progress_events(paths).await?;
-    let autolog = render_fix_progress_autolog(&events);
-    let new_contents = format!(
-        "{before}{FIX_PROGRESS_AUTOLOG_START}\n{autolog}\n{FIX_PROGRESS_AUTOLOG_END}{after}"
-    );
-    tokio::fs::write(&md_path, new_contents)
-        .await
-        .with_context(|| format!("Failed to write {}", md_path.display()))?;
-    Ok(())
+    anyhow::bail!(
+        "Failed to regenerate {}: too many retries",
+        md_path.display()
+    )
 }
 
 async fn read_fix_progress_events(paths: &RalphPaths) -> anyhow::Result<Vec<FixProgressEvent>> {
@@ -345,17 +385,22 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
     .await?;
 
     let mut loop_count: u64 = 0;
+    let mut last_abort_reason: Option<String> = None;
+    let mut last_timed_out = false;
     loop {
         if opts.max_loops != 0 && loop_count >= opts.max_loops {
             let calls_made = read_calls_made(&paths).await?;
             update_status(
                 &paths,
+                &opts,
                 loop_count,
                 calls_made,
-                opts.max_calls_per_hour,
                 "max_loops",
                 "completed",
                 "Reached max loops",
+                false,
+                last_abort_reason.as_deref(),
+                last_timed_out,
             )
             .await?;
             append_log_line(
@@ -375,12 +420,15 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
             let reason = shutdown.reason();
             update_status(
                 &paths,
+                &opts,
                 loop_count,
                 read_calls_made(&paths).await?,
-                opts.max_calls_per_hour,
                 "shutdown",
                 "exited",
                 &format!("Interrupted: {reason:?}"),
+                false,
+                last_abort_reason.as_deref(),
+                last_timed_out,
             )
             .await?;
             append_log_line(
@@ -396,12 +444,15 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
             shutdown.trigger(ShutdownReason::StopFile);
             update_status(
                 &paths,
+                &opts,
                 loop_count,
                 read_calls_made(&paths).await?,
-                opts.max_calls_per_hour,
                 "stop_file",
                 "exited",
                 "STOP file present",
+                false,
+                last_abort_reason.as_deref(),
+                last_timed_out,
             )
             .await?;
             append_log_line(&paths, "WARN", "STOP file present; stopping loop.").await?;
@@ -412,12 +463,15 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
             let state = circuit_breaker::read_state(&paths).await?;
             update_status(
                 &paths,
+                &opts,
                 loop_count,
                 read_calls_made(&paths).await?,
-                opts.max_calls_per_hour,
                 "circuit_breaker",
                 "exited",
                 &state.reason,
+                false,
+                last_abort_reason.as_deref(),
+                last_timed_out,
             )
             .await?;
             append_log_line(
@@ -433,12 +487,15 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
         if calls_made >= opts.max_calls_per_hour {
             update_status(
                 &paths,
+                &opts,
                 loop_count,
                 calls_made,
-                opts.max_calls_per_hour,
                 "rate_limited",
                 "waiting",
                 "",
+                false,
+                last_abort_reason.as_deref(),
+                last_timed_out,
             )
             .await?;
             append_log_line(
@@ -455,12 +512,15 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
                 let reason = shutdown.reason();
                 update_status(
                     &paths,
+                    &opts,
                     loop_count,
                     read_calls_made(&paths).await?,
-                    opts.max_calls_per_hour,
                     "shutdown",
                     "exited",
                     &format!("Interrupted: {reason:?}"),
+                    false,
+                    last_abort_reason.as_deref(),
+                    last_timed_out,
                 )
                 .await?;
                 append_log_line(
@@ -477,12 +537,15 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
         let mut calls_made = increment_calls_made(&paths).await?;
         update_status(
             &paths,
+            &opts,
             loop_count,
             calls_made,
-            opts.max_calls_per_hour,
             "widex_exec",
             "running",
             "",
+            true,
+            last_abort_reason.as_deref(),
+            last_timed_out,
         )
         .await?;
         append_log_line(
@@ -514,14 +577,19 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
                 Err(err) => {
                     // Keep iterating until max loops (or completion phrase). Treat unexpected
                     // `exec` failures as a failed loop.
+                    last_abort_reason = Some(format!("widex exec failed: {err:#}"));
+                    last_timed_out = false;
                     update_status(
                         &paths,
+                        &opts,
                         loop_count,
                         calls_made,
-                        opts.max_calls_per_hour,
                         "widex_exec",
                         "exited",
-                        &format!("widex exec failed: {err:#}"),
+                        last_abort_reason.as_deref().unwrap_or_default(),
+                        false,
+                        last_abort_reason.as_deref(),
+                        last_timed_out,
                     )
                     .await?;
                     append_log_line(&paths, "ERROR", &format!("widex exec failed: {err:#}"))
@@ -561,12 +629,15 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
                 if current_calls >= opts.max_calls_per_hour {
                     update_status(
                         &paths,
+                        &opts,
                         loop_count,
                         current_calls,
-                        opts.max_calls_per_hour,
                         "rate_limited",
                         "waiting",
                         "",
+                        false,
+                        last_abort_reason.as_deref(),
+                        last_timed_out,
                     )
                     .await?;
                     append_log_line(
@@ -584,12 +655,15 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
                 calls_made = increment_calls_made(&paths).await?;
                 update_status(
                     &paths,
+                    &opts,
                     loop_count,
                     calls_made,
-                    opts.max_calls_per_hour,
                     "widex_exec",
                     "running",
                     "",
+                    true,
+                    last_abort_reason.as_deref(),
+                    last_timed_out,
                 )
                 .await?;
                 append_log_line(
@@ -626,14 +700,19 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
         }
 
         if exec.interrupted {
+            last_abort_reason = Some(exec.interrupt_reason.clone());
+            last_timed_out = false;
             update_status(
                 &paths,
+                &opts,
                 loop_count,
                 calls_made,
-                opts.max_calls_per_hour,
                 "shutdown",
                 "exited",
                 &exec.interrupt_reason,
+                false,
+                last_abort_reason.as_deref(),
+                last_timed_out,
             )
             .await?;
             // Record the interruption so the next loop (or a restart) has context.
@@ -675,6 +754,19 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
             .await?;
             return Ok(());
         }
+
+        last_timed_out = exec.exit_code == 124;
+        last_abort_reason = if exec.exit_code == 0 {
+            None
+        } else if last_timed_out {
+            Some(if exec.interrupt_reason.trim().is_empty() {
+                "timeout".to_string()
+            } else {
+                exec.interrupt_reason.clone()
+            })
+        } else {
+            Some(format!("exit_code={}", exec.exit_code))
+        };
 
         let output_length = exec
             .last_message
@@ -748,6 +840,21 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
             .await;
         }
 
+        let last_action = format!("loop {loop_count} end");
+        update_status(
+            &paths,
+            &opts,
+            loop_count,
+            calls_made,
+            &last_action,
+            "running",
+            "",
+            false,
+            last_abort_reason.as_deref(),
+            last_timed_out,
+        )
+        .await?;
+
         if opts.enable_circuit_breaker {
             let files_changed_for_circuit_breaker = if analysis.is_test_only {
                 1
@@ -763,14 +870,19 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
             .await?;
 
             if cb_outcome.opened {
+                last_abort_reason = Some(cb_outcome.state.reason.clone());
+                last_timed_out = false;
                 update_status(
                     &paths,
+                    &opts,
                     loop_count,
                     calls_made,
-                    opts.max_calls_per_hour,
                     "circuit_breaker",
                     "exited",
                     &cb_outcome.state.reason,
+                    false,
+                    last_abort_reason.as_deref(),
+                    last_timed_out,
                 )
                 .await?;
                 append_log_line(
@@ -784,14 +896,19 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
         }
 
         if completion_signal_seen(exec.last_message.as_deref(), &opts) {
+            last_abort_reason = None;
+            last_timed_out = false;
             update_status(
                 &paths,
+                &opts,
                 loop_count,
                 calls_made,
-                opts.max_calls_per_hour,
                 "complete",
                 "completed",
                 "Completion signal seen",
+                false,
+                last_abort_reason.as_deref(),
+                last_timed_out,
             )
             .await?;
             append_log_line(&paths, "SUCCESS", "Completion signal seen; stopping loop.").await?;
@@ -812,14 +929,19 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
             _ = time::sleep(time::Duration::from_secs(1)) => {}
             _ = shutdown.token.cancelled() => {
                 let reason = shutdown.reason();
+                last_abort_reason = Some(format!("Interrupted: {reason:?}"));
+                last_timed_out = false;
                 update_status(
                     &paths,
+                    &opts,
                     loop_count,
                     calls_made,
-                    opts.max_calls_per_hour,
                     "shutdown",
                     "exited",
                     &format!("Interrupted: {reason:?}"),
+                    false,
+                    last_abort_reason.as_deref(),
+                    last_timed_out,
                 ).await?;
                 append_log_line(
                     &paths,
@@ -913,10 +1035,14 @@ fn completion_signal_seen(message: Option<&str>, opts: &RunOptions) -> bool {
                 return false;
             }
 
-            let message_lower = message.to_lowercase();
+            // Use ASCII-only lowercasing to avoid brittle Unicode case-folding behavior (which can
+            // change string length and produce surprising matches). This still behaves as expected
+            // for non-ASCII completion phrases (e.g. Chinese) because those code points are left
+            // untouched.
+            let message_lower = message.to_ascii_lowercase();
             opts.completion_phrases.iter().any(|p| {
                 let p = p.trim();
-                !p.is_empty() && message_lower.contains(&p.to_lowercase())
+                !p.is_empty() && message_lower.contains(&p.to_ascii_lowercase())
             })
         }
         crate::CompletionMode::PromiseTag => {
@@ -1821,21 +1947,40 @@ async fn wait_for_reset(paths: &RalphPaths, shutdown: &Shutdown) -> anyhow::Resu
 
 async fn update_status(
     paths: &RalphPaths,
+    opts: &RunOptions,
     loop_count: u64,
     calls_made: u64,
-    max_calls: u64,
     last_action: &str,
     status: &str,
     exit_reason: &str,
+    in_flight: bool,
+    last_abort_reason: Option<&str>,
+    timed_out: bool,
 ) -> anyhow::Result<()> {
     let now = chrono::Utc::now().to_rfc3339();
     let next_reset = next_hour_boundary_string();
+    let next_reset_in_seconds = seconds_until_next_hour_boundary();
 
     let file = StatusFile {
         timestamp: now,
+        mode: "daemon".to_string(),
+        loop_current: loop_count,
+        max_loops: opts.max_loops,
+        in_flight,
         loop_count,
         calls_made_this_hour: calls_made,
-        max_calls_per_hour: max_calls,
+        max_calls_per_hour: opts.max_calls_per_hour,
+        next_reset_in_seconds,
+        timeout_minutes: opts.timeout_minutes,
+        completion_mode: opts.completion_mode.to_string(),
+        completion_phrases: opts.completion_phrases.clone(),
+        completion_regexes: opts
+            .completion_regexes
+            .iter()
+            .map(|re| re.as_str().to_string())
+            .collect(),
+        last_abort_reason: last_abort_reason.map(str::to_string),
+        timed_out,
         last_action: last_action.to_string(),
         status: status.to_string(),
         exit_reason: exit_reason.to_string(),
@@ -1863,6 +2008,20 @@ fn next_hour_boundary_string() -> String {
         .and_then(|t| t.with_second(0))
         .unwrap_or_else(|| now + chrono::Duration::hours(1));
     next.format("%H:%M:%S").to_string()
+}
+
+fn seconds_until_next_hour_boundary() -> u64 {
+    let now = Local::now();
+    let next = (now + chrono::Duration::hours(1))
+        .with_minute(0)
+        .and_then(|t| t.with_second(0))
+        .and_then(|t| t.with_nanosecond(0))
+        .unwrap_or_else(|| now + chrono::Duration::hours(1));
+
+    (next - now)
+        .to_std()
+        .unwrap_or_else(|_| std::time::Duration::from_secs(0))
+        .as_secs()
 }
 
 async fn read_session_id_if_valid(
@@ -1970,6 +2129,131 @@ fn is_ignorable_error_line(line: &str) -> bool {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+
+    fn test_run_options(mode: crate::CompletionMode, phrases: Vec<String>) -> RunOptions {
+        RunOptions {
+            codex_cmd: PathBuf::from("widex"),
+            prompt_path: PathBuf::from(".ralph/PROMPT.md"),
+            max_loops: 1,
+            max_calls_per_hour: 1,
+            timeout_minutes: 1,
+            use_continue: false,
+            session_expiry_hours: 24,
+            skip_git_repo_check: true,
+            full_auto: false,
+            bypass_approvals_and_sandbox: false,
+            verbose: false,
+            use_output_schema: false,
+            disable_mcp: false,
+            retry_no_final_message: 0,
+            enable_circuit_breaker: false,
+            completion_phrases: phrases,
+            completion_mode: mode,
+            completion_regexes: Vec::new(),
+            exec_config_overrides: Vec::new(),
+            exec_enable_features: Vec::new(),
+            exec_disable_features: Vec::new(),
+            exec_model: None,
+        }
+    }
+
+    #[test]
+    fn completion_contains_uses_ascii_casefold_only() {
+        let opts = test_run_options(crate::CompletionMode::Contains, vec!["done".to_string()]);
+        assert_eq!(completion_signal_seen(Some("DONE"), &opts), true);
+
+        // ASCII-only lowercasing: Unicode case-folding for dotted I should not apply.
+        let opts = test_run_options(crate::CompletionMode::Contains, vec!["i".to_string()]);
+        assert_eq!(completion_signal_seen(Some("İ"), &opts), false);
+
+        let opts = test_run_options(
+            crate::CompletionMode::Contains,
+            vec!["所有任务完成".to_string()],
+        );
+        assert_eq!(
+            completion_signal_seen(Some("一些输出... 所有任务完成 ..."), &opts),
+            true
+        );
+    }
+
+    #[tokio::test]
+    async fn fix_progress_regenerate_preserves_notes_and_is_idempotent() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let paths = RalphPaths::new(tmp.path());
+        paths.ensure_dirs().await.expect("ensure dirs");
+
+        let notes_only = "\
+# Ralph Fix Progress
+
+## Notes (editable)
+
+- kept note
+";
+        tokio::fs::write(paths.ralph_dir.join("@fix_progress.md"), notes_only)
+            .await
+            .expect("write fix_progress");
+
+        let events = vec![FixProgressEvent {
+            ts: "2026-01-01 00:00:00".to_string(),
+            loop_number: 1,
+            kind: FixProgressEventKind::Start,
+            exit_code: None,
+            files_changed: None,
+            error_count: None,
+            interrupted: None,
+            interrupt_reason: None,
+            summary: None,
+        }];
+        let jsonl = events
+            .iter()
+            .map(|ev| serde_json::to_string(ev).expect("serialize"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        tokio::fs::write(paths.ralph_dir.join(FIX_PROGRESS_AUTOLOG_JSONL), jsonl)
+            .await
+            .expect("write autolog jsonl");
+
+        regenerate_fix_progress_md(&paths)
+            .await
+            .expect("regenerate");
+        let after_first = tokio::fs::read_to_string(paths.ralph_dir.join("@fix_progress.md"))
+            .await
+            .expect("read fix_progress");
+        assert!(after_first.contains("- kept note"));
+        assert!(after_first.contains(FIX_PROGRESS_AUTOLOG_START));
+        assert!(after_first.contains(FIX_PROGRESS_AUTOLOG_END));
+        assert!(after_first.contains("[2026-01-01 00:00:00] Loop 1 start"));
+
+        regenerate_fix_progress_md(&paths)
+            .await
+            .expect("regenerate second time");
+        let after_second = tokio::fs::read_to_string(paths.ralph_dir.join("@fix_progress.md"))
+            .await
+            .expect("read fix_progress second");
+        assert_eq!(after_second, after_first);
+    }
+
+    #[tokio::test]
+    async fn fix_progress_regenerate_recovers_from_empty_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let paths = RalphPaths::new(tmp.path());
+        paths.ensure_dirs().await.expect("ensure dirs");
+
+        tokio::fs::write(paths.ralph_dir.join("@fix_progress.md"), "")
+            .await
+            .expect("write empty fix_progress");
+
+        regenerate_fix_progress_md(&paths)
+            .await
+            .expect("regenerate");
+        let contents = tokio::fs::read_to_string(paths.ralph_dir.join("@fix_progress.md"))
+            .await
+            .expect("read fix_progress");
+        assert!(contents.contains("## Notes (editable)"));
+        assert!(contents.contains(FIX_PROGRESS_AUTOLOG_START));
+        assert!(contents.contains(FIX_PROGRESS_AUTOLOG_END));
+    }
 
     #[test]
     fn normalizes_numbers_in_error_messages() {

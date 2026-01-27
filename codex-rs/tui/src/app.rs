@@ -2543,6 +2543,7 @@ impl App {
             } => {
                 if self.chat_widget.is_normal_backtrack_mode()
                     && self.chat_widget.composer_is_empty()
+                    && !self.chat_widget.is_ralph_tui_active()
                 {
                     self.handle_backtrack_esc_key(tui);
                 } else {

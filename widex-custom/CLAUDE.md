@@ -87,9 +87,12 @@ git push origin widex
 - 运行约定：在项目根目录生成 `.ralph/`；可用 `.ralph/STOP` 或 `/ralph-widex stop` 请求停机。
 - 交互默认：TUI 的 `/ralph-widex start ...` 在**当前 Widex 会话内前台迭代**（每轮可见完整交互/工具调用），直到跑满轮次或命中完成词。
   - `Esc`/`Ctrl+C`：只中断当前 turn，继续下一轮
-  - `/ralph-widex stop`：停止整个循环
+  - `/ralph-widex stop`：停止整个循环（会尽快 Interrupt in-flight turn，使 stop 立即生效）；停止后才允许退出 Widex（Ralph 活跃时会禁用退出快捷键，例如 Ctrl+D）
 - 进度落盘：supervisor 每轮 start/end 会写入 `.ralph/.fix_progress.autolog.jsonl` 并重建 `@fix_progress.md` 的 auto log 段落；agent 只应在 Notes 区追加内容。
 - 完成词建议：优先用 `--completion-mode promise-tag`，要求最终消息输出 `<promise>...</promise>`，减少误触发。
+  - `contains`：匹配是 ASCII 不区分大小写；中文等非 ASCII 文本保持原样匹配
+  - `regex`：推荐使用锚定（`^...$`）避免误触发；`--completion-regex` 可重复
+- 可观测：TUI/CLI 都会写 `.ralph/status.json`（字段对齐，`mode=tui|daemon`）；可用 `widex ralph-widex status/monitor` 查看（log 缺失会 fallback 到 `.ralph/logs/ralph_widex_daemon.log`）
 
 
 ## Gemini（本仓）落地检查清单（按层读代码）

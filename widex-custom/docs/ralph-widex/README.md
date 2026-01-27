@@ -16,6 +16,8 @@
      - `--completion-phrase TEXT`：完成词（可重复传多个；命中任意一个即可提前停机）
      - `--completion-mode MODE`：完成检测模式（`contains` / `promise-tag` / `regex`）
        - 推荐：`promise-tag`（更少误触发），要求最终消息包含 `<promise>...</promise>`
+       - `contains`：仅适合“不会在正文里偶然出现”的短语；匹配是 **ASCII 不区分大小写**（避免 Unicode case-folding 带来的意外行为），中文等非 ASCII 文本保持原样匹配
+       - `regex`：可重复传多个 `--completion-regex`；推荐使用锚定（`^...$`）来避免误触发
      - `--completion-regex PATTERN`：当 `--completion-mode regex` 时生效（可重复）
      - `--timeout-minutes N`：每个 turn 的 watchdog（超时会自动 `Interrupt` 该 turn 并继续下一轮）
      - `--calls N`：每小时最多跑 N 个 Ralph turn；到达后会等待到整点自动继续
@@ -44,6 +46,13 @@ widex --ask-for-approval never --sandbox danger-full-access -m gpt-5.2
 /ralph-widex start --loops 20 --completion-phrase "所有任务已完成"
 ```
 
+查看状态（可选；TUI 模式也会 best-effort 写 `.ralph/status.json` + `.ralph/logs/ralph.log`，因此 CLI 也能观察到；`mode=tui`）：
+
+```bash
+widex ralph-widex status --tail 20
+widex ralph-widex monitor --interval 5
+```
+
 更可靠的“完成词”写法（避免正文里偶然出现“任务完成”导致误触发）：
 
 ```text
@@ -56,6 +65,14 @@ widex --ask-for-approval never --sandbox danger-full-access -m gpt-5.2
 <promise>任务完成</promise>
 ```
 
+如果你更喜欢用 `regex`（例如把“整条最终消息”锚定成唯一完成信号），可以这样写：
+
+```text
+/ralph-widex start --loops 20 --completion-mode regex --completion-regex '^<promise>DONE</promise>$'
+```
+
+`--completion-regex` 可重复传多个（命中任意一个即提前停机）。
+
 推荐：在 `.ralph/PROMPT.md` 里加入“输出纪律”，避免 `cat` 大文件（尤其是 `.ralph/logs/codex_events_*.jsonl`）导致上下文暴涨和超时（`ralph-widex init` 的模板已内置该段落）。
 
 停止循环：
@@ -63,6 +80,7 @@ widex --ask-for-approval never --sandbox danger-full-access -m gpt-5.2
 - TUI 内：`/ralph-widex stop`
 - 或在项目目录：`touch .ralph/STOP`（会在当前 turn 结束/中断时生效）
 - 仅中断当前 turn（继续下一轮）：按 `Esc`
+- 退出 Widex：必须先 `/ralph-widex stop`（Ralph 活跃时会禁用“退出快捷键”，避免误退出）
 
 
 ## 2) 运行期目录与文件（`.ralph/`）
@@ -83,7 +101,8 @@ widex --ask-for-approval never --sandbox danger-full-access -m gpt-5.2
 状态与控制：
 
 - `.ralph/STOP`：存在即请求停止
-- （CLI 监督者模式）`.ralph/status.json`：loop 状态（loop 计数、calls/hour、last_action、exit_reason、next_reset 等）
+- `.ralph/status.json`：loop 状态（`widex ralph-widex monitor/status` 读取；TUI 模式也会写，`mode=tui`）
+  - 关键字段：`loop_current/max_loops`、`in_flight`、`calls_made_this_hour/max_calls_per_hour`、`next_reset_in_seconds`、`timeout_minutes`、`completion_mode`（以及 phrases/regexes）、`last_abort_reason/timed_out`、`exit_reason`
 - （CLI 监督者模式）`.ralph/progress.json`：`widex exec` 执行中按秒刷新（不执行时通常不存在）
 - （CLI 监督者模式）`.ralph/ralph_widex.pid`：当前 ralph-widex 进程 PID（运行时由 Rust 写入；正常退出会自动删除；崩溃/被强杀时可能残留；`widex ralph-widex status` 会标记 `(stale)`，可用 `widex ralph-widex stop` 清理）
 
@@ -100,7 +119,7 @@ widex --ask-for-approval never --sandbox danger-full-access -m gpt-5.2
 
 日志：
 
-- （CLI 监督者模式）`.ralph/logs/ralph.log`：高层日志
+- `.ralph/logs/ralph.log`：高层日志（`monitor/status` 会 tail；若缺失会 fallback 到历史路径 `.ralph/logs/ralph_widex_daemon.log`）
 - （CLI 监督者模式）`.ralph/logs/codex_events_<ts>.jsonl`：`widex exec --json` 的事件流（逐行 JSON；文件名沿用历史命名）
 - （CLI 监督者模式）`.ralph/logs/codex_stderr_<ts>.log`：子进程 stderr
 - （CLI 监督者模式）`.ralph/logs/codex_last_message_<ts>.txt`：本轮 `--output-last-message` 的落盘内容

@@ -130,8 +130,9 @@ git push origin widex
 - `.ralph/STOP`：若存在，请求停止
   - TUI 模式：在当前 turn 结束/中断时生效（推荐直接 `/ralph-widex stop`）
   - CLI 模式：会在 `widex exec` 运行中或 rate-limit 等待期间检测到 STOP，并触发 graceful shutdown
+- `.ralph/status.json`：loop 状态（`monitor/status` 读取；TUI/CLI 都会写，字段对齐，`mode=tui|daemon`）
+  - 关键字段：`loop_current/max_loops`、`in_flight`、`calls_made_this_hour/max_calls_per_hour`、`next_reset_in_seconds`、`timeout_minutes`、`completion_mode`（以及 phrases/regexes）、`last_abort_reason/timed_out`、`exit_reason`
 - CLI 模式专用：
-  - `.ralph/status.json`：loop 状态（含 rate limit 信息）
   - `.ralph/progress.json`：当前 `widex exec` 的实时进度（执行中才存在）
   - `.ralph/.response_analysis`：每轮分析结果（退出检测/进展/错误）
   - `.ralph/.exit_signals`：用于观测“test-only / completion 信号”的累积记录
@@ -146,9 +147,13 @@ git push origin widex
 - 核心目标（必须满足）：
   - **跑满 N 轮**：除 `/ralph-widex stop` / `.ralph/STOP`（以及真正退出 Widex 进程）外，不会因为 turn 的成功/失败/超时/中断而提前停止
   - **完成词提前退出**：通过 `--completion-phrase` 指定一个或多个完成词；可用 `--completion-mode promise-tag` 要求最终消息包含 `<promise>...</promise>` 以减少误触发
+    - 推荐：`promise-tag`
+    - `contains`：仅适合“不会在正文里偶然出现”的短语；匹配是 **ASCII 不区分大小写**（避免 Unicode case-folding 带来的意外行为），中文等非 ASCII 文本保持原样匹配
+    - `regex`：`--completion-regex` 可重复；推荐使用锚定（`^...$`）避免误触发
 - 中断语义（TUI 模式）：
   - `Esc` / `Ctrl+C`：只中断当前 turn，然后继续下一轮（Ralph 活跃时 `Ctrl+C` 不走退出快捷键）
-  - 停止整个循环：`/ralph-widex stop`
+  - 停止整个循环：`/ralph-widex stop`（会尽快 Interrupt in-flight turn，使 stop 立即生效）
+  - 退出 Widex：必须先 `/ralph-widex stop`（Ralph 活跃时会禁用“退出快捷键”，例如 Ctrl+D）
 - 常用参数（TUI 模式）：
   - `--loops N`：最多迭代 N 轮
   - `--completion-phrase TEXT`：完成词（可重复）
@@ -159,7 +164,8 @@ git push origin widex
   - `--skip-git-repo-check`：允许在非 git repo 目录运行
 - 约定：每轮都会更新 `.ralph/@fix_progress.md`，用于“中断后继续/跨轮迭代”的上下文承接（由 ralph 运行时注入指令 + supervisor 强制追加保障）
 - 支持 `/ralph-widex init` 初始化当前目录的 `.ralph/` 结构（模板来源于 `widex-custom/features/ralph-widex/templates/`）。
-- CLI 模式仍保留 `widex ralph-widex run/start/monitor`（更适合 headless/无人值守；会写 `.ralph/status.json` 等文件）。
+- CLI 模式仍保留 `widex ralph-widex run/start/status/monitor`（更适合 headless/无人值守；会写 `.ralph/progress.json` 等文件）。
+  - `monitor/status` 会 tail `.ralph/logs/ralph.log`；若缺失会 fallback 到历史路径 `.ralph/logs/ralph_widex_daemon.log`
 
 现状（widex 分支）：
 

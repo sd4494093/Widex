@@ -4928,3 +4928,134 @@ async fn review_queues_user_messages_snapshot() {
     .unwrap();
     assert_snapshot!(term.backend().vt100().screen().contents());
 }
+
+#[test]
+fn ralph_completion_contains_uses_ascii_casefold_only() {
+    let regexes: Vec<regex_lite::Regex> = Vec::new();
+
+    let phrases = vec!["done".to_string()];
+    assert_eq!(
+        completion_signal_seen(
+            Some("DONE"),
+            RalphCompletionMode::Contains,
+            &phrases,
+            &regexes,
+        ),
+        true
+    );
+
+    // ASCII-only lowercasing: Unicode case-folding for dotted I should not apply.
+    let phrases = vec!["i".to_string()];
+    assert_eq!(
+        completion_signal_seen(Some("İ"), RalphCompletionMode::Contains, &phrases, &regexes,),
+        false
+    );
+
+    let phrases = vec!["所有任务完成".to_string()];
+    assert_eq!(
+        completion_signal_seen(
+            Some("一些输出... 所有任务完成 ..."),
+            RalphCompletionMode::Contains,
+            &phrases,
+            &regexes,
+        ),
+        true
+    );
+}
+
+#[test]
+fn ralph_fix_progress_regenerate_preserves_notes_and_is_idempotent() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ralph_dir = tmp.path().join(".ralph");
+    std::fs::create_dir_all(&ralph_dir).expect("create .ralph");
+
+    // Simulate an early/custom file missing the auto-log markers: everything should be treated as
+    // Notes and preserved verbatim.
+    let notes_only = "\
+# Ralph Fix Progress
+
+## Notes (editable)
+
+- kept note
+";
+    std::fs::write(ralph_dir.join("@fix_progress.md"), notes_only).expect("write fix_progress");
+
+    let events = vec![RalphFixProgressEvent {
+        ts: "2026-01-01 00:00:00".to_string(),
+        loop_number: 1,
+        kind: RalphFixProgressEventKind::Start,
+        completion_seen: None,
+        stop_reason: None,
+        interrupted: None,
+        abort_reason: None,
+        timed_out: None,
+    }];
+    let jsonl = events
+        .iter()
+        .map(|ev| serde_json::to_string(ev).expect("serialize"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    std::fs::write(ralph_dir.join(RALPH_FIX_PROGRESS_AUTOLOG_JSONL), jsonl)
+        .expect("write autolog jsonl");
+
+    regenerate_ralph_fix_progress_md(&ralph_dir).expect("regenerate");
+    let after_first =
+        std::fs::read_to_string(ralph_dir.join("@fix_progress.md")).expect("read fix_progress");
+    assert!(after_first.contains("- kept note"));
+    assert!(after_first.contains(RALPH_FIX_PROGRESS_AUTOLOG_START));
+    assert!(after_first.contains(RALPH_FIX_PROGRESS_AUTOLOG_END));
+    assert!(after_first.contains("[2026-01-01 00:00:00] Loop 1 start"));
+
+    regenerate_ralph_fix_progress_md(&ralph_dir).expect("regenerate second time");
+    let after_second = std::fs::read_to_string(ralph_dir.join("@fix_progress.md"))
+        .expect("read fix_progress second");
+    assert_eq!(after_second, after_first);
+}
+
+#[test]
+fn ralph_fix_progress_regenerate_recovers_from_empty_file() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ralph_dir = tmp.path().join(".ralph");
+    std::fs::create_dir_all(&ralph_dir).expect("create .ralph");
+
+    std::fs::write(ralph_dir.join("@fix_progress.md"), "").expect("write empty fix_progress");
+
+    regenerate_ralph_fix_progress_md(&ralph_dir).expect("regenerate");
+    let contents =
+        std::fs::read_to_string(ralph_dir.join("@fix_progress.md")).expect("read fix_progress");
+    assert!(contents.contains("## Notes (editable)"));
+    assert!(contents.contains(RALPH_FIX_PROGRESS_AUTOLOG_START));
+    assert!(contents.contains(RALPH_FIX_PROGRESS_AUTOLOG_END));
+}
+
+#[tokio::test]
+async fn ralph_tui_stop_interrupts_in_flight_turn() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
+
+    chat.bottom_pane.set_task_running(true);
+    chat.ralph_tui = Some(RalphTuiState {
+        max_loops: 20,
+        current_loop: 1,
+        completion_phrases: vec!["DONE".to_string()],
+        completion_mode: RalphCompletionMode::Contains,
+        completion_regexes: Vec::new(),
+        completion_regex_patterns: Vec::new(),
+        in_flight: true,
+        max_calls_per_hour: None,
+        call_window_key: "2026010100".to_string(),
+        calls_made_in_window: 0,
+        timeout_minutes: None,
+        active_turn_nonce: 0,
+        last_abort_reason: None,
+        turn_timed_out: false,
+    });
+
+    chat.stop_ralph_tui("stopped by user");
+
+    match op_rx.try_recv() {
+        Ok(Op::Interrupt) => {}
+        Ok(other) => panic!("expected Op::Interrupt, got {other:?}"),
+        Err(_) => panic!("expected interrupt op"),
+    }
+}
