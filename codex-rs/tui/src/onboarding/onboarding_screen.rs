@@ -95,11 +95,20 @@ impl OnboardingScreen {
                 Some(ForcedLoginMethod::Api) => SignInOption::ApiKey,
                 _ => SignInOption::ChatGpt,
             };
+            let is_widex = codex_home
+                .file_name()
+                .is_some_and(|name| name == ".widex-codex");
+            let sign_in_state = if is_widex && login_status == LoginStatus::NotAuthenticated {
+                // Widex UX: if no API key has ever been configured, jump directly to the key entry flow.
+                SignInState::ApiKeyEntry(Default::default())
+            } else {
+                SignInState::PickMode
+            };
             steps.push(Step::Auth(AuthModeWidget {
                 request_frame: tui.frame_requester(),
                 highlighted_mode,
                 error: None,
-                sign_in_state: Arc::new(RwLock::new(SignInState::PickMode)),
+                sign_in_state: Arc::new(RwLock::new(sign_in_state)),
                 codex_home: codex_home.clone(),
                 cli_auth_credentials_store_mode,
                 login_status,

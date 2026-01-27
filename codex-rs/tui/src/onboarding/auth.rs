@@ -100,6 +100,27 @@ impl KeyboardHandler for AuthModeWidget {
             return;
         }
 
+        // Widex UX: collapse login options. 'e' edits key; 'y' accepts and continues.
+        if self.is_widex_mode() && key_event.kind == KeyEventKind::Press {
+            match key_event.code {
+                KeyCode::Char('e') => {
+                    self.start_api_key_entry();
+                    return;
+                }
+                KeyCode::Char('y') => {
+                    // If we're not authenticated yet, route to API key entry.
+                    if matches!(self.login_status, LoginStatus::NotAuthenticated) {
+                        self.start_api_key_entry();
+                    } else {
+                        *self.sign_in_state.write().unwrap() = SignInState::ApiKeyConfigured;
+                        self.request_frame.schedule_frame();
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         match key_event.code {
             KeyCode::Up | KeyCode::Char('k') => {
                 self.move_highlight(-1);
@@ -173,15 +194,31 @@ pub(crate) struct AuthModeWidget {
 }
 
 impl AuthModeWidget {
+    fn is_widex_mode(&self) -> bool {
+        // The Widex wrapper sets CODEX_HOME to ~/.widex-codex by default.
+        self.codex_home
+            .file_name()
+            .is_some_and(|name| name == ".widex-codex")
+    }
+
     fn is_api_login_allowed(&self) -> bool {
+        if self.is_widex_mode() {
+            return true;
+        }
         !matches!(self.forced_login_method, Some(ForcedLoginMethod::Chatgpt))
     }
 
     fn is_chatgpt_login_allowed(&self) -> bool {
+        if self.is_widex_mode() {
+            return false;
+        }
         !matches!(self.forced_login_method, Some(ForcedLoginMethod::Api))
     }
 
     fn displayed_sign_in_options(&self) -> Vec<SignInOption> {
+        if self.is_widex_mode() {
+            return vec![SignInOption::ApiKey];
+        }
         let mut options = vec![SignInOption::ChatGpt];
         if self.is_chatgpt_login_allowed() {
             options.push(SignInOption::DeviceCode);
@@ -193,6 +230,9 @@ impl AuthModeWidget {
     }
 
     fn selectable_sign_in_options(&self) -> Vec<SignInOption> {
+        if self.is_widex_mode() {
+            return vec![SignInOption::ApiKey];
+        }
         let mut options = Vec::new();
         if self.is_chatgpt_login_allowed() {
             options.push(SignInOption::ChatGpt);
@@ -256,6 +296,36 @@ impl AuthModeWidget {
     }
 
     fn render_pick_mode(&self, area: Rect, buf: &mut Buffer) {
+        if self.is_widex_mode() {
+            let mut lines: Vec<Line> = vec![
+                Line::from(vec![
+                    "  ".into(),
+                    "Widex requires an OpenAI-compatible API key for usage-based billing.".into(),
+                ]),
+                "".into(),
+                Line::from(vec![
+                    "  ".into(),
+                    "Press Enter or ".into(),
+                    "e".cyan(),
+                    " to enter/edit your API key.".into(),
+                ]),
+                Line::from(vec![
+                    "  ".into(),
+                    "Press ".into(),
+                    "y".cyan(),
+                    " to agree and continue (if already configured).".into(),
+                ]),
+            ];
+            if let Some(err) = &self.error {
+                lines.push("".into());
+                lines.push(err.as_str().red().into());
+            }
+            Paragraph::new(lines)
+                .wrap(Wrap { trim: false })
+                .render(area, buf);
+            return;
+        }
+
         let mut lines: Vec<Line> = vec![
             Line::from(vec![
                 "  ".into(),
@@ -841,5 +911,41 @@ mod tests {
             SignInState::PickMode
         ));
         assert_eq!(widget.login_status, LoginStatus::NotAuthenticated);
+    }
+
+    #[test]
+    fn widex_auth_menu_only_shows_api_key_option() {
+        let tmp = TempDir::new().unwrap();
+        let codex_home_path = tmp.path().join(".widex-codex");
+        std::fs::create_dir_all(&codex_home_path).unwrap();
+
+        let widget = AuthModeWidget {
+            request_frame: FrameRequester::test_dummy(),
+            highlighted_mode: SignInOption::ApiKey,
+            error: None,
+            sign_in_state: Arc::new(RwLock::new(SignInState::PickMode)),
+            codex_home: codex_home_path.clone(),
+            cli_auth_credentials_store_mode: AuthCredentialsStoreMode::File,
+            login_status: LoginStatus::NotAuthenticated,
+            auth_manager: AuthManager::shared(
+                codex_home_path,
+                false,
+                AuthCredentialsStoreMode::File,
+            ),
+            forced_chatgpt_workspace_id: None,
+            forced_login_method: None,
+            animations_enabled: true,
+        };
+
+        assert_eq!(
+            widget.displayed_sign_in_options(),
+            vec![SignInOption::ApiKey]
+        );
+        assert_eq!(
+            widget.selectable_sign_in_options(),
+            vec![SignInOption::ApiKey]
+        );
+        assert_eq!(widget.is_chatgpt_login_allowed(), false);
+        assert_eq!(widget.is_api_login_allowed(), true);
     }
 }
