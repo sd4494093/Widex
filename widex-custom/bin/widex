@@ -18,7 +18,15 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${SCRIPT_PATH}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 
 CODEX_HOME_DEFAULT="${HOME}/.widex-codex"
-export CODEX_HOME="${CODEX_HOME:-${CODEX_HOME_DEFAULT}}"
+
+# Strict isolation: Widex should not inherit an existing CODEX_HOME (e.g. from the official `codex`)
+# because that would "cross the streams" and pollute ~/.codex.
+#
+# If you really want to override Widex's CODEX_HOME, use WIDEX_CODEX_HOME explicitly.
+if [[ -n "${CODEX_HOME:-}" && "${CODEX_HOME}" != "${CODEX_HOME_DEFAULT}" && -z "${WIDEX_CODEX_HOME:-}" ]]; then
+  echo "widex: ignoring inherited CODEX_HOME='${CODEX_HOME}' and using '${CODEX_HOME_DEFAULT}'" >&2
+fi
+export CODEX_HOME="${WIDEX_CODEX_HOME:-${CODEX_HOME_DEFAULT}}"
 
 # Hint the TUI switchover integration where to find the YAML.
 export WIDEX_API_SWITCHER_CONFIG="${WIDEX_API_SWITCHER_CONFIG:-${CODEX_HOME}/api_switchover.yaml}"
