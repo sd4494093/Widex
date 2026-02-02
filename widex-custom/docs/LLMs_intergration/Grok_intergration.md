@@ -171,10 +171,11 @@ Grok 集成通常只涉及 core/codex-api（不新增 wire）：
 结论（截至 2026-02-02，本仓 widex 线上实测）：
 
 - VectorEngine 线路的函数调用示例里：即使“前台模型”写的是 `grok-4.1`，**代理侧用于 function calling 的模型是**
-  `grok-4-1-fast-reasoning`，并且需要标准的 `tools` / `tool_choice` 结构。
+  `grok-4-fast-reasoning`，并且需要标准的 `tools` / `tool_choice` 结构。
 - Widex 已按该约定做了兼容：当你选择 `grok-4.1` 且本轮存在 tools（MCP 工具）时，Widex 会保持 provider 为
-  VectorEngine，但把本轮上游请求模型临时改为 `grok-4-1-fast-reasoning`，以触发 `tool_calls`。
-- 限制：VectorEngine 的 `grok-4-1-fast-reasoning` 线路在部分账号/时段可能会频繁 429（见 6.2）。
+  VectorEngine，但把本轮上游请求模型临时改为 `grok-4-fast-reasoning`，以触发 `tool_calls`（若 429，则回退到
+  `grok-4-fast-non-reasoning` 再试一次）。
+- 限制：VectorEngine 侧部分 grok-* “fast” 线路在部分账号/时段可能会频繁 429（见 6.2）。
 
 实现点：
 

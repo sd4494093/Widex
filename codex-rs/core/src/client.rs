@@ -470,15 +470,14 @@ impl ModelClientSession {
         let api_prompt = build_api_prompt(prompt, instructions, tools_json);
         let conversation_id = self.state.conversation_id.to_string();
         let session_source = self.state.session_source.clone();
-        // For the VectorEngine Grok proxy, their function-calling examples use
-        // `grok-4-1-fast-reasoning` even when the selected model is `grok-4.1`.
-        // Keep the user's selected model, but switch the upstream request model only when tools
-        // are present.
+        // For the VectorEngine Grok proxy, the `grok-4.1` model doesn't reliably return
+        // `tool_calls` even when tools are provided. Use a known-working upstream model only when
+        // tools are present so the selected model can still remain `grok-4.1` in the UI.
         let mut model_slug = if provider_base_url.contains("vectorengine.ai")
             && self.state.model_info.slug == "grok-4.1"
             && !prompt.tools.is_empty()
         {
-            "grok-4-1-fast-reasoning".to_string()
+            "grok-4-fast-reasoning".to_string()
         } else {
             self.state.model_info.slug.clone()
         };
@@ -857,10 +856,14 @@ fn grok_fallback_model(model: &str, status: StatusCode) -> Option<&'static str> 
     if status != StatusCode::TOO_MANY_REQUESTS {
         return None;
     }
-    if model != "grok-4.1" {
-        return None;
+
+    // Prefer staying on the same Grok family, but switch to a less loaded sibling when
+    // VectorEngine returns transient 429s.
+    match model {
+        "grok-4-fast-reasoning" => Some("grok-4-fast-non-reasoning"),
+        "grok-4.1" => Some("grok-4-fast-reasoning"),
+        _ => None,
     }
-    Some("grok-4-1-fast-non-reasoning")
 }
 
 #[cfg(test)]
@@ -872,7 +875,7 @@ mod grok_fallback_tests {
     fn falls_back_from_grok_4_1_on_429() {
         assert_eq!(
             grok_fallback_model("grok-4.1", StatusCode::TOO_MANY_REQUESTS),
-            Some("grok-4-1-fast-non-reasoning")
+            Some("grok-4-fast-reasoning")
         );
     }
 
@@ -881,6 +884,14 @@ mod grok_fallback_tests {
         assert_eq!(
             grok_fallback_model("grok-4-1-fast-reasoning", StatusCode::TOO_MANY_REQUESTS),
             None
+        );
+    }
+
+    #[test]
+    fn falls_back_between_grok_4_fast_tool_call_models_on_429() {
+        assert_eq!(
+            grok_fallback_model("grok-4-fast-reasoning", StatusCode::TOO_MANY_REQUESTS),
+            Some("grok-4-fast-non-reasoning")
         );
     }
 
