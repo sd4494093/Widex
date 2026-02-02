@@ -151,3 +151,68 @@ Grok 集成通常只涉及 core/codex-api（不新增 wire）：
 - reasoning 参数映射：effort/temperature/top_p 等与 Grok 参数如何对应
 - token/usage 解析：stream/非 stream 情况下 usage 的提取与 UI 展示
 - 错误码/重试策略：429/5xx 的指数退避、请求超时、SSE 断流重连等
+
+
+## 6. 现状确认：VectorEngine Grok（Chat Completions）目前不支持 tools / MCP 工具调用
+
+结论（截至 2026-02-02，本仓 widex 线上实测）：
+
+- `https://api.vectorengine.ai/v1/chat/completions` 返回的 Grok 输出**不会产生** Chat Completions 的 `tool_calls`（也不会产生 legacy `function_call`）。
+- 即使请求里显式传入 `tools` / `tool_choice`（强制指定 tool）或 `functions` / `function_call`，Grok 仍会以普通文本回答，并表现得像“根本没有拿到 tool 列表”（常见回复是 “I don't have a tool …”）。
+- 因此：在当前 VectorEngine Grok 接口形态下，Widex 的 MCP 工具（filesystem/shell/…）无法通过“标准 function calling”被 Grok 触发；这不是 Widex 的工具路由 bug，而是上游端点能力缺失/被代理剥离。
+
+验证方法（不写入任何 key；从 `${CODEX_HOME}/auth.json` 读取已保存的 key）：
+
+```bash
+python3 - <<'PY'
+import json, os, requests
+
+auth=json.load(open(os.path.expanduser("~/.widex-codex/auth.json"),"r",encoding="utf-8"))
+key=auth["WIDEX_SAVED_API_KEYS"]["profile:grok-vectorengine:OPENAI_API_KEY"]
+url="https://api.vectorengine.ai/v1/chat/completions"
+headers={"Authorization":f"Bearer {key}","Content-Type":"application/json"}
+
+params={"type":"object","properties":{"a":{"type":"integer"},"b":{"type":"integer"}},"required":["a","b"],"additionalProperties":False}
+body={
+  "model":"grok-4.1",
+  "messages":[{"role":"user","content":"Use tool math_add with {a: 1, b: 2}. Do not answer normally."}],
+  "temperature":0,
+  "max_tokens":64,
+  "stream":False,
+  "tools":[{"type":"function","function":{"name":"math_add","description":"Add two integers.","parameters":params}}],
+  "tool_choice":{"type":"function","function":{"name":"math_add"}},
+}
+r=requests.post(url,headers=headers,json=body,timeout=(10,40))
+j=r.json()
+choice=j.get("choices",[{}])[0]
+msg=choice.get("message",{})
+print("finish_reason=",choice.get("finish_reason"))
+print("has_tool_calls=",bool(msg.get("tool_calls")))
+print("has_function_call=",bool(msg.get("function_call")))
+print("content_prefix=",repr((msg.get("content") or "")[:120]))
+PY
+```
+
+如果 `has_tool_calls=False` 且模型以文本形式说“没有这个 tool”，则说明 `tools` 没有生效。
+
+### 6.1 常见症状：429 Too Many Requests
+
+你可能会看到：
+
+- `■ exceeded retry limit, last status: 429 Too Many Requests`
+- 或者 TUI 中出现 `stream disconnected before completion ...`
+
+这是 VectorEngine 侧 rate limit / quota 限制导致的，Widex 会做有限重试；超过重试上限后会报错退出该次请求。
+
+建议：
+
+- 优先使用 `grok-4.1`（`grok-4-1-fast-*` 更容易触发 429，具体视账号配额而定）
+- 等待一段时间后重试，或降低并发/请求频率
+- 工具调用场景（需要 filesystem/shell/MCP）请切到 `gemini-*` 或 `gpt-*` 模型完成任务
+
+### 6.2 可选后续（如果必须让 Grok “也能用工具”）
+
+如果你必须在 Grok 下使用 MCP 工具，有两条路线（都需要额外开发/或代理支持）：
+
+1) 让 VectorEngine 提供支持 tool calling 的 Grok 端点（或支持 `/v1/responses` 的 function calling），Widex 侧仅需切换 provider/wire。
+2) Widex 侧实现“文本协议工具调用”fallback：让 Grok 输出严格标记的 JSON（例如 `TOOL_CALL: {...}`），由 Widex 解析后执行 MCP，再把 tool 输出回填给模型继续推理。
