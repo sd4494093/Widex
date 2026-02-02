@@ -146,6 +146,16 @@ git push origin widex
 
 安全提示：不要把任何真实 key 写进 repo；`auth.json` 属于本机私有文件（建议权限 `0600`），并定期轮换 key。
 
+### 3.1.3 不想 export（但也不想手改 auth.json）：使用 `${CODEX_HOME}/.env`
+
+Widex/Codex 会在启动早期自动加载 `${CODEX_HOME}/.env`（过滤掉所有 `CODEX_` 前缀变量），因此你可以把常用的
+`PP_CODEX` / `GEMINI_API_KEY` / `GROK_API_KEY` / `XAI_API_KEY` 写在这里，避免每次启动前手动 `export`。
+
+注意：
+
+- `${CODEX_HOME}/.env` 是本机私有文件，请确保权限为 `0600`，不要提交到 git。
+- 若你同时配置了 API Switchover：switchover 仍会在第一次切换时把 key 缓存进 `${CODEX_HOME}/auth.json` 的 `WIDEX_SAVED_API_KEYS`，方便后续不依赖 env。
+
 ### 3.2 Ralph for Widex（/ralph-widex）
 
 目录：`widex-custom/features/ralph-widex/`
@@ -280,21 +290,28 @@ Widex 的生产级目标：把 Ralph 做成 **原生 Widex 功能**（原生 sla
 - `widex-custom/docs/Gemini_intergration/README.md`
 
 
-## 5) Grok 接入（OpenAI Chat Completions 兼容）
+## 5) Grok 接入（双 provider：VectorEngine + xAI 官方）
 
-Grok（通过 VectorEngine 中转）走 OpenAI Chat Completions：
+Grok 目前分两条线路：
 
-- `POST https://api.vectorengine.ai/v1/chat/completions`
-- `stream: true` 返回 `text/event-stream` SSE（`chat.completion.chunk` + `[DONE]`）
+- `grok-4.1`：通过 VectorEngine 中转（Chat Completions）
+  - `POST https://api.vectorengine.ai/v1/chat/completions`
+- `grok-4-1-fast-*`：通过 xAI 官方（Chat Completions）
+  - `POST https://api.x.ai/v1/chat/completions`
 
 widex 当前落地：
 
-- 内置 provider：`grok-vectorengine`（`wire_api = "chat"`）
+- 内置 provider：
+  - `grok-vectorengine`（`wire_api = "chat"`，VectorEngine）
+  - `grok-xai`（`wire_api = "chat"`，xAI 官方）
 - 预设模型（picker 可见）：
   - `grok-4.1`
   - `grok-4-1-fast-reasoning`
   - `grok-4-1-fast-non-reasoning`
-- switchover 模板已包含 `grok-` 前缀规则示例（见 `widex-custom/features/api-switchover/api_config.example.yaml`）
+- switchover 模板已包含：
+  - `equals: grok-4-1-fast-* -> use: grok-xai`
+  - `prefix: grok- -> use: grok-vectorengine`
+  - 见 `widex-custom/features/api-switchover/api_config.example.yaml`
 
 推荐入口文档：
 

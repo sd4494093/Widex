@@ -1,10 +1,12 @@
-# Grok 集成（Widex 落地：VectorEngine / Chat Completions）
+# Grok 集成（Widex 落地：VectorEngine + xAI 官方 / Chat Completions）
 
 > 目标：在 **widex** 分支长期开发（运行/测试/使用都在这里），同时可周期性同步上游 `main`，并保留/演进 Grok 集成与 Widex 自定义配置。
 
 本工作区（当前仓库）落地结果：
 
-- 已在 `codex-rs/` 内加入内置 provider：`grok-vectorengine`（VectorEngine 中转，OpenAI Chat Completions 兼容）。
+- 已在 `codex-rs/` 内加入内置 providers：
+  - `grok-vectorengine`（VectorEngine 中转，OpenAI Chat Completions 兼容）
+  - `grok-xai`（xAI 官方，OpenAI Chat Completions 兼容）
 - 已将 `grok-*` 模型加入 picker 预设（例如 `grok-4.1` / `grok-4-1-fast-*`）。
 - 已把“会话内切到 grok-* 模型时自动切 provider；切走时回到 openai/openai-proxy”落到 core。
 - 已在 Chat Completions 请求构造层对 VectorEngine 的已知限制做 best-effort 兼容（图像输入降级为文本提示）。
@@ -12,7 +14,7 @@
 安全边界（必须遵守）：
 
 - 不要把任何真实 key 写进 git 管理的文件（含 `widex-custom/`、`.ralph/`、任何 YAML/TOML/JSON）。
-- 推荐使用 env：`GROK_API_KEY`，并通过 API Switchover 映射到 `openai_api_key`（避免污染 `OPENAI_API_KEY`）。
+- 推荐使用 env：`GROK_API_KEY`（VectorEngine）/ `XAI_API_KEY`（xAI 官方），并通过 API Switchover 映射到 `openai_api_key`（避免污染 `OPENAI_API_KEY`）。
 
 
 ## 1. 总体架构：把 Grok 当成一个 Chat Completions Provider
@@ -25,10 +27,11 @@ Codex 主干抽象大致是：
   - OpenAI Chat：`/v1/chat/completions` + SSE
   - Gemini：`/models/{api_model}:streamGenerateContent?alt=sse` + SSE（widex 自增 wire）
 
-Grok（通过 VectorEngine 中转）当前走的是：
+Grok 目前分两条线路（都走 Chat Completions wire）：
 
 - `wire_api = "chat"`（复用既有 OpenAI Chat Completions wire；不新增 wire）
-- 请求：`POST https://api.vectorengine.ai/v1/chat/completions`
+- 请求（VectorEngine / `grok-vectorengine`）：`POST https://api.vectorengine.ai/v1/chat/completions`
+- 请求（xAI 官方 / `grok-xai`）：`POST https://api.x.ai/v1/chat/completions`
 - streaming：`text/event-stream`，以 `data: {json}` 连续输出，最终以 `data: [DONE]` 结束
 
 这样做的收益是：尽量复用 Codex 的 session/tool router/TUI，把变更集中在“provider 配置 + 少量兼容逻辑”层。
@@ -36,13 +39,18 @@ Grok（通过 VectorEngine 中转）当前走的是：
 
 ## 2. 本仓实现：按“配置层 -> 协议层 -> 请求构造 -> 流式解析 -> UI”列出落点
 
-### 2.1 配置/Provider 层（内置 grok-vectorengine）
+### 2.1 配置/Provider 层（内置 grok-vectorengine + grok-xai）
 
 - `codex-rs/core/src/model_provider_info.rs`
-  - `built_in_model_providers()` 新增内置 provider：`grok-vectorengine`
-    - `base_url`: `https://api.vectorengine.ai/v1`
-    - `wire_api`: `chat`
-    - `requires_openai_auth = true`（复用 OpenAI 认证槽位：`openai_api_key` -> `Authorization: Bearer ...`）
+  - `built_in_model_providers()` 新增内置 providers：
+    - `grok-vectorengine`
+      - `base_url`: `https://api.vectorengine.ai/v1`
+      - `wire_api`: `chat`
+      - `requires_openai_auth = true`（复用 OpenAI 认证槽位：`openai_api_key` -> `Authorization: Bearer ...`）
+    - `grok-xai`
+      - `base_url`: `https://api.x.ai/v1`
+      - `wire_api`: `chat`
+      - `requires_openai_auth = true`
 
 ### 2.2 模型预设层（picker 可见）
 
@@ -54,9 +62,11 @@ Grok（通过 VectorEngine 中转）当前走的是：
 
 ### 2.3 认证层（auth.json + env 优先级 + Switchover 推荐）
 
-由于 `grok-vectorengine` 走 OpenAI Chat Completions wire，当前使用的认证字段仍是 `openai_api_key`：
+由于 `grok-vectorengine` / `grok-xai` 都走 OpenAI Chat Completions wire，当前使用的认证字段仍是 `openai_api_key`：
 
-- 推荐使用：API Switchover 用 `GROK_API_KEY` 映射到 `openai_api_key`（避免和 OpenAI 官方 key 混用）
+- 推荐使用：API Switchover 映射到 `openai_api_key`
+  - VectorEngine：`GROK_API_KEY`
+  - xAI 官方：`XAI_API_KEY`
   - 示例模板：`widex-custom/features/api-switchover/api_config.example.yaml`
 
 > Widex 会把第一次切换时读到的 key 缓存进 `${CODEX_HOME}/auth.json`（`WIDEX_SAVED_API_KEYS`），后续可以 unset env 仍可切换。
@@ -64,8 +74,9 @@ Grok（通过 VectorEngine 中转）当前走的是：
 ### 2.4 会话层（切模型自动切 provider；切走自动回退）
 
 - `codex-rs/core/src/codex.rs`
-  - 当 model 以 `grok-` 开头，且当前 provider 是 `openai/openai-proxy` 时：自动切换到 `grok-vectorengine`
-  - 从 `grok-*` 切回非 `grok-*` 时：若当前 provider 为 `grok-vectorengine`，自动回退到 `openai-proxy`（若存在）否则回退到 `openai`
+  - 当 model 为 `grok-4-1-fast-*` 且当前 provider 是 `openai/openai-proxy` 时：自动切换到 `grok-xai`
+  - 当 model 以 `grok-` 开头（非 fast 变体）且当前 provider 是 `openai/openai-proxy` 时：自动切换到 `grok-vectorengine`
+  - 从 `grok-*` 切回非 `grok-*` 时：若当前 provider 为 `grok-vectorengine`/`grok-xai`，自动回退到 `openai-proxy`（若存在）否则回退到 `openai`
 
 ### 2.5 请求构造层（Prompt/Tools -> Chat Completions JSON；图像降级）
 
@@ -95,9 +106,11 @@ Grok（通过 VectorEngine 中转）当前走的是：
 推荐方式（和 OpenAI 官方 key 解耦）：
 
 - 配置 `${CODEX_HOME}/api_switchover.yaml`（可从 `widex-custom/features/api-switchover/api_config.example.yaml` 拷贝）
-- `export GROK_API_KEY=<VectorEngine key>`
-- 在 TUI 中使用 `/model grok-4.1`（或其它 `grok-*`）触发自动切换
-  - 切换成功后可 `unset GROK_API_KEY`；widex 会使用缓存的 `WIDEX_SAVED_API_KEYS`（见 2.3）
+- 设置 key（两选一）：
+  - VectorEngine（`grok-4.1`）：`GROK_API_KEY`
+  - xAI 官方（`grok-4-1-fast-*`）：`XAI_API_KEY`
+- 在 TUI 中使用 `/model <grok-model>` 触发 switchover
+  - 切换成功后可 unset env；widex 会使用缓存的 `WIDEX_SAVED_API_KEYS`（见 2.3）
 
 可选（非交互）：
 
@@ -157,9 +170,19 @@ Grok 集成通常只涉及 core/codex-api（不新增 wire）：
 
 结论（截至 2026-02-02，本仓 widex 线上实测）：
 
-- `https://api.vectorengine.ai/v1/chat/completions` 返回的 Grok 输出**不会产生** Chat Completions 的 `tool_calls`（也不会产生 legacy `function_call`）。
+- 仅针对 VectorEngine 线路（`grok-4.1` / `https://api.vectorengine.ai/v1/chat/completions`）：Grok 输出**不会产生** Chat Completions 的 `tool_calls`（也不会产生 legacy `function_call`）。
 - 即使请求里显式传入 `tools` / `tool_choice`（强制指定 tool）或 `functions` / `function_call`，Grok 仍会以普通文本回答，并表现得像“根本没有拿到 tool 列表”（常见回复是 “I don't have a tool …”）。
 - 因此：在当前 VectorEngine Grok 接口形态下，Widex 的 MCP 工具（filesystem/shell/…）无法通过“标准 function calling”被 Grok 触发；这不是 Widex 的工具路由 bug，而是上游端点能力缺失/被代理剥离。
+
+### 6.0.1 xAI 官方线路（grok-4-1-fast-*）支持 tool_calls
+
+对 `grok-4-1-fast-reasoning` / `grok-4-1-fast-non-reasoning`，Widex 会通过 `grok-xai` provider 走
+`https://api.x.ai/v1/chat/completions`。该线路支持标准 Chat Completions 的 `tools` / `tool_calls`，因此能触发 Widex 的 MCP 工具调用。
+
+实现点：
+
+- provider：`codex-rs/core/src/model_provider_info.rs`（`grok-xai`）
+- tool schema：`codex-rs/core/src/tools/spec.rs`（为 `api.x.ai` 发送 OpenAI 标准 `tools` schema）
 
 验证方法（不写入任何 key；从 `${CODEX_HOME}/auth.json` 读取已保存的 key）：
 
@@ -206,9 +229,10 @@ PY
 
 建议：
 
-- 优先使用 `grok-4.1`（`grok-4-1-fast-*` 更容易触发 429，具体视账号配额而定）
-- 等待一段时间后重试，或降低并发/请求频率
-- 工具调用场景（需要 filesystem/shell/MCP）请切到 `gemini-*` 或 `gpt-*` 模型完成任务
+- 如果 VectorEngine 线路频繁 429：
+  - 降低并发/请求频率，或稍后再试
+  - 若你持有 xAI 官方 key，优先使用 `grok-4-1-fast-*`（走 `https://api.x.ai/v1`）
+- 工具调用场景（需要 filesystem/shell/MCP）优先选 `gemini-*` / `gpt-*`；VectorEngine 的 Grok 端点不支持 tools（见 6）
 
 ### 6.2 可选后续（如果必须让 Grok “也能用工具”）
 

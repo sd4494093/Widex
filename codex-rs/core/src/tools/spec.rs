@@ -1066,6 +1066,44 @@ pub(crate) fn create_tools_json_for_chat_completions_api(
     Ok(tools_json)
 }
 
+/// Returns JSON values that match the OpenAI Chat Completions `tools` schema:
+/// `{ "type": "function", "function": { "name", "description", "parameters" } }`.
+///
+/// Some third-party OpenAI-compatible providers are strict about this shape.
+pub(crate) fn create_tools_json_for_openai_chat_completions_api(
+    tools: &[ToolSpec],
+) -> crate::error::Result<Vec<serde_json::Value>> {
+    let responses_api_tools_json = create_tools_json_for_responses_api(tools)?;
+    let tools_json = responses_api_tools_json
+        .into_iter()
+        .filter_map(|tool| {
+            if tool.get("type") != Some(&serde_json::Value::String("function".to_string())) {
+                return None;
+            }
+
+            let map = tool.as_object()?;
+            let name = map.get("name")?.as_str()?.to_string();
+            let description = map
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let parameters = map.get("parameters")?.clone();
+
+            Some(json!({
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": description,
+                    "parameters": parameters,
+                }
+            }))
+        })
+        .collect::<Vec<serde_json::Value>>();
+
+    Ok(tools_json)
+}
+
 pub(crate) fn mcp_tool_to_openai_tool(
     fully_qualified_name: String,
     tool: mcp_types::Tool,
@@ -2560,6 +2598,40 @@ Examples of valid command strings:
                     "name": "demo",
                     "description": "A demo tool",
                     "strict": false,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "foo": { "type": "string" }
+                        },
+                    },
+                }
+            })]
+        );
+    }
+
+    #[test]
+    fn openai_chat_tools_match_openai_schema() {
+        let properties =
+            BTreeMap::from([("foo".to_string(), JsonSchema::String { description: None })]);
+        let tools = vec![ToolSpec::Function(ResponsesApiTool {
+            name: "demo".to_string(),
+            description: "A demo tool".to_string(),
+            strict: false,
+            parameters: JsonSchema::Object {
+                properties,
+                required: None,
+                additional_properties: None,
+            },
+        })];
+
+        let tools_json = create_tools_json_for_openai_chat_completions_api(&tools).unwrap();
+        assert_eq!(
+            tools_json,
+            vec![json!({
+                "type": "function",
+                "function": {
+                    "name": "demo",
+                    "description": "A demo tool",
                     "parameters": {
                         "type": "object",
                         "properties": {

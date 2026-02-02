@@ -527,7 +527,8 @@ impl SessionConfiguration {
             // the new slug clearly belongs to the other family.
             //
             // This logic is intentionally conservative: it only auto-switches between
-            // "openai"/"openai-proxy" and select built-in providers ("gemini", "grok-vectorengine"),
+            // "openai"/"openai-proxy" and select built-in providers ("gemini", "grok-vectorengine",
+            // "grok-xai"),
             // leaving third-party providers untouched.
             //
             // Explicit `model_provider_id` overrides always take precedence over this.
@@ -544,6 +545,10 @@ impl SessionConfiguration {
 
                 let next_is_gemini = next_model.starts_with("gemini-");
                 let next_is_grok = next_model.starts_with("grok-");
+                let next_is_grok_xai = matches!(
+                    next_model.as_str(),
+                    "grok-4-1-fast-reasoning" | "grok-4-1-fast-non-reasoning"
+                );
 
                 if next_is_gemini
                     && current_provider_id != Some("gemini")
@@ -556,15 +561,21 @@ impl SessionConfiguration {
                     next_configuration.provider = gemini.clone();
                 }
 
-                if next_is_grok
-                    && current_provider_id != Some("grok-vectorengine")
-                    && is_current_openai_like
-                    && let Some(grok) = self
-                        .original_config_do_not_use
-                        .model_providers
-                        .get("grok-vectorengine")
-                {
-                    next_configuration.provider = grok.clone();
+                if next_is_grok && is_current_openai_like {
+                    let next_provider_id = if next_is_grok_xai {
+                        "grok-xai"
+                    } else {
+                        "grok-vectorengine"
+                    };
+
+                    if current_provider_id != Some(next_provider_id)
+                        && let Some(provider) = self
+                            .original_config_do_not_use
+                            .model_providers
+                            .get(next_provider_id)
+                    {
+                        next_configuration.provider = provider.clone();
+                    }
                 }
 
                 if old_model.starts_with("gemini-")
@@ -590,7 +601,10 @@ impl SessionConfiguration {
 
                 if old_model.starts_with("grok-")
                     && !next_is_grok
-                    && current_provider_id == Some("grok-vectorengine")
+                    && matches!(
+                        current_provider_id,
+                        Some("grok-vectorengine") | Some("grok-xai")
+                    )
                 {
                     let next = if let Some(proxy) = self
                         .original_config_do_not_use

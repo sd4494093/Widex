@@ -31,6 +31,16 @@ codex:
         openai_api_key:
           env: GROK_API_KEY
 
+    grok-xai:
+      name: Grok (xAI)
+      provider_id: grok-xai
+      auth:
+        # xAI's Grok endpoint is OpenAI Chat Completions compatible, so use openai_api_key.
+        # Widex will cache the resolved key in auth.json (WIDEX_SAVED_API_KEYS),
+        # so after one successful switch you can unset the env var.
+        openai_api_key:
+          env: XAI_API_KEY
+
     # Example: switch to a user-defined proxy provider.
     # This provider_id must exist under `[model_providers]` in config.toml.
     # openai-proxy:
@@ -45,6 +55,12 @@ codex:
 
   # Ordered prefix/equals rules (first match wins).
   rules:
+    - match:
+        equals: "grok-4-1-fast-reasoning"
+      use: grok-xai
+    - match:
+        equals: "grok-4-1-fast-non-reasoning"
+      use: grok-xai
     - match:
         prefix: "gemini-"
       use: gemini-official

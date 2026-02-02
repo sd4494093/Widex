@@ -415,7 +415,7 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             id: "grok-4-1-fast-reasoning".to_string(),
             model: "grok-4-1-fast-reasoning".to_string(),
             display_name: "grok-4-1-fast-reasoning".to_string(),
-            description: "Grok 4.1 fast reasoning variant (via Chat Completions wire API)."
+            description: "Grok 4.1 fast reasoning variant (via xAI Chat Completions)."
                 .to_string(),
             default_reasoning_effort: ReasoningEffort::Medium,
             supported_reasoning_efforts: vec![
@@ -442,7 +442,7 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             id: "grok-4-1-fast-non-reasoning".to_string(),
             model: "grok-4-1-fast-non-reasoning".to_string(),
             display_name: "grok-4-1-fast-non-reasoning".to_string(),
-            description: "Grok 4.1 fast non-reasoning variant (via Chat Completions wire API)."
+            description: "Grok 4.1 fast non-reasoning variant (via xAI Chat Completions)."
                 .to_string(),
             default_reasoning_effort: ReasoningEffort::Low,
             supported_reasoning_efforts: vec![

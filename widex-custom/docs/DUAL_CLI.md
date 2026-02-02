@@ -93,6 +93,7 @@ WIDEX_USE_SCCACHE=1 widex --version
 Notes
 
 - Widex keeps its config isolated via `CODEX_HOME` (default: `~/.widex-codex`). Official `codex` uses `~/.codex`.
+- `${CODEX_HOME}/.env` (if present) is loaded on startup, so you can keep per-CLI env vars separate too.
 - API switchover config (Widex):
   - `$WIDEX_API_SWITCHER_CONFIG` (override)
   - `${CODEX_HOME}/api_switchover.yaml` (default)

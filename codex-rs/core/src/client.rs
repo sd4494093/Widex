@@ -64,6 +64,7 @@ use crate::flags::CODEX_RS_SSE_FIXTURE;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::WireApi;
 use crate::tools::spec::create_tools_json_for_chat_completions_api;
+use crate::tools::spec::create_tools_json_for_openai_chat_completions_api;
 use crate::tools::spec::create_tools_json_for_responses_api;
 
 pub const WEB_SEARCH_ELIGIBLE_HEADER: &str = "x-oai-web-search-eligible";
@@ -458,7 +459,17 @@ impl ModelClientSession {
 
         let auth_manager = self.state.auth_manager.clone();
         let instructions = prompt.base_instructions.text.clone();
-        let tools_json = create_tools_json_for_chat_completions_api(&prompt.tools)?;
+        let tools_json = if self
+            .state
+            .provider
+            .base_url
+            .as_deref()
+            .is_some_and(|url| url.contains("api.x.ai"))
+        {
+            create_tools_json_for_openai_chat_completions_api(&prompt.tools)?
+        } else {
+            create_tools_json_for_chat_completions_api(&prompt.tools)?
+        };
         let api_prompt = build_api_prompt(prompt, instructions, tools_json);
         let conversation_id = self.state.conversation_id.to_string();
         let session_source = self.state.session_source.clone();
