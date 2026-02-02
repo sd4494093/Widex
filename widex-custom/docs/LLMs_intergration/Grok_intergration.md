@@ -175,6 +175,9 @@ Grok 集成通常只涉及 core/codex-api（不新增 wire）：
 - Widex 已按该约定做了兼容：当你选择 `grok-4.1` 且本轮存在 tools（MCP 工具）时，Widex 会保持 provider 为
   VectorEngine，但把本轮上游请求模型临时改为 `grok-4-fast-reasoning`，以触发 `tool_calls`（若 429，则回退到
   `grok-4-fast-non-reasoning` 再试一次）。
+- 直观解释：在 VectorEngine 的 `/v1/chat/completions` 上，`grok-4.1` 往往只会返回普通 `message.content`（纯聊天），
+  不会稳定产出 `tool_calls`；因此 **“需要工具的一轮”最终的工具调用与回答实际由 `grok-4-fast-*` 完成**。
+  下一轮你继续用 `grok-4.1` 对话时，Widex 仍会把上一轮（含 tool 输出与 assistant 输出）作为历史消息带上。
 - 限制：VectorEngine 侧部分 grok-* “fast” 线路在部分账号/时段可能会频繁 429（见 6.2）。
 
 实现点：
@@ -186,6 +189,11 @@ Grok 集成通常只涉及 core/codex-api（不新增 wire）：
 
 对 `grok-4-1-fast-reasoning` / `grok-4-1-fast-non-reasoning`，Widex 会通过 `grok-xai` provider 走
 `https://api.x.ai/v1/chat/completions`。该线路支持标准 Chat Completions 的 `tools` / `tool_calls`，因此能触发 Widex 的 MCP 工具调用。
+
+注意：
+
+- xAI 官方线路目前使用的是 `grok-4-1-fast-*` 这两个模型；`grok-4.1` 不在 xAI 官方这组模型命名/权限里（会 404），
+  所以 `grok-4.1` 仍保持走 VectorEngine。
 
 ### 6.2 常见症状：429 Too Many Requests
 
