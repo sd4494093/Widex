@@ -459,12 +459,9 @@ impl ModelClientSession {
 
         let auth_manager = self.state.auth_manager.clone();
         let instructions = prompt.base_instructions.text.clone();
-        let tools_json = if self
-            .state
-            .provider
-            .base_url
-            .as_deref()
-            .is_some_and(|url| url.contains("api.x.ai"))
+        let provider_base_url = self.state.provider.base_url.clone().unwrap_or_default();
+        let tools_json = if provider_base_url.contains("api.x.ai")
+            || provider_base_url.contains("vectorengine.ai")
         {
             create_tools_json_for_openai_chat_completions_api(&prompt.tools)?
         } else {
@@ -473,7 +470,18 @@ impl ModelClientSession {
         let api_prompt = build_api_prompt(prompt, instructions, tools_json);
         let conversation_id = self.state.conversation_id.to_string();
         let session_source = self.state.session_source.clone();
-        let mut model_slug = self.state.model_info.slug.clone();
+        // For the VectorEngine Grok proxy, their function-calling examples use
+        // `grok-4-1-fast-reasoning` even when the selected model is `grok-4.1`.
+        // Keep the user's selected model, but switch the upstream request model only when tools
+        // are present.
+        let mut model_slug = if provider_base_url.contains("vectorengine.ai")
+            && self.state.model_info.slug == "grok-4.1"
+            && !prompt.tools.is_empty()
+        {
+            "grok-4-1-fast-reasoning".to_string()
+        } else {
+            self.state.model_info.slug.clone()
+        };
         let mut attempted_fallback = false;
 
         let mut auth_recovery = auth_manager

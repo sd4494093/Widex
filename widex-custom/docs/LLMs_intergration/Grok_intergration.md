@@ -166,59 +166,27 @@ Grok 集成通常只涉及 core/codex-api（不新增 wire）：
 - 错误码/重试策略：429/5xx 的指数退避、请求超时、SSE 断流重连等
 
 
-## 6. 现状确认：VectorEngine Grok（Chat Completions）目前不支持 tools / MCP 工具调用
+## 6. 现状确认：VectorEngine Grok（grok-4.1）工具调用需要使用 fast-reasoning 上游模型
 
 结论（截至 2026-02-02，本仓 widex 线上实测）：
 
-- 仅针对 VectorEngine 线路（`grok-4.1` / `https://api.vectorengine.ai/v1/chat/completions`）：Grok 输出**不会产生** Chat Completions 的 `tool_calls`（也不会产生 legacy `function_call`）。
-- 即使请求里显式传入 `tools` / `tool_choice`（强制指定 tool）或 `functions` / `function_call`，Grok 仍会以普通文本回答，并表现得像“根本没有拿到 tool 列表”（常见回复是 “I don't have a tool …”）。
-- 因此：在当前 VectorEngine Grok 接口形态下，Widex 的 MCP 工具（filesystem/shell/…）无法通过“标准 function calling”被 Grok 触发；这不是 Widex 的工具路由 bug，而是上游端点能力缺失/被代理剥离。
+- VectorEngine 线路的函数调用示例里：即使“前台模型”写的是 `grok-4.1`，**代理侧用于 function calling 的模型是**
+  `grok-4-1-fast-reasoning`，并且需要标准的 `tools` / `tool_choice` 结构。
+- Widex 已按该约定做了兼容：当你选择 `grok-4.1` 且本轮存在 tools（MCP 工具）时，Widex 会保持 provider 为
+  VectorEngine，但把本轮上游请求模型临时改为 `grok-4-1-fast-reasoning`，以触发 `tool_calls`。
+- 限制：VectorEngine 的 `grok-4-1-fast-reasoning` 线路在部分账号/时段可能会频繁 429（见 6.2）。
 
-### 6.0.1 xAI 官方线路（grok-4-1-fast-*）支持 tool_calls
+实现点：
+
+- OpenAI 标准 chat tools schema（兼容 `api.x.ai` 与 `api.vectorengine.ai`）：`codex-rs/core/src/tools/spec.rs`
+- VectorEngine `grok-4.1` + tools 时上游模型切换：`codex-rs/core/src/client.rs`
+
+### 6.1 xAI 官方线路（grok-4-1-fast-*）支持 tool_calls
 
 对 `grok-4-1-fast-reasoning` / `grok-4-1-fast-non-reasoning`，Widex 会通过 `grok-xai` provider 走
 `https://api.x.ai/v1/chat/completions`。该线路支持标准 Chat Completions 的 `tools` / `tool_calls`，因此能触发 Widex 的 MCP 工具调用。
 
-实现点：
-
-- provider：`codex-rs/core/src/model_provider_info.rs`（`grok-xai`）
-- tool schema：`codex-rs/core/src/tools/spec.rs`（为 `api.x.ai` 发送 OpenAI 标准 `tools` schema）
-
-验证方法（不写入任何 key；从 `${CODEX_HOME}/auth.json` 读取已保存的 key）：
-
-```bash
-python3 - <<'PY'
-import json, os, requests
-
-auth=json.load(open(os.path.expanduser("~/.widex-codex/auth.json"),"r",encoding="utf-8"))
-key=auth["WIDEX_SAVED_API_KEYS"]["profile:grok-vectorengine:OPENAI_API_KEY"]
-url="https://api.vectorengine.ai/v1/chat/completions"
-headers={"Authorization":f"Bearer {key}","Content-Type":"application/json"}
-
-params={"type":"object","properties":{"a":{"type":"integer"},"b":{"type":"integer"}},"required":["a","b"],"additionalProperties":False}
-body={
-  "model":"grok-4.1",
-  "messages":[{"role":"user","content":"Use tool math_add with {a: 1, b: 2}. Do not answer normally."}],
-  "temperature":0,
-  "max_tokens":64,
-  "stream":False,
-  "tools":[{"type":"function","function":{"name":"math_add","description":"Add two integers.","parameters":params}}],
-  "tool_choice":{"type":"function","function":{"name":"math_add"}},
-}
-r=requests.post(url,headers=headers,json=body,timeout=(10,40))
-j=r.json()
-choice=j.get("choices",[{}])[0]
-msg=choice.get("message",{})
-print("finish_reason=",choice.get("finish_reason"))
-print("has_tool_calls=",bool(msg.get("tool_calls")))
-print("has_function_call=",bool(msg.get("function_call")))
-print("content_prefix=",repr((msg.get("content") or "")[:120]))
-PY
-```
-
-如果 `has_tool_calls=False` 且模型以文本形式说“没有这个 tool”，则说明 `tools` 没有生效。
-
-### 6.1 常见症状：429 Too Many Requests
+### 6.2 常见症状：429 Too Many Requests
 
 你可能会看到：
 
@@ -232,9 +200,9 @@ PY
 - 如果 VectorEngine 线路频繁 429：
   - 降低并发/请求频率，或稍后再试
   - 若你持有 xAI 官方 key，优先使用 `grok-4-1-fast-*`（走 `https://api.x.ai/v1`）
-- 工具调用场景（需要 filesystem/shell/MCP）优先选 `gemini-*` / `gpt-*`；VectorEngine 的 Grok 端点不支持 tools（见 6）
+- 工具调用场景（需要 filesystem/shell/MCP）优先选 `gemini-*` / `gpt-*`；VectorEngine 线路可能受 429 影响（见 6.2）
 
-### 6.2 可选后续（如果必须让 Grok “也能用工具”）
+### 6.3 可选后续（如果必须让 Grok “也能用工具”）
 
 如果你必须在 Grok 下使用 MCP 工具，有两条路线（都需要额外开发/或代理支持）：
 
