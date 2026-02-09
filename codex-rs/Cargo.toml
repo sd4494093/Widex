@@ -8,6 +8,7 @@ members = [
     "app-server-test-client",
     "debug-client",
     "apply-patch",
+    "api-switchover",
     "arg0",
     "feedback",
     "codex-backend-openapi-models",
@@ -36,6 +37,7 @@ members = [
     "responses-api-proxy",
     "stdio-to-uds",
     "otel",
+    "ralph-widex",
     "tui",
     "utils/absolute-path",
     "utils/cargo-bin",
@@ -68,6 +70,7 @@ license = "Apache-2.0"
 app_test_support = { path = "app-server/tests/common" }
 codex-ansi-escape = { path = "ansi-escape" }
 codex-api = { path = "codex-api" }
+codex-api-switchover = { path = "api-switchover" }
 codex-app-server = { path = "app-server" }
 codex-app-server-protocol = { path = "app-server-protocol" }
 codex-app-server-test-client = { path = "app-server-test-client" }
@@ -97,6 +100,7 @@ codex-ollama = { path = "ollama" }
 codex-otel = { path = "otel" }
 codex-process-hardening = { path = "process-hardening" }
 codex-protocol = { path = "protocol" }
+codex-ralph-widex = { path = "ralph-widex" }
 codex-responses-api-proxy = { path = "responses-api-proxy" }
 codex-rmcp-client = { path = "rmcp-client" }
 codex-state = { path = "state" }

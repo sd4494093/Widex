@@ -777,6 +777,8 @@ impl AuthDotJson {
         Self {
             auth_mode: Some(ApiAuthMode::ChatgptAuthTokens),
             openai_api_key: None,
+            gemini_api_key: None,
+            widex_saved_api_keys: Default::default(),
             tokens: Some(tokens),
             last_refresh: Some(Utc::now()),
         }
@@ -1038,6 +1040,10 @@ impl AuthManager {
     /// Current cached auth (clone) without attempting a refresh.
     pub fn auth_cached(&self) -> Option<CodexAuth> {
         self.inner.read().ok().and_then(|c| c.auth.clone())
+    }
+
+    pub(crate) fn gemini_api_key_from_storage(&self) -> Option<String> {
+        read_gemini_api_key_from_auth_json(&self.codex_home, self.auth_credentials_store_mode)
     }
 
     /// Current cached auth (clone). May be `None` if not logged in or load failed.

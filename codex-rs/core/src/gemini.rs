@@ -20,12 +20,12 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tracing::debug;
 
+use crate::AuthManager;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
 use crate::client_common::tools::ResponsesApiTool;
 use crate::client_common::tools::ToolSpec;
-use crate::config::Config;
 use crate::default_client::build_reqwest_client;
 use crate::error::CodexErr;
 use crate::error::Result;
@@ -40,10 +40,10 @@ fn next_gemini_call_id() -> String {
 }
 
 pub(crate) async fn stream_gemini(
-    config: &Config,
     provider: &ModelProviderInfo,
     model_info: &ModelInfo,
     prompt: &Prompt,
+    auth_manager: Option<&AuthManager>,
 ) -> Result<ResponseStream> {
     let Some(base_url) = provider.base_url.as_deref() else {
         return Err(CodexErr::UnsupportedOperation(
@@ -104,12 +104,8 @@ pub(crate) async fn stream_gemini(
     };
 
     let client = build_reqwest_client();
-    let gemini_api_key = crate::auth::read_gemini_api_key_from_env().or_else(|| {
-        crate::auth::read_gemini_api_key_from_auth_json(
-            &config.codex_home,
-            config.cli_auth_credentials_store_mode,
-        )
-    });
+    let gemini_api_key = crate::auth::read_gemini_api_key_from_env()
+        .or_else(|| auth_manager.and_then(|manager| manager.gemini_api_key_from_storage()));
 
     let mut headers = provider.build_header_map()?;
     if let Some(api_key) = gemini_api_key.as_deref()
@@ -133,6 +129,7 @@ pub(crate) async fn stream_gemini(
             status,
             body,
             url: Some(url),
+            cf_ray: None,
             request_id: None,
         }));
     }
@@ -424,14 +421,16 @@ fn split_function_output_content(
 fn build_gemini_function_response_payload(
     output: &FunctionCallOutputPayload,
 ) -> (String, Vec<GeminiPartRequest>) {
-    let (text_parts, inline_parts) = if let Some(items) = output.content_items.as_ref()
+    let (text_parts, inline_parts) = if let Some(items) = output.content_items()
         && !items.is_empty()
     {
         split_function_output_content(items)
     } else {
         let mut text_parts = Vec::new();
-        if !output.content.trim().is_empty() {
-            text_parts.push(output.content.clone());
+        if let Some(content) = output.text_content()
+            && !content.trim().is_empty()
+        {
+            text_parts.push(content.to_string());
         }
         (text_parts, Vec::new())
     };
@@ -804,6 +803,7 @@ async fn process_gemini_sse<S>(
                                 role: "assistant".to_string(),
                                 content: vec![],
                                 end_turn: None,
+                                phase: None,
                             };
                             if tx_event
                                 .send(Ok(ResponseEvent::OutputItemAdded(item)))
@@ -881,6 +881,7 @@ async fn process_gemini_sse<S>(
                 role: "assistant".to_string(),
                 content,
                 end_turn: None,
+                phase: None,
             };
             let _ = tx_event.send(Ok(ResponseEvent::OutputItemDone(item))).await;
         }

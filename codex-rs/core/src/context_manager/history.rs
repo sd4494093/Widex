@@ -189,8 +189,8 @@ impl ContextManager {
                     }
                 }
                 ResponseItem::FunctionCallOutput { output, .. } => {
-                    if let Some(items) = output.content_items.as_mut() {
-                        for output_item in items {
+                    if let Some(items) = output.content_items_mut() {
+                        for output_item in items.iter_mut() {
                             if matches!(
                                 output_item,
                                 FunctionCallOutputContentItem::InputImage { .. }

@@ -37,6 +37,7 @@ use crate::api_bridge::CoreAuthProvider;
 use crate::api_bridge::auth_provider_from_auth;
 use crate::api_bridge::map_api_error;
 use crate::auth::UnauthorizedRecovery;
+use codex_api::ChatClient as ApiChatClient;
 use codex_api::CompactClient as ApiCompactClient;
 use codex_api::CompactionInput as ApiCompactionInput;
 use codex_api::MemoriesClient as ApiMemoriesClient;
@@ -100,7 +101,6 @@ use crate::error::Result;
 use crate::flags::CODEX_RS_SSE_FIXTURE;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::WireApi;
-use crate::tools::spec::create_tools_json_for_chat_completions_api;
 use crate::tools::spec::create_tools_json_for_openai_chat_completions_api;
 use crate::tools::spec::create_tools_json_for_responses_api;
 
@@ -861,36 +861,41 @@ impl ModelClientSession {
     ///
     /// This path is only used when the provider is configured with
     /// `WireApi::Chat`; it does not support `output_schema` today.
-    async fn stream_chat_completions(&self, prompt: &Prompt) -> Result<ApiResponseStream> {
+    async fn stream_chat_completions(
+        &self,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+        otel_manager: &OtelManager,
+    ) -> Result<ResponseStream> {
         if prompt.output_schema.is_some() {
             return Err(CodexErr::UnsupportedOperation(
                 "output_schema is not supported for Chat Completions API".to_string(),
             ));
         }
 
-        let auth_manager = self.state.auth_manager.clone();
+        let auth_manager = self.client.state.auth_manager.clone();
         let instructions = prompt.base_instructions.text.clone();
-        let provider_base_url = self.state.provider.base_url.clone().unwrap_or_default();
-        let tools_json = if provider_base_url.contains("api.x.ai")
-            || provider_base_url.contains("vectorengine.ai")
-        {
-            create_tools_json_for_openai_chat_completions_api(&prompt.tools)?
-        } else {
-            create_tools_json_for_chat_completions_api(&prompt.tools)?
-        };
+        let provider_base_url = self
+            .client
+            .state
+            .provider
+            .base_url
+            .clone()
+            .unwrap_or_default();
+        let tools_json = create_tools_json_for_openai_chat_completions_api(&prompt.tools)?;
         let api_prompt = build_api_prompt(prompt, instructions, tools_json);
-        let conversation_id = self.state.conversation_id.to_string();
-        let session_source = self.state.session_source.clone();
+        let conversation_id = self.client.state.conversation_id.to_string();
+        let session_source = self.client.state.session_source.clone();
         // For the VectorEngine Grok proxy, the `grok-4.1` model doesn't reliably return
         // `tool_calls` even when tools are provided. Use a known-working upstream model only when
         // tools are present so the selected model can still remain `grok-4.1` in the UI.
         let mut model_slug = if provider_base_url.contains("vectorengine.ai")
-            && self.state.model_info.slug == "grok-4.1"
+            && model_info.slug == "grok-4.1"
             && !prompt.tools.is_empty()
         {
             "grok-4-fast-reasoning".to_string()
         } else {
-            self.state.model_info.slug.clone()
+            model_info.slug.clone()
         };
         let mut attempted_fallback = false;
 
@@ -903,12 +908,13 @@ impl ModelClientSession {
                 None => None,
             };
             let api_provider = self
+                .client
                 .state
                 .provider
-                .to_api_provider(auth.as_ref().map(|a| a.mode))?;
-            let api_auth = auth_provider_from_auth(auth.clone(), &self.state.provider)?;
+                .to_api_provider(auth.as_ref().map(CodexAuth::auth_mode))?;
+            let api_auth = auth_provider_from_auth(auth.clone(), &self.client.state.provider)?;
             let transport = ReqwestTransport::new(build_reqwest_client());
-            let (request_telemetry, sse_telemetry) = self.build_streaming_telemetry();
+            let (request_telemetry, sse_telemetry) = Self::build_streaming_telemetry(otel_manager);
             let client = ApiChatClient::new(transport, api_provider, api_auth)
                 .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
 
@@ -922,11 +928,11 @@ impl ModelClientSession {
                 .await;
 
             match stream_result {
-                Ok(stream) => return Ok(stream),
-                Err(ApiError::Transport(TransportError::Http { status, .. }))
-                    if status == StatusCode::UNAUTHORIZED =>
-                {
-                    handle_unauthorized(status, &mut auth_recovery).await?;
+                Ok(stream) => return Ok(map_response_stream(stream, otel_manager.clone())),
+                Err(ApiError::Transport(
+                    unauthorized_transport @ TransportError::Http { status, .. },
+                )) if status == StatusCode::UNAUTHORIZED => {
+                    handle_unauthorized(unauthorized_transport, &mut auth_recovery).await?;
                     continue;
                 }
                 Err(err @ ApiError::Transport(TransportError::Http { status, .. }))
@@ -1174,6 +1180,19 @@ impl ModelClientSession {
                     effort,
                     summary,
                     turn_metadata_header,
+                )
+                .await
+            }
+            WireApi::Chat => {
+                self.stream_chat_completions(prompt, model_info, otel_manager)
+                    .await
+            }
+            WireApi::Gemini => {
+                crate::gemini::stream_gemini(
+                    &self.client.state.provider,
+                    model_info,
+                    prompt,
+                    self.client.state.auth_manager.as_deref(),
                 )
                 .await
             }

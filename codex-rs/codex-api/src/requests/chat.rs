@@ -148,10 +148,10 @@ impl<'a> ChatRequestBuilder<'a> {
                     push_tool_call_message(&mut messages, tool_call);
                 }
                 ResponseItem::FunctionCallOutput { call_id, output } => {
-                    let content_value = if let Some(items) = &output.content_items {
+                    let content_value = if let Some(items) = output.content_items() {
                         let mapped: Vec<Value> = items
                             .iter()
-                            .map(|it| match it {
+                            .map(|item| match item {
                                 FunctionCallOutputContentItem::InputText { text } => {
                                     json!({"type":"text","text": text})
                                 }
@@ -162,7 +162,7 @@ impl<'a> ChatRequestBuilder<'a> {
                             .collect();
                         json!(mapped)
                     } else {
-                        json!(output.content)
+                        json!(output.text_content().unwrap_or_default())
                     };
 
                     messages.push(json!({

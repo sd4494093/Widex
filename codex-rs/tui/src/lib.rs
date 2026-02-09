@@ -471,6 +471,7 @@ async fn run_ratatui_app(
             return Ok(AppExitInfo {
                 token_usage: codex_core::protocol::TokenUsage::default(),
                 thread_id: None,
+                thread_name: None,
                 update_action: None,
                 exit_reason: ExitReason::UserRequested,
             });

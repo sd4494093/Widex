@@ -45,10 +45,10 @@ use crate::status::format_tokens_compact;
 use crate::text_formatting::proper_join;
 use crate::version::CODEX_CLI_VERSION;
 use chrono::Timelike;
-use codex_backend_client::Client as BackendClient;
-use codex_core::ModelProviderInfo;
 use codex_app_server_protocol::ConfigLayerSource;
+use codex_backend_client::Client as BackendClient;
 use codex_chatgpt::connectors;
+use codex_core::ModelProviderInfo;
 use codex_core::config::Config;
 use codex_core::config::ConstraintResult;
 use codex_core::config::types::Notifications;
@@ -3562,7 +3562,7 @@ impl ChatWidget {
         &mut self,
         cmd: SlashCommand,
         args: String,
-        _text_elements: Vec<TextElement>,
+        text_elements: Vec<TextElement>,
     ) {
         if !cmd.supports_inline_args() {
             self.dispatch_command(cmd);
@@ -3582,12 +3582,7 @@ impl ChatWidget {
         match cmd {
             SlashCommand::Rename if !trimmed.is_empty() => {
                 self.otel_manager.counter("codex.thread.rename", 1, &[]);
-                let Some((prepared_args, _prepared_elements)) =
-                    self.bottom_pane.prepare_inline_args_submission(false)
-                else {
-                    return;
-                };
-                let Some(name) = codex_core::util::normalize_thread_name(&prepared_args) else {
+                let Some(name) = codex_core::util::normalize_thread_name(&args) else {
                     self.add_error_message("Thread name cannot be empty.".to_string());
                     return;
                 };
@@ -3603,17 +3598,12 @@ impl ChatWidget {
                 if self.active_mode_kind() != ModeKind::Plan {
                     return;
                 }
-                let Some((prepared_args, prepared_elements)) =
-                    self.bottom_pane.prepare_inline_args_submission(true)
-                else {
-                    return;
-                };
                 let user_message = UserMessage {
-                    text: prepared_args,
+                    text: args,
                     local_images: self
                         .bottom_pane
                         .take_recent_submission_images_with_placeholders(),
-                    text_elements: prepared_elements,
+                    text_elements,
                     mention_bindings: self.bottom_pane.take_recent_submission_mention_bindings(),
                 };
                 if self.is_session_configured() {
@@ -3627,18 +3617,12 @@ impl ChatWidget {
             }
             SlashCommand::RalphWidex => {
                 self.dispatch_ralph_tui_command(trimmed);
+                self.bottom_pane.drain_pending_submission_state();
             }
             SlashCommand::Review if !trimmed.is_empty() => {
-                let Some((prepared_args, _prepared_elements)) =
-                    self.bottom_pane.prepare_inline_args_submission(false)
-                else {
-                    return;
-                };
                 self.submit_op(Op::Review {
                     review_request: ReviewRequest {
-                        target: ReviewTarget::Custom {
-                            instructions: prepared_args,
-                        },
+                        target: ReviewTarget::Custom { instructions: args },
                         user_facing_hint: None,
                     },
                 });
@@ -5812,21 +5796,7 @@ After you make progress, append a short update to `.ralph/@fix_progress.md` unde
             let effort_label = effort_for_action
                 .map(|effort| effort.to_string())
                 .unwrap_or_else(|| "default".to_string());
-            tx.send(AppEvent::CodexOp(Op::OverrideTurnContext {
-                cwd: None,
-                approval_policy: None,
-                sandbox_policy: None,
-                windows_sandbox_level: None,
-                model: Some(model_for_action.clone()),
-                model_provider_id: None,
-                effort: Some(effort_for_action),
-                summary: None,
-                collaboration_mode: None,
-                personality: None,
-            }));
-            tx.send(AppEvent::UpdateModel(model_for_action.clone()));
-            tx.send(AppEvent::UpdateReasoningEffort(effort_for_action));
-            tx.send(AppEvent::PersistModelSelection {
+            tx.send(AppEvent::ApplyModelSelection {
                 model: model_for_action.clone(),
                 effort: effort_for_action,
             });
@@ -5989,23 +5959,7 @@ After you make progress, append a short update to `.ralph/@fix_progress.md` unde
         let effort_label = effort
             .map(|e| e.to_string())
             .unwrap_or_else(|| "default".to_string());
-        self.app_event_tx
-            .send(AppEvent::CodexOp(Op::OverrideTurnContext {
-                cwd: None,
-                approval_policy: None,
-                sandbox_policy: None,
-                windows_sandbox_level: None,
-                model: Some(model.clone()),
-                model_provider_id: None,
-                effort: Some(effort),
-                summary: None,
-                collaboration_mode: None,
-                personality: None,
-            }));
-        self.app_event_tx.send(AppEvent::UpdateModel(model.clone()));
-        self.app_event_tx
-            .send(AppEvent::UpdateReasoningEffort(effort));
-        self.app_event_tx.send(AppEvent::PersistModelSelection {
+        self.app_event_tx.send(AppEvent::ApplyModelSelection {
             model: model.clone(),
             effort,
         });

@@ -66,15 +66,25 @@ impl<T: HttpTransport, A: AuthProvider> ChatClient<T, A> {
         "chat/completions"
     }
 
-    pub async fn stream(&self, body: Value, extra_headers: HeaderMap) -> Result<ResponseStream, ApiError> {
+    pub async fn stream(
+        &self,
+        body: Value,
+        extra_headers: HeaderMap,
+    ) -> Result<ResponseStream, ApiError> {
         let stream_response = self
             .session
-            .stream_with(Method::POST, Self::path(), extra_headers, Some(body), |req| {
-                req.headers.insert(
-                    http::header::ACCEPT,
-                    HeaderValue::from_static("text/event-stream"),
-                );
-            })
+            .stream_with(
+                Method::POST,
+                Self::path(),
+                extra_headers,
+                Some(body),
+                |req| {
+                    req.headers.insert(
+                        http::header::ACCEPT,
+                        HeaderValue::from_static("text/event-stream"),
+                    );
+                },
+            )
             .await?;
 
         Ok(spawn_chat_stream(
@@ -85,4 +95,3 @@ impl<T: HttpTransport, A: AuthProvider> ChatClient<T, A> {
         ))
     }
 }
-

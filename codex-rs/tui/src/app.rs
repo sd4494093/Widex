@@ -1015,6 +1015,7 @@ impl App {
                             )
                             .unwrap_or(None)
                             .unwrap_or(AuthDotJson {
+                                auth_mode: None,
                                 openai_api_key: None,
                                 gemini_api_key: None,
                                 widex_saved_api_keys: Default::default(),
@@ -1814,6 +1815,7 @@ impl App {
                                     )
                                     .unwrap_or(None)
                                     .unwrap_or(AuthDotJson {
+                                        auth_mode: None,
                                         openai_api_key: None,
                                         gemini_api_key: None,
                                         widex_saved_api_keys: Default::default(),
@@ -1932,6 +1934,7 @@ impl App {
                     cwd: None,
                     approval_policy: None,
                     sandbox_policy: None,
+                    windows_sandbox_level: None,
                     model: Some(model.clone()),
                     model_provider_id: provider_id.clone(),
                     effort: Some(effort),

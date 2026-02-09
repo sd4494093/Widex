@@ -354,6 +354,7 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             upgrade: None,
             show_in_picker: true,
             supported_in_api: true,
+            input_modalities: default_input_modalities(),
         },
         ModelPreset {
             id: "gemini-3-flash-preview".to_string(),
@@ -380,6 +381,7 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             upgrade: None,
             show_in_picker: true,
             supported_in_api: true,
+            input_modalities: default_input_modalities(),
         },
         ModelPreset {
             id: "gemini-3-pro-image-preview".to_string(),
@@ -396,6 +398,7 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             upgrade: None,
             show_in_picker: true,
             supported_in_api: true,
+            input_modalities: default_input_modalities(),
         },
         ModelPreset {
             id: "grok-4.1".to_string(),
@@ -422,6 +425,7 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             upgrade: None,
             show_in_picker: true,
             supported_in_api: true,
+            input_modalities: default_input_modalities(),
         },
         ModelPreset {
             id: "grok-4-1-fast-reasoning".to_string(),
@@ -449,6 +453,7 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             upgrade: None,
             show_in_picker: true,
             supported_in_api: true,
+            input_modalities: default_input_modalities(),
         },
         ModelPreset {
             id: "grok-4-1-fast-non-reasoning".to_string(),
@@ -476,6 +481,7 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
             upgrade: None,
             show_in_picker: true,
             supported_in_api: true,
+            input_modalities: default_input_modalities(),
         },
     ]
 });

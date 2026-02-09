@@ -38,14 +38,11 @@ pub enum WireApi {
     /// The Responses API exposed by OpenAI at `/v1/responses`.
     #[default]
     Responses,
-}
-
     /// The OpenAI Chat Completions API exposed at `/v1/chat/completions`.
     Chat,
 
     /// Google Gemini JSON API exposed via `:streamGenerateContent`.
     Gemini,
-}
 }
 
 /// Serializable representation of a provider definition.
@@ -299,6 +296,7 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                 stream_max_retries: None,
                 stream_idle_timeout_ms: None,
                 requires_openai_auth: true,
+                supports_websockets: false,
             },
         ),
         (
@@ -320,6 +318,7 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                 stream_max_retries: None,
                 stream_idle_timeout_ms: None,
                 requires_openai_auth: true,
+                supports_websockets: false,
             },
         ),
         (
@@ -351,6 +350,7 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                 stream_max_retries: None,
                 stream_idle_timeout_ms: None,
                 requires_openai_auth: false,
+                supports_websockets: false,
             },
         ),
         (

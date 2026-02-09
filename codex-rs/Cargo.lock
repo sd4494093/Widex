@@ -1240,6 +1240,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-api-switchover"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "codex-core",
+ "dirs",
+ "pretty_assertions",
+ "serde",
+ "serde_yaml",
+ "tempfile",
+]
+
+[[package]]
 name = "codex-app-server"
 version = "0.0.0"
 dependencies = [
@@ -1425,6 +1439,7 @@ dependencies = [
  "codex-login",
  "codex-mcp-server",
  "codex-protocol",
+ "codex-ralph-widex",
  "codex-responses-api-proxy",
  "codex-rmcp-client",
  "codex-stdio-to-uds",
@@ -1555,6 +1570,7 @@ dependencies = [
  "async-channel",
  "async-trait",
  "base64 0.22.1",
+ "bytes",
  "chardetng",
  "chrono",
  "clap",
@@ -2012,6 +2028,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-ralph-widex"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "codex-exec",
+ "libc",
+ "pretty_assertions",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "toml 0.9.11+spec-1.1.0",
+]
+
+[[package]]
 name = "codex-responses-api-proxy"
 version = "0.0.0"
 dependencies = [
@@ -2122,6 +2157,7 @@ dependencies = [
  "chrono",
  "clap",
  "codex-ansi-escape",
+ "codex-api-switchover",
  "codex-app-server-protocol",
  "codex-arg0",
  "codex-backend-client",
