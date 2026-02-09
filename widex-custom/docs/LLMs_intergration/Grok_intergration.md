@@ -71,6 +71,48 @@ Grok 目前分两条线路（都走 Chat Completions wire）：
 
 > Widex 会把第一次切换时读到的 key 缓存进 `${CODEX_HOME}/auth.json`（`WIDEX_SAVED_API_KEYS`），后续可以 unset env 仍可切换。
 
+最小可用配置（建议直接参考并拷贝模板，然后按你的环境变量名改掉）：
+
+- 模板：`widex-custom/features/api-switchover/api_config.example.yaml`
+- 安装版默认路径：`${CODEX_HOME}/api_switchover.yaml`（Widex 默认 `CODEX_HOME=~/.widex-codex`）
+
+你需要保证至少包含以下路由语义：
+
+- `grok-4.1`：继续走 VectorEngine（`provider_id: grok-vectorengine`）
+- `grok-4-1-fast-reasoning` / `grok-4-1-fast-non-reasoning`：走 xAI 官方（`provider_id: grok-xai`）
+
+示例（不要在 YAML 里写真实 key；只引用 env）：
+
+```yaml
+version: 1
+
+codex:
+  profiles:
+    grok-vectorengine:
+      name: Grok (VectorEngine)
+      provider_id: grok-vectorengine
+      auth:
+        openai_api_key:
+          env: GROK_API_KEY
+
+    grok-xai:
+      name: Grok (xAI)
+      provider_id: grok-xai
+      auth:
+        openai_api_key:
+          env: XAI_API_KEY
+
+  rules:
+    - match: { equals: "grok-4-1-fast-reasoning" }
+      use: grok-xai
+    - match: { equals: "grok-4-1-fast-non-reasoning" }
+      use: grok-xai
+    - match: { prefix: "grok-" }
+      use: grok-vectorengine
+
+  default_profile: grok-vectorengine
+```
+
 ### 2.4 会话层（切模型自动切 provider；切走自动回退）
 
 - `codex-rs/core/src/codex.rs`
@@ -180,6 +222,17 @@ Grok 集成通常只涉及 core/codex-api（不新增 wire）：
   下一轮你继续用 `grok-4.1` 对话时，Widex 仍会把上一轮（含 tool 输出与 assistant 输出）作为历史消息带上。
 - 限制：VectorEngine 侧部分 grok-* “fast” 线路在部分账号/时段可能会频繁 429（见 6.2）。
 
+### 6.0 常见“看起来会用工具但其实没用”的症状（根因）
+
+当模型**没有产出**标准的 `tool_calls`（Chat Completions）时，Widex 不会触发 MCP 工具执行。
+此时模型可能会“口头描述”它调用了 filesystem/shell，但实际并未发生任何工具调用（对话里也不会出现
+`Called filesystem.*` 这类记录）。
+
+因此：
+
+- 需要稳定工具调用：优先用 `grok-4-1-fast-*`（xAI 官方）或 `gemini-*` / `gpt-*`
+- 用 `grok-4.1`（VectorEngine）时：带 tools 的轮次会被 Widex 临时切到 `grok-4-fast-*` 来触发 `tool_calls`
+
 实现点：
 
 - OpenAI 标准 chat tools schema（兼容 `api.x.ai` 与 `api.vectorengine.ai`）：`codex-rs/core/src/tools/spec.rs`
@@ -217,3 +270,15 @@ Grok 集成通常只涉及 core/codex-api（不新增 wire）：
 
 1) 让 VectorEngine 提供支持 tool calling 的 Grok 端点（或支持 `/v1/responses` 的 function calling），Widex 侧仅需切换 provider/wire。
 2) Widex 侧实现“文本协议工具调用”fallback：让 Grok 输出严格标记的 JSON（例如 `TOOL_CALL: {...}`），由 Widex 解析后执行 MCP，再把 tool 输出回填给模型继续推理。
+
+## 7. 多轮对话与“二阶段”建议（不需要额外 handoff 实现）
+
+Widex 的多轮对话上下文（历史消息）是**会持续携带**的：即使你在同一个会话里切换 `/model`，下一轮请求仍会带上
+上一轮的 transcript（包含 tool 输出与 assistant 输出）。
+
+结合第 6 节的现实约束，一个“说人话”的使用建议是：
+
+- **需要工具的一轮**：用 `grok-4-1-fast-*`（xAI 官方）或让 `grok-4.1` 触发 Widex 的 VectorEngine 上游临时切换
+- **不需要工具、只聊天/总结**：继续使用 `grok-4.1`（VectorEngine）
+
+这不需要 Widex 额外实现“两阶段 handoff”：因为“工具轮产出的上下文”本来就会进入 transcript，后续模型照常可读。

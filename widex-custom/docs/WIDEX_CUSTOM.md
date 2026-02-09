@@ -88,6 +88,11 @@ git push origin widex
 1. `WIDEX_API_SWITCHER_CONFIG`
 2. `${CODEX_HOME}/api_switchover.yaml`
 
+说明：
+
+- Widex **不会**读取 `CODEX_API_SWITCHER_CONFIG`（避免官方 codex 的环境变量污染 widex）。
+- 不存在 “repo 内 fallback 配置文件” 读取逻辑；安装版只认上述两层。
+
 ### 3.0 config.toml vs api_switchover.yaml（必须理解的绑定关系）
 
 1) `${CODEX_HOME}/config.toml`：定义“有哪些 provider”以及“怎么连”
@@ -133,7 +138,7 @@ git push origin widex
 为了避免“启动后必须先 `/model` 切一次才能把 provider/key 切正确”的体验问题，Widex 会在**第一条请求发出前**
 对当前启动模型做一次 switchover resolve，并同步 provider/key（行为对齐 `/model`）。
 
-- 代码：`codex-rs/tui/src/app.rs:957`
+- 代码：`codex-rs/tui/src/app.rs:989`
 
 ### 3.1.2 不想 export：可以预先写入 `${CODEX_HOME}/auth.json`
 

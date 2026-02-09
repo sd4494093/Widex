@@ -99,7 +99,7 @@ Notes
   - `${CODEX_HOME}/api_switchover.yaml` (default)
 - Startup behavior (Widex): before the first request, Widex resolves the switchover plan for the
   startup model and applies the same provider/key switching behavior as `/model` (see
-  `codex-rs/tui/src/app.rs:957`).
+  `codex-rs/tui/src/app.rs:989`).
 
 How `config.toml` relates to `api_switchover.yaml`
 
@@ -118,7 +118,7 @@ How `config.toml` relates to `api_switchover.yaml`
 
 If you do not want to export env vars each time, you can either:
 
-- export once + `/model` once (so Widex caches into `${CODEX_HOME}/auth.json`), then unset, or
+- export once + run Widex once on that model (or `/model` once) so Widex can cache into `${CODEX_HOME}/auth.json`, then unset, or
 - pre-seed `${CODEX_HOME}/auth.json` with `OPENAI_API_KEY` / `GEMINI_API_KEY` and the per-profile
   `WIDEX_SAVED_API_KEYS` entries.
 
