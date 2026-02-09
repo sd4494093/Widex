@@ -3,6 +3,7 @@ use anyhow::Result;
 use base64::Engine;
 use chrono::Duration;
 use chrono::Utc;
+use codex_app_server_protocol::AuthMode;
 use codex_core::AuthManager;
 use codex_core::auth::AuthCredentialsStoreMode;
 use codex_core::auth::AuthDotJson;
@@ -50,6 +51,7 @@ async fn refresh_token_succeeds_updates_storage() -> Result<()> {
     let initial_last_refresh = Utc::now() - Duration::days(1);
     let initial_tokens = build_tokens(INITIAL_ACCESS_TOKEN, INITIAL_REFRESH_TOKEN);
     let initial_auth = AuthDotJson {
+        auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
         gemini_api_key: None,
         widex_saved_api_keys: Default::default(),
@@ -113,6 +115,7 @@ async fn returns_fresh_tokens_as_is() -> Result<()> {
     let initial_last_refresh = Utc::now() - Duration::days(1);
     let initial_tokens = build_tokens(INITIAL_ACCESS_TOKEN, INITIAL_REFRESH_TOKEN);
     let initial_auth = AuthDotJson {
+        auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
         gemini_api_key: None,
         widex_saved_api_keys: Default::default(),
@@ -160,6 +163,7 @@ async fn refreshes_token_when_last_refresh_is_stale() -> Result<()> {
     let stale_refresh = Utc::now() - Duration::days(9);
     let initial_tokens = build_tokens(INITIAL_ACCESS_TOKEN, INITIAL_REFRESH_TOKEN);
     let initial_auth = AuthDotJson {
+        auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
         gemini_api_key: None,
         widex_saved_api_keys: Default::default(),
@@ -220,6 +224,7 @@ async fn refresh_token_returns_permanent_error_for_expired_refresh_token() -> Re
     let initial_last_refresh = Utc::now() - Duration::days(1);
     let initial_tokens = build_tokens(INITIAL_ACCESS_TOKEN, INITIAL_REFRESH_TOKEN);
     let initial_auth = AuthDotJson {
+        auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
         gemini_api_key: None,
         widex_saved_api_keys: Default::default(),
@@ -271,6 +276,7 @@ async fn refresh_token_returns_transient_error_on_server_failure() -> Result<()>
     let initial_last_refresh = Utc::now() - Duration::days(1);
     let initial_tokens = build_tokens(INITIAL_ACCESS_TOKEN, INITIAL_REFRESH_TOKEN);
     let initial_auth = AuthDotJson {
+        auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
         gemini_api_key: None,
         widex_saved_api_keys: Default::default(),
@@ -324,6 +330,7 @@ async fn unauthorized_recovery_reloads_then_refreshes_tokens() -> Result<()> {
     let initial_last_refresh = Utc::now() - Duration::days(1);
     let initial_tokens = build_tokens(INITIAL_ACCESS_TOKEN, INITIAL_REFRESH_TOKEN);
     let initial_auth = AuthDotJson {
+        auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
         gemini_api_key: None,
         widex_saved_api_keys: Default::default(),
@@ -334,6 +341,7 @@ async fn unauthorized_recovery_reloads_then_refreshes_tokens() -> Result<()> {
 
     let disk_tokens = build_tokens("disk-access-token", "disk-refresh-token");
     let disk_auth = AuthDotJson {
+        auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
         gemini_api_key: None,
         widex_saved_api_keys: Default::default(),
@@ -418,6 +426,7 @@ async fn unauthorized_recovery_skips_reload_on_account_mismatch() -> Result<()> 
     let initial_last_refresh = Utc::now() - Duration::days(1);
     let initial_tokens = build_tokens(INITIAL_ACCESS_TOKEN, INITIAL_REFRESH_TOKEN);
     let initial_auth = AuthDotJson {
+        auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
         gemini_api_key: None,
         widex_saved_api_keys: Default::default(),
@@ -434,6 +443,7 @@ async fn unauthorized_recovery_skips_reload_on_account_mismatch() -> Result<()> 
         ..disk_tokens.clone()
     };
     let disk_auth = AuthDotJson {
+        auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
         gemini_api_key: None,
         widex_saved_api_keys: Default::default(),
@@ -499,6 +509,7 @@ async fn unauthorized_recovery_requires_chatgpt_auth() -> Result<()> {
     let server = MockServer::start().await;
     let ctx = RefreshTokenTestContext::new(&server)?;
     let auth = AuthDotJson {
+        auth_mode: Some(AuthMode::ApiKey),
         openai_api_key: Some("sk-test".to_string()),
         gemini_api_key: None,
         widex_saved_api_keys: Default::default(),

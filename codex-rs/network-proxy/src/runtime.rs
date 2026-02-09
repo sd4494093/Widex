@@ -8,10 +8,11 @@ use crate::reasons::REASON_DENIED;
 use crate::reasons::REASON_NOT_ALLOWED;
 use crate::reasons::REASON_NOT_ALLOWED_LOCAL;
 use crate::state::NetworkProxyConstraints;
-use crate::state::build_config_state;
+use crate::state::build_default_config_state_and_reloader;
 use crate::state::validate_policy_against_constraints;
 use anyhow::Context;
 use anyhow::Result;
+use async_trait::async_trait;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use globset::GlobSet;
 use serde::Serialize;
@@ -22,7 +23,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use std::time::SystemTime;
 use time::OffsetDateTime;
 use tokio::net::lookup_host;
 use tokio::sync::RwLock;
@@ -73,15 +73,25 @@ pub struct BlockedRequest {
     pub timestamp: i64,
 }
 
+pub struct BlockedRequestArgs {
+    pub host: String,
+    pub reason: String,
+    pub client: Option<String>,
+    pub method: Option<String>,
+    pub mode: Option<NetworkMode>,
+    pub protocol: String,
+}
+
 impl BlockedRequest {
-    pub fn new(
-        host: String,
-        reason: String,
-        client: Option<String>,
-        method: Option<String>,
-        mode: Option<NetworkMode>,
-        protocol: String,
-    ) -> Self {
+    pub fn new(args: BlockedRequestArgs) -> Self {
+        let BlockedRequestArgs {
+            host,
+            reason,
+            client,
+            method,
+            mode,
+            protocol,
+        } = args;
         Self {
             host,
             reason,
@@ -100,27 +110,22 @@ pub(crate) struct ConfigState {
     pub(crate) allow_set: GlobSet,
     pub(crate) deny_set: GlobSet,
     pub(crate) constraints: NetworkProxyConstraints,
-    pub(crate) layer_mtimes: Vec<LayerMtime>,
     pub(crate) cfg_path: PathBuf,
     pub(crate) blocked: VecDeque<BlockedRequest>,
 }
 
-#[derive(Clone)]
-pub(crate) struct LayerMtime {
-    pub(crate) path: PathBuf,
-    pub(crate) mtime: Option<SystemTime>,
+#[async_trait]
+pub(crate) trait ConfigReloader: Send + Sync {
+    /// Return a freshly loaded state if a reload is needed; otherwise, return `None`.
+    async fn maybe_reload(&self) -> Result<Option<ConfigState>>;
+
+    /// Force a reload, regardless of whether a change was detected.
+    async fn reload_now(&self) -> Result<ConfigState>;
 }
 
-impl LayerMtime {
-    pub(crate) fn new(path: PathBuf) -> Self {
-        let mtime = path.metadata().and_then(|m| m.modified()).ok();
-        Self { path, mtime }
-    }
-}
-
-#[derive(Clone)]
 pub struct NetworkProxyState {
     state: Arc<RwLock<ConfigState>>,
+    reloader: Arc<dyn ConfigReloader>,
 }
 
 impl std::fmt::Debug for NetworkProxyState {
@@ -131,12 +136,26 @@ impl std::fmt::Debug for NetworkProxyState {
     }
 }
 
+impl Clone for NetworkProxyState {
+    fn clone(&self) -> Self {
+        Self {
+            state: self.state.clone(),
+            reloader: self.reloader.clone(),
+        }
+    }
+}
+
 impl NetworkProxyState {
     pub async fn new() -> Result<Self> {
-        let cfg_state = build_config_state().await?;
-        Ok(Self {
-            state: Arc::new(RwLock::new(cfg_state)),
-        })
+        let (cfg_state, reloader) = build_default_config_state_and_reloader().await?;
+        Ok(Self::with_reloader(cfg_state, Arc::new(reloader)))
+    }
+
+    pub(crate) fn with_reloader(state: ConfigState, reloader: Arc<dyn ConfigReloader>) -> Self {
+        Self {
+            state: Arc::new(RwLock::new(state)),
+            reloader,
+        }
     }
 
     pub async fn current_cfg(&self) -> Result<NetworkProxyConfig> {
@@ -151,15 +170,15 @@ impl NetworkProxyState {
         self.reload_if_needed().await?;
         let guard = self.state.read().await;
         Ok((
-            guard.config.network_proxy.policy.allowed_domains.clone(),
-            guard.config.network_proxy.policy.denied_domains.clone(),
+            guard.config.network.allowed_domains.clone(),
+            guard.config.network.denied_domains.clone(),
         ))
     }
 
     pub async fn enabled(&self) -> Result<bool> {
         self.reload_if_needed().await?;
         let guard = self.state.read().await;
-        Ok(guard.config.network_proxy.enabled)
+        Ok(guard.config.network.enabled)
     }
 
     pub async fn force_reload(&self) -> Result<()> {
@@ -168,7 +187,7 @@ impl NetworkProxyState {
             (guard.config.clone(), guard.cfg_path.clone())
         };
 
-        match build_config_state().await {
+        match self.reloader.reload_now().await {
             Ok(mut new_state) => {
                 // Policy changes are operationally sensitive; logging diffs makes changes traceable
                 // without needing to dump full config blobs (which can include unrelated settings).
@@ -199,9 +218,9 @@ impl NetworkProxyState {
             (
                 guard.deny_set.clone(),
                 guard.allow_set.clone(),
-                guard.config.network_proxy.policy.allow_local_binding,
-                guard.config.network_proxy.policy.allowed_domains.is_empty(),
-                guard.config.network_proxy.policy.allowed_domains.clone(),
+                guard.config.network.allow_local_binding,
+                guard.config.network.allowed_domains.is_empty(),
+                guard.config.network.allowed_domains.clone(),
             )
         };
 
@@ -295,7 +314,7 @@ impl NetworkProxyState {
             Err(_) => return Ok(false),
         };
         let requested_canonical = std::fs::canonicalize(requested_abs.as_path()).ok();
-        for allowed in &guard.config.network_proxy.policy.allow_unix_sockets {
+        for allowed in &guard.config.network.allow_unix_sockets {
             if allowed == path {
                 return Ok(true);
             }
@@ -317,19 +336,19 @@ impl NetworkProxyState {
     pub async fn method_allowed(&self, method: &str) -> Result<bool> {
         self.reload_if_needed().await?;
         let guard = self.state.read().await;
-        Ok(guard.config.network_proxy.mode.allows_method(method))
+        Ok(guard.config.network.mode.allows_method(method))
     }
 
     pub async fn allow_upstream_proxy(&self) -> Result<bool> {
         self.reload_if_needed().await?;
         let guard = self.state.read().await;
-        Ok(guard.config.network_proxy.allow_upstream_proxy)
+        Ok(guard.config.network.allow_upstream_proxy)
     }
 
     pub async fn network_mode(&self) -> Result<NetworkMode> {
         self.reload_if_needed().await?;
         let guard = self.state.read().await;
-        Ok(guard.config.network_proxy.mode)
+        Ok(guard.config.network.mode)
     }
 
     pub async fn set_network_mode(&self, mode: NetworkMode) -> Result<()> {
@@ -338,43 +357,41 @@ impl NetworkProxyState {
             let (candidate, constraints) = {
                 let guard = self.state.read().await;
                 let mut candidate = guard.config.clone();
-                candidate.network_proxy.mode = mode;
+                candidate.network.mode = mode;
                 (candidate, guard.constraints.clone())
             };
 
             validate_policy_against_constraints(&candidate, &constraints)
-                .context("network_proxy.mode constrained by managed config")?;
+                .context("network.mode constrained by managed config")?;
 
             let mut guard = self.state.write().await;
             if guard.constraints != constraints {
                 drop(guard);
                 continue;
             }
-            guard.config.network_proxy.mode = mode;
+            guard.config.network.mode = mode;
             info!("updated network mode to {mode:?}");
             return Ok(());
         }
     }
 
     async fn reload_if_needed(&self) -> Result<()> {
-        let needs_reload = {
-            let guard = self.state.read().await;
-            guard.layer_mtimes.iter().any(|layer| {
-                let metadata = std::fs::metadata(&layer.path).ok();
-                match (metadata.and_then(|m| m.modified().ok()), layer.mtime) {
-                    (Some(new_mtime), Some(old_mtime)) => new_mtime > old_mtime,
-                    (Some(_), None) => true,
-                    (None, Some(_)) => true,
-                    (None, None) => false,
-                }
-            })
-        };
-
-        if !needs_reload {
-            return Ok(());
+        match self.reloader.maybe_reload().await? {
+            None => Ok(()),
+            Some(mut new_state) => {
+                let (previous_cfg, blocked) = {
+                    let guard = self.state.read().await;
+                    (guard.config.clone(), guard.blocked.clone())
+                };
+                log_policy_changes(&previous_cfg, &new_state.config);
+                new_state.blocked = blocked;
+                let mut guard = self.state.write().await;
+                *guard = new_state;
+                let path = guard.cfg_path.display();
+                info!("reloaded config from {path}");
+                Ok(())
+            }
         }
-
-        self.force_reload().await
     }
 }
 
@@ -407,13 +424,13 @@ async fn host_resolves_to_non_public_ip(host: &str, port: u16) -> bool {
 fn log_policy_changes(previous: &NetworkProxyConfig, next: &NetworkProxyConfig) {
     log_domain_list_changes(
         "allowlist",
-        &previous.network_proxy.policy.allowed_domains,
-        &next.network_proxy.policy.allowed_domains,
+        &previous.network.allowed_domains,
+        &next.network.allowed_domains,
     );
     log_domain_list_changes(
         "denylist",
-        &previous.network_proxy.policy.denied_domains,
-        &next.network_proxy.policy.denied_domains,
+        &previous.network.denied_domains,
+        &next.network.denied_domains,
     );
 }
 
@@ -473,34 +490,39 @@ fn unix_timestamp() -> i64 {
 
 #[cfg(test)]
 pub(crate) fn network_proxy_state_for_policy(
-    policy: crate::config::NetworkPolicy,
+    mut network: crate::config::NetworkProxySettings,
 ) -> NetworkProxyState {
-    let config = NetworkProxyConfig {
-        network_proxy: crate::config::NetworkProxySettings {
-            enabled: true,
-            mode: NetworkMode::Full,
-            policy,
-            ..crate::config::NetworkProxySettings::default()
-        },
-    };
+    network.enabled = true;
+    network.mode = NetworkMode::Full;
+    let config = NetworkProxyConfig { network };
 
-    let allow_set =
-        crate::policy::compile_globset(&config.network_proxy.policy.allowed_domains).unwrap();
-    let deny_set =
-        crate::policy::compile_globset(&config.network_proxy.policy.denied_domains).unwrap();
+    let allow_set = crate::policy::compile_globset(&config.network.allowed_domains).unwrap();
+    let deny_set = crate::policy::compile_globset(&config.network.denied_domains).unwrap();
 
     let state = ConfigState {
         config,
         allow_set,
         deny_set,
         constraints: NetworkProxyConstraints::default(),
-        layer_mtimes: Vec::new(),
         cfg_path: PathBuf::from("/nonexistent/config.toml"),
         blocked: VecDeque::new(),
     };
 
-    NetworkProxyState {
-        state: Arc::new(RwLock::new(state)),
+    NetworkProxyState::with_reloader(state, Arc::new(NoopReloader))
+}
+
+#[cfg(test)]
+struct NoopReloader;
+
+#[cfg(test)]
+#[async_trait]
+impl ConfigReloader for NoopReloader {
+    async fn maybe_reload(&self) -> Result<Option<ConfigState>> {
+        Ok(None)
+    }
+
+    async fn reload_now(&self) -> Result<ConfigState> {
+        Err(anyhow::anyhow!("force reload is not supported in tests"))
     }
 }
 
@@ -508,7 +530,6 @@ pub(crate) fn network_proxy_state_for_policy(
 mod tests {
     use super::*;
 
-    use crate::config::NetworkPolicy;
     use crate::config::NetworkProxyConfig;
     use crate::config::NetworkProxySettings;
     use crate::policy::compile_globset;
@@ -518,10 +539,10 @@ mod tests {
 
     #[tokio::test]
     async fn host_blocked_denied_wins_over_allowed() {
-        let state = network_proxy_state_for_policy(NetworkPolicy {
+        let state = network_proxy_state_for_policy(NetworkProxySettings {
             allowed_domains: vec!["example.com".to_string()],
             denied_domains: vec!["example.com".to_string()],
-            ..NetworkPolicy::default()
+            ..NetworkProxySettings::default()
         });
 
         assert_eq!(
@@ -532,9 +553,9 @@ mod tests {
 
     #[tokio::test]
     async fn host_blocked_requires_allowlist_match() {
-        let state = network_proxy_state_for_policy(NetworkPolicy {
+        let state = network_proxy_state_for_policy(NetworkProxySettings {
             allowed_domains: vec!["example.com".to_string()],
-            ..NetworkPolicy::default()
+            ..NetworkProxySettings::default()
         });
 
         assert_eq!(
@@ -551,9 +572,9 @@ mod tests {
 
     #[tokio::test]
     async fn host_blocked_subdomain_wildcards_exclude_apex() {
-        let state = network_proxy_state_for_policy(NetworkPolicy {
+        let state = network_proxy_state_for_policy(NetworkProxySettings {
             allowed_domains: vec!["*.openai.com".to_string()],
-            ..NetworkPolicy::default()
+            ..NetworkProxySettings::default()
         });
 
         assert_eq!(
@@ -568,10 +589,10 @@ mod tests {
 
     #[tokio::test]
     async fn host_blocked_rejects_loopback_when_local_binding_disabled() {
-        let state = network_proxy_state_for_policy(NetworkPolicy {
+        let state = network_proxy_state_for_policy(NetworkProxySettings {
             allowed_domains: vec!["example.com".to_string()],
             allow_local_binding: false,
-            ..NetworkPolicy::default()
+            ..NetworkProxySettings::default()
         });
 
         assert_eq!(
@@ -586,10 +607,10 @@ mod tests {
 
     #[tokio::test]
     async fn host_blocked_rejects_loopback_when_allowlist_is_wildcard() {
-        let state = network_proxy_state_for_policy(NetworkPolicy {
+        let state = network_proxy_state_for_policy(NetworkProxySettings {
             allowed_domains: vec!["*".to_string()],
             allow_local_binding: false,
-            ..NetworkPolicy::default()
+            ..NetworkProxySettings::default()
         });
 
         assert_eq!(
@@ -600,10 +621,10 @@ mod tests {
 
     #[tokio::test]
     async fn host_blocked_rejects_private_ip_literal_when_allowlist_is_wildcard() {
-        let state = network_proxy_state_for_policy(NetworkPolicy {
+        let state = network_proxy_state_for_policy(NetworkProxySettings {
             allowed_domains: vec!["*".to_string()],
             allow_local_binding: false,
-            ..NetworkPolicy::default()
+            ..NetworkProxySettings::default()
         });
 
         assert_eq!(
@@ -614,10 +635,10 @@ mod tests {
 
     #[tokio::test]
     async fn host_blocked_allows_loopback_when_explicitly_allowlisted_and_local_binding_disabled() {
-        let state = network_proxy_state_for_policy(NetworkPolicy {
+        let state = network_proxy_state_for_policy(NetworkProxySettings {
             allowed_domains: vec!["localhost".to_string()],
             allow_local_binding: false,
-            ..NetworkPolicy::default()
+            ..NetworkProxySettings::default()
         });
 
         assert_eq!(
@@ -628,10 +649,10 @@ mod tests {
 
     #[tokio::test]
     async fn host_blocked_allows_private_ip_literal_when_explicitly_allowlisted() {
-        let state = network_proxy_state_for_policy(NetworkPolicy {
+        let state = network_proxy_state_for_policy(NetworkProxySettings {
             allowed_domains: vec!["10.0.0.1".to_string()],
             allow_local_binding: false,
-            ..NetworkPolicy::default()
+            ..NetworkProxySettings::default()
         });
 
         assert_eq!(
@@ -642,10 +663,10 @@ mod tests {
 
     #[tokio::test]
     async fn host_blocked_rejects_scoped_ipv6_literal_when_not_allowlisted() {
-        let state = network_proxy_state_for_policy(NetworkPolicy {
+        let state = network_proxy_state_for_policy(NetworkProxySettings {
             allowed_domains: vec!["example.com".to_string()],
             allow_local_binding: false,
-            ..NetworkPolicy::default()
+            ..NetworkProxySettings::default()
         });
 
         assert_eq!(
@@ -656,10 +677,10 @@ mod tests {
 
     #[tokio::test]
     async fn host_blocked_allows_scoped_ipv6_literal_when_explicitly_allowlisted() {
-        let state = network_proxy_state_for_policy(NetworkPolicy {
+        let state = network_proxy_state_for_policy(NetworkProxySettings {
             allowed_domains: vec!["fe80::1%lo0".to_string()],
             allow_local_binding: false,
-            ..NetworkPolicy::default()
+            ..NetworkProxySettings::default()
         });
 
         assert_eq!(
@@ -670,10 +691,10 @@ mod tests {
 
     #[tokio::test]
     async fn host_blocked_rejects_private_ip_literals_when_local_binding_disabled() {
-        let state = network_proxy_state_for_policy(NetworkPolicy {
+        let state = network_proxy_state_for_policy(NetworkProxySettings {
             allowed_domains: vec!["example.com".to_string()],
             allow_local_binding: false,
-            ..NetworkPolicy::default()
+            ..NetworkProxySettings::default()
         });
 
         assert_eq!(
@@ -684,10 +705,10 @@ mod tests {
 
     #[tokio::test]
     async fn host_blocked_rejects_loopback_when_allowlist_empty() {
-        let state = network_proxy_state_for_policy(NetworkPolicy {
+        let state = network_proxy_state_for_policy(NetworkProxySettings {
             allowed_domains: vec![],
             allow_local_binding: false,
-            ..NetworkPolicy::default()
+            ..NetworkProxySettings::default()
         });
 
         assert_eq!(
@@ -704,12 +725,9 @@ mod tests {
         };
 
         let config = NetworkProxyConfig {
-            network_proxy: NetworkProxySettings {
+            network: NetworkProxySettings {
                 enabled: true,
-                policy: NetworkPolicy {
-                    allowed_domains: vec!["example.com".to_string(), "evil.com".to_string()],
-                    ..NetworkPolicy::default()
-                },
+                allowed_domains: vec!["example.com".to_string(), "evil.com".to_string()],
                 ..NetworkProxySettings::default()
             },
         };
@@ -725,7 +743,7 @@ mod tests {
         };
 
         let config = NetworkProxyConfig {
-            network_proxy: NetworkProxySettings {
+            network: NetworkProxySettings {
                 enabled: true,
                 mode: NetworkMode::Full,
                 ..NetworkProxySettings::default()
@@ -743,12 +761,9 @@ mod tests {
         };
 
         let config = NetworkProxyConfig {
-            network_proxy: NetworkProxySettings {
+            network: NetworkProxySettings {
                 enabled: true,
-                policy: NetworkPolicy {
-                    allowed_domains: vec!["api.example.com".to_string()],
-                    ..NetworkPolicy::default()
-                },
+                allowed_domains: vec!["api.example.com".to_string()],
                 ..NetworkProxySettings::default()
             },
         };
@@ -764,12 +779,9 @@ mod tests {
         };
 
         let config = NetworkProxyConfig {
-            network_proxy: NetworkProxySettings {
+            network: NetworkProxySettings {
                 enabled: true,
-                policy: NetworkPolicy {
-                    allowed_domains: vec!["**.example.com".to_string()],
-                    ..NetworkPolicy::default()
-                },
+                allowed_domains: vec!["**.example.com".to_string()],
                 ..NetworkProxySettings::default()
             },
         };
@@ -785,12 +797,9 @@ mod tests {
         };
 
         let config = NetworkProxyConfig {
-            network_proxy: NetworkProxySettings {
+            network: NetworkProxySettings {
                 enabled: true,
-                policy: NetworkPolicy {
-                    denied_domains: vec![],
-                    ..NetworkPolicy::default()
-                },
+                denied_domains: vec![],
                 ..NetworkProxySettings::default()
             },
         };
@@ -806,7 +815,7 @@ mod tests {
         };
 
         let config = NetworkProxyConfig {
-            network_proxy: NetworkProxySettings {
+            network: NetworkProxySettings {
                 enabled: true,
                 ..NetworkProxySettings::default()
             },
@@ -823,12 +832,9 @@ mod tests {
         };
 
         let config = NetworkProxyConfig {
-            network_proxy: NetworkProxySettings {
+            network: NetworkProxySettings {
                 enabled: true,
-                policy: NetworkPolicy {
-                    allow_local_binding: true,
-                    ..NetworkPolicy::default()
-                },
+                allow_local_binding: true,
                 ..NetworkProxySettings::default()
             },
         };
@@ -844,7 +850,7 @@ mod tests {
         };
 
         let config = NetworkProxyConfig {
-            network_proxy: NetworkProxySettings {
+            network: NetworkProxySettings {
                 enabled: true,
                 dangerously_allow_non_loopback_admin: true,
                 ..NetworkProxySettings::default()
@@ -862,7 +868,7 @@ mod tests {
         };
 
         let config = NetworkProxyConfig {
-            network_proxy: NetworkProxySettings {
+            network: NetworkProxySettings {
                 enabled: true,
                 dangerously_allow_non_loopback_admin: true,
                 ..NetworkProxySettings::default()
@@ -925,10 +931,10 @@ mod tests {
     #[tokio::test]
     async fn unix_socket_allowlist_is_respected_on_macos() {
         let socket_path = "/tmp/example.sock".to_string();
-        let state = network_proxy_state_for_policy(NetworkPolicy {
+        let state = network_proxy_state_for_policy(NetworkProxySettings {
             allowed_domains: vec!["example.com".to_string()],
             allow_unix_sockets: vec![socket_path.clone()],
-            ..NetworkPolicy::default()
+            ..NetworkProxySettings::default()
         });
 
         assert!(state.is_unix_socket_allowed(&socket_path).await.unwrap());
@@ -960,10 +966,10 @@ mod tests {
         let real_s = real.to_str().unwrap().to_string();
         let link_s = link.to_str().unwrap().to_string();
 
-        let state = network_proxy_state_for_policy(NetworkPolicy {
+        let state = network_proxy_state_for_policy(NetworkProxySettings {
             allowed_domains: vec!["example.com".to_string()],
             allow_unix_sockets: vec![real_s],
-            ..NetworkPolicy::default()
+            ..NetworkProxySettings::default()
         });
 
         assert!(state.is_unix_socket_allowed(&link_s).await.unwrap());
@@ -973,10 +979,10 @@ mod tests {
     #[tokio::test]
     async fn unix_socket_allowlist_is_rejected_on_non_macos() {
         let socket_path = "/tmp/example.sock".to_string();
-        let state = network_proxy_state_for_policy(NetworkPolicy {
+        let state = network_proxy_state_for_policy(NetworkProxySettings {
             allowed_domains: vec!["example.com".to_string()],
             allow_unix_sockets: vec![socket_path.clone()],
-            ..NetworkPolicy::default()
+            ..NetworkProxySettings::default()
         });
 
         assert!(!state.is_unix_socket_allowed(&socket_path).await.unwrap());

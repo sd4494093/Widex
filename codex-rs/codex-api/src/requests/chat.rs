@@ -255,7 +255,6 @@ fn push_tool_call_message(messages: &mut Vec<Value>, tool_call: Value) {
 mod tests {
     use super::*;
     use crate::provider::RetryConfig;
-    use crate::provider::WireApi;
     use codex_protocol::models::FunctionCallOutputPayload;
     use codex_protocol::protocol::SessionSource;
     use codex_protocol::protocol::SubAgentSource;
@@ -268,7 +267,6 @@ mod tests {
             name: "openai".to_string(),
             base_url: "https://api.openai.com/v1".to_string(),
             query_params: None,
-            wire: WireApi::Chat,
             headers: HeaderMap::new(),
             retry: RetryConfig {
                 max_attempts: 1,
