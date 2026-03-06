@@ -236,6 +236,14 @@ git fetch upstream && git fetch origin
   - Ralph Widex 是否仍能在当前会话里前台工作
   - model picker / slash command / onboarding 是否还保留 Widex 行为
 
+### 6.3.1 版本号同步要求
+
+- `widex` 启动页和 `widex --version` 使用的是 Rust workspace 版本，也就是 `codex-rs/Cargo.toml` 里的 `[workspace.package].version`
+- 上游仓库源码里这个值经常保持 `0.0.0`，因为官方 release 流水线会在发布时再注入正式版本
+- 但 Widex 是长期运行源码构建版，所以**每次完成一次 upstream 对齐后，都应把这个版本手工更新为本次对齐的 Codex 版本**
+- 这样你们一眼就能看出：当前 Widex 对齐到哪个 upstream 版本、是否落后，以及 TUI 里的 update 提示是否真的有意义
+- 本次 2026-03-06 升级后，Widex 版本已对齐为 `0.111.0`
+
 ### 6.4 验证优先级
 
 推荐按下面顺序验证：

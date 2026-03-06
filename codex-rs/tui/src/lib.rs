@@ -589,7 +589,7 @@ async fn run_ratatui_app(
             session_log::log_session_end();
             let _ = tui.terminal.clear();
             return Ok(AppExitInfo {
-                token_usage: codex_core::protocol::TokenUsage::default(),
+                token_usage: codex_protocol::protocol::TokenUsage::default(),
                 thread_id: None,
                 thread_name: None,
                 update_action: None,

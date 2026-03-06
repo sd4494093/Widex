@@ -2582,6 +2582,7 @@ impl App {
                     model_provider_id: provider_id.clone(),
                     effort: Some(effort),
                     summary: None,
+                    service_tier: None,
                     collaboration_mode: None,
                     personality: None,
                 });

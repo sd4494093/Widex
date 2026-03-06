@@ -4275,11 +4275,8 @@ impl ChatWidget {
                 if self.active_mode_kind() != ModeKind::Plan {
                     return;
                 }
-                let Some((prepared_args, prepared_elements)) =
-                    self.bottom_pane.prepare_inline_args_submission(true)
-                else {
-                    return;
-                };
+                let prepared_args = args;
+                let prepared_elements = text_elements;
                 let local_images = self
                     .bottom_pane
                     .take_recent_submission_images_with_placeholders();
@@ -4314,11 +4311,7 @@ impl ChatWidget {
                 self.bottom_pane.drain_pending_submission_state();
             }
             SlashCommand::SandboxReadRoot if !trimmed.is_empty() => {
-                let Some((prepared_args, _prepared_elements)) =
-                    self.bottom_pane.prepare_inline_args_submission(false)
-                else {
-                    return;
-                };
+                let prepared_args = args;
                 self.app_event_tx
                     .send(AppEvent::BeginWindowsSandboxGrantReadRoot {
                         path: prepared_args,
