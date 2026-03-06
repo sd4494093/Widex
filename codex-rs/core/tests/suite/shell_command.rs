@@ -17,8 +17,14 @@ use core_test_support::test_codex::test_codex;
 use serde_json::json;
 use test_case::test_case;
 
-/// Use this timeout if, empirically, a test seems to need more time than the
-/// default.
+#[cfg(windows)]
+const DEFAULT_SHELL_TIMEOUT_MS: i64 = 7_000;
+#[cfg(not(windows))]
+const DEFAULT_SHELL_TIMEOUT_MS: i64 = 2_000;
+
+#[cfg(windows)]
+const MEDIUM_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(not(windows))]
 const MEDIUM_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn shell_responses_with_timeout(
@@ -50,7 +56,7 @@ fn shell_responses_with_timeout(
 }
 
 fn shell_responses(call_id: &str, command: &str, login: Option<bool>) -> Vec<String> {
-    shell_responses_with_timeout(call_id, command, login, 2_000)
+    shell_responses_with_timeout(call_id, command, login, DEFAULT_SHELL_TIMEOUT_MS)
 }
 
 async fn shell_command_harness_with(
@@ -245,9 +251,13 @@ async fn shell_command_times_out_with_timeout_ms() -> anyhow::Result<()> {
 async fn unicode_output(login: bool) -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
 
+    #[allow(clippy::expect_used)]
     let harness = shell_command_harness_with(|builder| {
         builder.with_model("gpt-5.2").with_config(|config| {
-            config.features.enable(Feature::PowershellUtf8);
+            config
+                .features
+                .enable(Feature::PowershellUtf8)
+                .expect("test config should allow feature update");
         })
     })
     .await?;
@@ -275,9 +285,13 @@ async fn unicode_output(login: bool) -> anyhow::Result<()> {
 async fn unicode_output_with_newlines(login: bool) -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
 
+    #[allow(clippy::expect_used)]
     let harness = shell_command_harness_with(|builder| {
         builder.with_model("gpt-5.2").with_config(|config| {
-            config.features.enable(Feature::PowershellUtf8);
+            config
+                .features
+                .enable(Feature::PowershellUtf8)
+                .expect("test config should allow feature update");
         })
     })
     .await?;

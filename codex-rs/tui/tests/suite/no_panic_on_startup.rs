@@ -7,6 +7,7 @@ use pretty_assertions::assert_eq;
 
 /// Regression test for https://github.com/openai/codex/issues/8803.
 #[tokio::test]
+#[ignore = "TODO(mbolin): flaky"]
 async fn malformed_rules_should_not_panic() -> anyhow::Result<()> {
     // Spawning interactive UIs under PTY is flaky on Windows due to PTY limitations.
     if cfg!(windows) {

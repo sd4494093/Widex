@@ -1,20 +1,21 @@
 use super::LoaderOverrides;
 use super::load_config_layers_state;
-use crate::config::CONFIG_TOML_FILE;
 use crate::config::ConfigBuilder;
 use crate::config::ConfigOverrides;
 use crate::config::ConfigToml;
 use crate::config::ConstraintError;
 use crate::config::ProjectConfig;
+use crate::config_loader::CloudRequirementsLoadError;
 use crate::config_loader::CloudRequirementsLoader;
 use crate::config_loader::ConfigLayerEntry;
 use crate::config_loader::ConfigLoadError;
 use crate::config_loader::ConfigRequirements;
 use crate::config_loader::ConfigRequirementsToml;
-use crate::config_loader::config_requirements::ConfigRequirementsWithSources;
-use crate::config_loader::config_requirements::RequirementSource;
-use crate::config_loader::fingerprint::version_for_toml;
+use crate::config_loader::ConfigRequirementsWithSources;
+use crate::config_loader::RequirementSource;
 use crate::config_loader::load_requirements_toml;
+use crate::config_loader::version_for_toml;
+use codex_config::CONFIG_TOML_FILE;
 use codex_protocol::config_types::TrustLevel;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::protocol::AskForApproval;
@@ -22,6 +23,7 @@ use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::Path;
 use tempfile::tempdir;
@@ -153,7 +155,7 @@ async fn returns_config_error_for_schema_error_in_user_config() {
     let config_error = config_error_from_io(&err);
     let _guard = codex_utils_absolute_path::AbsolutePathBufGuard::new(tmp.path());
     let expected_config_error =
-        super::diagnostics::config_error_from_config_toml(&config_path, contents)
+        codex_config::config_error_from_typed_toml::<ConfigToml>(&config_path, contents)
             .expect("schema error");
     assert_eq!(config_error, &expected_config_error);
 }
@@ -166,7 +168,7 @@ fn schema_error_points_to_feature_value() {
     std::fs::write(&config_path, contents).expect("write config");
 
     let _guard = codex_utils_absolute_path::AbsolutePathBufGuard::new(tmp.path());
-    let error = super::diagnostics::config_error_from_config_toml(&config_path, contents)
+    let error = codex_config::config_error_from_typed_toml::<ConfigToml>(&config_path, contents)
         .expect("schema error");
 
     let value_line = contents.lines().nth(1).expect("value line");
@@ -240,7 +242,9 @@ async fn returns_empty_when_all_layers_missing() {
     let overrides = LoaderOverrides {
         managed_config_path: Some(managed_path),
         #[cfg(target_os = "macos")]
-        managed_preferences_base64: None,
+        // Force managed preferences to resolve as empty so this test does not
+        // inherit non-empty machine-specific managed state.
+        managed_preferences_base64: Some(String::new()),
         macos_managed_config_requirements_base64: None,
     };
 
@@ -264,6 +268,7 @@ async fn returns_empty_when_all_layers_missing() {
                     .expect("resolve user config.toml path")
             },
             config: TomlValue::Table(toml::map::Map::new()),
+            raw_toml: None,
             version: version_for_toml(&TomlValue::Table(toml::map::Map::new())),
             disabled_reason: None,
         },
@@ -286,10 +291,9 @@ async fn returns_empty_when_all_layers_missing() {
         .iter()
         .filter(|layer| matches!(layer.name, super::ConfigLayerSource::System { .. }))
         .count();
-    let expected_system_layers = if cfg!(unix) { 1 } else { 0 };
     assert_eq!(
-        num_system_layers, expected_system_layers,
-        "system layer should be present only on unix"
+        num_system_layers, 1,
+        "system layer should always be present"
     );
 
     #[cfg(not(target_os = "macos"))]
@@ -326,18 +330,17 @@ flag = true
 "#,
     )
     .expect("write managed config");
+    let raw_managed_preferences = r#"
+# managed profile
+[nested]
+value = "managed"
+flag = false
+"#;
 
     let overrides = LoaderOverrides {
         managed_config_path: Some(managed_path),
         managed_preferences_base64: Some(
-            base64::prelude::BASE64_STANDARD.encode(
-                r#"
-[nested]
-value = "managed"
-flag = false
-"#
-                .as_bytes(),
-            ),
+            base64::prelude::BASE64_STANDARD.encode(raw_managed_preferences.as_bytes()),
         ),
         macos_managed_config_requirements_base64: None,
     };
@@ -362,6 +365,19 @@ flag = false
         Some(&TomlValue::String("managed".to_string()))
     );
     assert_eq!(nested.get("flag"), Some(&TomlValue::Boolean(false)));
+    let mdm_layer = state
+        .layers_high_to_low()
+        .into_iter()
+        .find(|layer| {
+            matches!(
+                layer.name,
+                super::ConfigLayerSource::LegacyManagedConfigTomlFromMdm
+            )
+        })
+        .expect("mdm layer");
+    let raw = mdm_layer.raw_toml().expect("preserved mdm toml");
+    assert!(raw.contains("# managed profile"));
+    assert!(raw.contains("value = \"managed\""));
 }
 
 #[cfg(target_os = "macos")]
@@ -398,7 +414,7 @@ allowed_sandbox_modes = ["read-only"]
     );
     assert_eq!(
         *state.requirements().sandbox_policy.get(),
-        SandboxPolicy::ReadOnly
+        SandboxPolicy::new_read_only_policy()
     );
     assert!(
         state
@@ -413,6 +429,7 @@ allowed_sandbox_modes = ["read-only"]
             .sandbox_policy
             .can_set(&SandboxPolicy::WorkspaceWrite {
                 writable_roots: Vec::new(),
+                read_only_access: Default::default(),
                 network_access: false,
                 exclude_tmpdir_env_var: false,
                 exclude_slash_tmp: false,
@@ -478,6 +495,9 @@ async fn load_requirements_toml_produces_expected_constraints() -> anyhow::Resul
 allowed_approval_policies = ["never", "on-request"]
 allowed_web_search_modes = ["cached"]
 enforce_residency = "us"
+
+[features]
+personality = true
 "#,
     )
     .await?;
@@ -498,6 +518,15 @@ enforce_residency = "us"
             .as_deref()
             .cloned(),
         Some(vec![crate::config_loader::WebSearchModeRequirement::Cached])
+    );
+    assert_eq!(
+        config_requirements_toml
+            .feature_requirements
+            .as_ref()
+            .map(|requirements| requirements.value.clone()),
+        Some(crate::config_loader::FeatureRequirementsToml {
+            entries: BTreeMap::from([("personality".to_string(), true)]),
+        })
     );
     let config_requirements: ConfigRequirements = config_requirements_toml.try_into()?;
     assert_eq!(
@@ -536,6 +565,15 @@ enforce_residency = "us"
         config_requirements.enforce_residency.value(),
         Some(crate::config_loader::ResidencyRequirement::Us)
     );
+    assert_eq!(
+        config_requirements
+            .feature_requirements
+            .as_ref()
+            .map(|requirements| requirements.value.clone()),
+        Some(crate::config_loader::FeatureRequirementsToml {
+            entries: BTreeMap::from([("personality".to_string(), true)]),
+        })
+    );
     Ok(())
 }
 
@@ -561,15 +599,16 @@ allowed_approval_policies = ["on-request"]
             ..LoaderOverrides::default()
         },
         CloudRequirementsLoader::new(async {
-            Some(ConfigRequirementsToml {
+            Ok(Some(ConfigRequirementsToml {
                 allowed_approval_policies: Some(vec![AskForApproval::Never]),
                 allowed_sandbox_modes: None,
                 allowed_web_search_modes: None,
+                feature_requirements: None,
                 mcp_servers: None,
                 rules: None,
                 enforce_residency: None,
                 network: None,
-            })
+            }))
         }),
     )
     .await?;
@@ -613,6 +652,7 @@ allowed_approval_policies = ["on-request"]
             allowed_approval_policies: Some(vec![AskForApproval::Never]),
             allowed_sandbox_modes: None,
             allowed_web_search_modes: None,
+            feature_requirements: None,
             mcp_servers: None,
             rules: None,
             enforce_residency: None,
@@ -650,13 +690,14 @@ async fn load_config_layers_includes_cloud_requirements() -> anyhow::Result<()> 
         allowed_approval_policies: Some(vec![AskForApproval::Never]),
         allowed_sandbox_modes: None,
         allowed_web_search_modes: None,
+        feature_requirements: None,
         mcp_servers: None,
         rules: None,
         enforce_residency: None,
         network: None,
     };
     let expected = requirements.clone();
-    let cloud_requirements = CloudRequirementsLoader::new(async move { Some(requirements) });
+    let cloud_requirements = CloudRequirementsLoader::new(async move { Ok(Some(requirements)) });
 
     let layers = load_config_layers_state(
         &codex_home,
@@ -683,6 +724,31 @@ async fn load_config_layers_includes_cloud_requirements() -> anyhow::Result<()> 
             requirement_source: RequirementSource::CloudRequirements,
         })
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_layers_fails_when_cloud_requirements_loader_fails() -> anyhow::Result<()> {
+    let tmp = tempdir()?;
+    let codex_home = tmp.path().join("home");
+    tokio::fs::create_dir_all(&codex_home).await?;
+    let cwd = AbsolutePathBuf::from_absolute_path(tmp.path())?;
+
+    let err = load_config_layers_state(
+        &codex_home,
+        Some(cwd),
+        &[] as &[(String, TomlValue)],
+        LoaderOverrides::default(),
+        CloudRequirementsLoader::new(async {
+            Err(CloudRequirementsLoadError::new("cloud requirements failed"))
+        }),
+    )
+    .await
+    .expect_err("cloud requirements failure should fail closed");
+
+    assert_eq!(err.kind(), std::io::ErrorKind::Other);
+    assert!(err.to_string().contains("cloud requirements failed"));
 
     Ok(())
 }
@@ -863,6 +929,7 @@ async fn project_layer_is_added_when_dot_codex_exists_without_config_toml() -> s
                 dot_codex_folder: AbsolutePathBuf::from_absolute_path(project_root.join(".codex"))?,
             },
             config: TomlValue::Table(toml::map::Map::new()),
+            raw_toml: None,
             version: version_for_toml(&TomlValue::Table(toml::map::Map::new())),
             disabled_reason: None,
         }],
@@ -956,6 +1023,7 @@ async fn codex_home_within_project_tree_is_not_double_loaded() -> std::io::Resul
                 dot_codex_folder: AbsolutePathBuf::from_absolute_path(&nested_dot_codex)?,
             },
             config: child_config.clone(),
+            raw_toml: None,
             version: version_for_toml(&child_config),
             disabled_reason: None,
         }],
@@ -1066,6 +1134,91 @@ async fn project_layers_disabled_when_untrusted_or_unknown() -> std::io::Result<
     assert_eq!(
         layers_unknown.effective_config().get("foo"),
         Some(&TomlValue::String("user".to_string()))
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn cli_override_can_update_project_local_mcp_server_when_project_is_trusted()
+-> std::io::Result<()> {
+    let tmp = tempdir()?;
+    let project_root = tmp.path().join("project");
+    let nested = project_root.join("child");
+    let dot_codex = project_root.join(".codex");
+    let codex_home = tmp.path().join("home");
+    tokio::fs::create_dir_all(&nested).await?;
+    tokio::fs::create_dir_all(&dot_codex).await?;
+    tokio::fs::create_dir_all(&codex_home).await?;
+    tokio::fs::write(project_root.join(".git"), "gitdir: here").await?;
+    tokio::fs::write(
+        dot_codex.join(CONFIG_TOML_FILE),
+        r#"
+[mcp_servers.sentry]
+url = "https://mcp.sentry.dev/mcp"
+enabled = false
+"#,
+    )
+    .await?;
+    make_config_for_test(&codex_home, &project_root, TrustLevel::Trusted, None).await?;
+
+    let config = ConfigBuilder::default()
+        .codex_home(codex_home)
+        .cli_overrides(vec![(
+            "mcp_servers.sentry.enabled".to_string(),
+            TomlValue::Boolean(true),
+        )])
+        .fallback_cwd(Some(nested))
+        .build()
+        .await?;
+
+    let server = config
+        .mcp_servers
+        .get()
+        .get("sentry")
+        .expect("trusted project MCP server should load");
+    assert!(server.enabled);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn cli_override_for_disabled_project_local_mcp_server_returns_invalid_transport()
+-> std::io::Result<()> {
+    let tmp = tempdir()?;
+    let project_root = tmp.path().join("project");
+    let nested = project_root.join("child");
+    let dot_codex = project_root.join(".codex");
+    let codex_home = tmp.path().join("home");
+    tokio::fs::create_dir_all(&nested).await?;
+    tokio::fs::create_dir_all(&dot_codex).await?;
+    tokio::fs::create_dir_all(&codex_home).await?;
+    tokio::fs::write(project_root.join(".git"), "gitdir: here").await?;
+    tokio::fs::write(
+        dot_codex.join(CONFIG_TOML_FILE),
+        r#"
+[mcp_servers.sentry]
+url = "https://mcp.sentry.dev/mcp"
+enabled = false
+"#,
+    )
+    .await?;
+
+    let err = ConfigBuilder::default()
+        .codex_home(codex_home)
+        .cli_overrides(vec![(
+            "mcp_servers.sentry.enabled".to_string(),
+            TomlValue::Boolean(true),
+        )])
+        .fallback_cwd(Some(nested))
+        .build()
+        .await
+        .expect_err("untrusted project layer should not provide MCP transport");
+
+    assert!(
+        err.to_string().contains("invalid transport")
+            && err.to_string().contains("mcp_servers.sentry"),
+        "unexpected error: {err}"
     );
 
     Ok(())
@@ -1232,19 +1385,19 @@ async fn project_root_markers_supports_alternate_markers() -> std::io::Result<()
 }
 
 mod requirements_exec_policy_tests {
-    use super::super::config_requirements::ConfigRequirementsWithSources;
-    use super::super::requirements_exec_policy::RequirementsExecPolicyDecisionToml;
-    use super::super::requirements_exec_policy::RequirementsExecPolicyParseError;
-    use super::super::requirements_exec_policy::RequirementsExecPolicyPatternTokenToml;
-    use super::super::requirements_exec_policy::RequirementsExecPolicyPrefixRuleToml;
-    use super::super::requirements_exec_policy::RequirementsExecPolicyToml;
     use crate::config_loader::ConfigLayerEntry;
     use crate::config_loader::ConfigLayerStack;
     use crate::config_loader::ConfigRequirements;
     use crate::config_loader::ConfigRequirementsToml;
+    use crate::config_loader::ConfigRequirementsWithSources;
     use crate::config_loader::RequirementSource;
     use crate::exec_policy::load_exec_policy;
     use codex_app_server_protocol::ConfigLayerSource;
+    use codex_config::RequirementsExecPolicyDecisionToml;
+    use codex_config::RequirementsExecPolicyParseError;
+    use codex_config::RequirementsExecPolicyPatternTokenToml;
+    use codex_config::RequirementsExecPolicyPrefixRuleToml;
+    use codex_config::RequirementsExecPolicyToml;
     use codex_execpolicy::Decision;
     use codex_execpolicy::Evaluation;
     use codex_execpolicy::RuleMatch;
@@ -1373,6 +1526,7 @@ prefix_rules = [
                 matched_rules: vec![RuleMatch::PrefixRuleMatch {
                     matched_prefix: tokens(&["rm"]),
                     decision: Decision::Forbidden,
+                    resolved_program: None,
                     justification: None,
                 }],
             }
@@ -1398,6 +1552,7 @@ prefix_rules = [
                 matched_rules: vec![RuleMatch::PrefixRuleMatch {
                     matched_prefix: tokens(&["git", "status"]),
                     decision: Decision::Prompt,
+                    resolved_program: None,
                     justification: None,
                 }],
             }
@@ -1409,6 +1564,7 @@ prefix_rules = [
                 matched_rules: vec![RuleMatch::PrefixRuleMatch {
                     matched_prefix: tokens(&["hg", "status"]),
                     decision: Decision::Prompt,
+                    resolved_program: None,
                     justification: None,
                 }],
             }
@@ -1492,6 +1648,7 @@ prefix_rules = []
                 matched_rules: vec![RuleMatch::PrefixRuleMatch {
                     matched_prefix: vec!["rm".to_string()],
                     decision: Decision::Forbidden,
+                    resolved_program: None,
                     justification: None,
                 }],
             }
@@ -1530,6 +1687,7 @@ prefix_rules = []
                 matched_rules: vec![RuleMatch::PrefixRuleMatch {
                     matched_prefix: vec!["rm".to_string()],
                     decision: Decision::Forbidden,
+                    resolved_program: None,
                     justification: None,
                 }],
             }
@@ -1544,6 +1702,7 @@ prefix_rules = []
                 matched_rules: vec![RuleMatch::PrefixRuleMatch {
                     matched_prefix: vec!["git".to_string(), "push".to_string()],
                     decision: Decision::Prompt,
+                    resolved_program: None,
                     justification: None,
                 }],
             }

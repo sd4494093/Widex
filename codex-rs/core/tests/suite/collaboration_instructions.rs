@@ -1,11 +1,11 @@
 use anyhow::Result;
-use codex_core::protocol::COLLABORATION_MODE_CLOSE_TAG;
-use codex_core::protocol::COLLABORATION_MODE_OPEN_TAG;
-use codex_core::protocol::EventMsg;
-use codex_core::protocol::Op;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
+use codex_protocol::protocol::COLLABORATION_MODE_CLOSE_TAG;
+use codex_protocol::protocol::COLLABORATION_MODE_OPEN_TAG;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::Op;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_response_created;
@@ -120,6 +120,7 @@ async fn user_input_includes_collaboration_instructions_after_override() -> Resu
             model_provider_id: None,
             effort: None,
             summary: None,
+            service_tier: None,
             collaboration_mode: Some(collaboration_mode),
             personality: None,
         })
@@ -166,11 +167,16 @@ async fn collaboration_instructions_added_on_user_turn() -> Result<()> {
                 text_elements: Vec::new(),
             }],
             cwd: test.config.cwd.clone(),
-            approval_policy: test.config.approval_policy.value(),
-            sandbox_policy: test.config.sandbox_policy.get().clone(),
+            approval_policy: test.config.permissions.approval_policy.value(),
+            sandbox_policy: test.config.permissions.sandbox_policy.get().clone(),
             model: test.session_configured.model.clone(),
             effort: None,
-            summary: test.config.model_reasoning_summary,
+            summary: Some(
+                test.config
+                    .model_reasoning_summary
+                    .unwrap_or(codex_protocol::config_types::ReasoningSummary::Auto),
+            ),
+            service_tier: None,
             collaboration_mode: Some(collaboration_mode),
             final_output_json_schema: None,
             personality: None,
@@ -211,6 +217,7 @@ async fn override_then_next_turn_uses_updated_collaboration_instructions() -> Re
             model_provider_id: None,
             effort: None,
             summary: None,
+            service_tier: None,
             collaboration_mode: Some(collaboration_mode),
             personality: None,
         })
@@ -262,6 +269,7 @@ async fn user_turn_overrides_collaboration_instructions_after_override() -> Resu
             model_provider_id: None,
             effort: None,
             summary: None,
+            service_tier: None,
             collaboration_mode: Some(base_mode),
             personality: None,
         })
@@ -274,11 +282,16 @@ async fn user_turn_overrides_collaboration_instructions_after_override() -> Resu
                 text_elements: Vec::new(),
             }],
             cwd: test.config.cwd.clone(),
-            approval_policy: test.config.approval_policy.value(),
-            sandbox_policy: test.config.sandbox_policy.get().clone(),
+            approval_policy: test.config.permissions.approval_policy.value(),
+            sandbox_policy: test.config.permissions.sandbox_policy.get().clone(),
             model: test.session_configured.model.clone(),
             effort: None,
-            summary: test.config.model_reasoning_summary,
+            summary: Some(
+                test.config
+                    .model_reasoning_summary
+                    .unwrap_or(codex_protocol::config_types::ReasoningSummary::Auto),
+            ),
+            service_tier: None,
             collaboration_mode: Some(turn_mode),
             final_output_json_schema: None,
             personality: None,
@@ -326,6 +339,7 @@ async fn collaboration_mode_update_emits_new_instruction_message() -> Result<()>
             model_provider_id: None,
             effort: None,
             summary: None,
+            service_tier: None,
             collaboration_mode: Some(collab_mode_with_instructions(Some(first_text))),
             personality: None,
         })
@@ -352,6 +366,7 @@ async fn collaboration_mode_update_emits_new_instruction_message() -> Result<()>
             model_provider_id: None,
             effort: None,
             summary: None,
+            service_tier: None,
             collaboration_mode: Some(collab_mode_with_instructions(Some(second_text))),
             personality: None,
         })
@@ -407,6 +422,7 @@ async fn collaboration_mode_update_noop_does_not_append() -> Result<()> {
             model_provider_id: None,
             effort: None,
             summary: None,
+            service_tier: None,
             collaboration_mode: Some(collab_mode_with_instructions(Some(collab_text))),
             personality: None,
         })
@@ -433,6 +449,7 @@ async fn collaboration_mode_update_noop_does_not_append() -> Result<()> {
             model_provider_id: None,
             effort: None,
             summary: None,
+            service_tier: None,
             collaboration_mode: Some(collab_mode_with_instructions(Some(collab_text))),
             personality: None,
         })
@@ -486,6 +503,7 @@ async fn collaboration_mode_update_emits_new_instruction_message_when_mode_chang
             model: None,
             effort: None,
             summary: None,
+            service_tier: None,
             collaboration_mode: Some(collab_mode_with_mode_and_instructions(
                 ModeKind::Default,
                 Some(default_text),
@@ -514,6 +532,7 @@ async fn collaboration_mode_update_emits_new_instruction_message_when_mode_chang
             model: None,
             effort: None,
             summary: None,
+            service_tier: None,
             collaboration_mode: Some(collab_mode_with_mode_and_instructions(
                 ModeKind::Plan,
                 Some(plan_text),
@@ -571,6 +590,7 @@ async fn collaboration_mode_update_noop_does_not_append_when_mode_is_unchanged()
             model: None,
             effort: None,
             summary: None,
+            service_tier: None,
             collaboration_mode: Some(collab_mode_with_mode_and_instructions(
                 ModeKind::Default,
                 Some(collab_text),
@@ -599,6 +619,7 @@ async fn collaboration_mode_update_noop_does_not_append_when_mode_is_unchanged()
             model: None,
             effort: None,
             summary: None,
+            service_tier: None,
             collaboration_mode: Some(collab_mode_with_mode_and_instructions(
                 ModeKind::Default,
                 Some(collab_text),
@@ -663,6 +684,7 @@ async fn resume_replays_collaboration_instructions() -> Result<()> {
             model_provider_id: None,
             effort: None,
             summary: None,
+            service_tier: None,
             collaboration_mode: Some(collab_mode_with_instructions(Some(collab_text))),
             personality: None,
         })
@@ -725,6 +747,7 @@ async fn empty_collaboration_instructions_are_ignored() -> Result<()> {
             model_provider_id: None,
             effort: None,
             summary: None,
+            service_tier: None,
             collaboration_mode: Some(CollaborationMode {
                 mode: ModeKind::Default,
                 settings: Settings {

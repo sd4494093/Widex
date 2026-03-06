@@ -14,16 +14,17 @@ use crate::exec::ExecToolCallOutput;
 use crate::exec::SandboxType;
 use crate::exec::StdoutStream;
 use crate::exec::StreamOutput;
-use crate::exec::execute_exec_env;
+use crate::exec::execute_exec_request;
 use crate::exec_env::create_env;
 use crate::parse_command::parse_command;
 use crate::protocol::EventMsg;
 use crate::protocol::ExecCommandBeginEvent;
 use crate::protocol::ExecCommandEndEvent;
 use crate::protocol::ExecCommandSource;
+use crate::protocol::ExecCommandStatus;
 use crate::protocol::SandboxPolicy;
 use crate::protocol::TurnStartedEvent;
-use crate::sandboxing::ExecEnv;
+use crate::sandboxing::ExecRequest;
 use crate::sandboxing::SandboxPermissions;
 use crate::state::TaskKind;
 use crate::tools::format_exec_output_str;
@@ -65,6 +66,10 @@ impl SessionTask for UserShellCommandTask {
         TaskKind::Regular
     }
 
+    fn span_name(&self) -> &'static str {
+        "session_task.user_shell"
+    }
+
     async fn run(
         self: Arc<Self>,
         session: Arc<SessionTaskContext>,
@@ -100,7 +105,12 @@ pub(crate) async fn execute_user_shell_command(
         // Auxiliary mode runs within an existing active turn. That turn already
         // emitted TurnStarted, so emitting another TurnStarted here would create
         // duplicate turn lifecycle events and confuse clients.
+        // TODO(ccunningham): After TurnStarted, emit model-visible turn context diffs for
+        // standalone lifecycle tasks (for example /shell, and review once it emits TurnStarted).
+        // `/compact` is an intentional exception because compaction requests should not include
+        // freshly reinjected context before the summary/replacement history is applied.
         let event = EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: turn_context.sub_id.clone(),
             model_context_window: turn_context.model_context_window(),
             collaboration_mode_kind: turn_context.collaboration_mode.mode,
         });
@@ -113,7 +123,12 @@ pub(crate) async fn execute_user_shell_command(
     let use_login_shell = true;
     let session_shell = session.user_shell();
     let display_command = session_shell.derive_exec_args(&command, use_login_shell);
-    let exec_command = maybe_wrap_shell_lc_with_snapshot(&display_command, session_shell.as_ref());
+    let exec_command = maybe_wrap_shell_lc_with_snapshot(
+        &display_command,
+        session_shell.as_ref(),
+        turn_context.cwd.as_path(),
+        &turn_context.shell_environment_policy.r#set,
+    );
 
     let call_id = Uuid::new_v4().to_string();
     let raw_command = command;
@@ -136,19 +151,22 @@ pub(crate) async fn execute_user_shell_command(
         )
         .await;
 
-    let exec_env = ExecEnv {
+    let sandbox_policy = SandboxPolicy::DangerFullAccess;
+    let exec_env = ExecRequest {
         command: exec_command.clone(),
         cwd: cwd.clone(),
         env: create_env(
             &turn_context.shell_environment_policy,
             Some(session.conversation_id),
         ),
+        network: turn_context.network.clone(),
         // TODO(zhao-oai): Now that we have ExecExpiration::Cancellation, we
         // should use that instead of an "arbitrarily large" timeout here.
         expiration: USER_SHELL_TIMEOUT_MS.into(),
         sandbox: SandboxType::None,
         windows_sandbox_level: turn_context.windows_sandbox_level,
         sandbox_permissions: SandboxPermissions::UseDefault,
+        sandbox_policy: sandbox_policy.clone(),
         justification: None,
         arg0: None,
     };
@@ -159,8 +177,7 @@ pub(crate) async fn execute_user_shell_command(
         tx_event: session.get_tx_event(),
     });
 
-    let sandbox_policy = SandboxPolicy::DangerFullAccess;
-    let exec_result = execute_exec_env(exec_env, &sandbox_policy, stdout_stream)
+    let exec_result = execute_exec_request(exec_env, &sandbox_policy, stdout_stream, None)
         .or_cancel(&cancellation_token)
         .await;
 
@@ -201,6 +218,7 @@ pub(crate) async fn execute_user_shell_command(
                         exit_code: -1,
                         duration: Duration::ZERO,
                         formatted_output: aborted_message,
+                        status: ExecCommandStatus::Failed,
                     }),
                 )
                 .await;
@@ -227,6 +245,11 @@ pub(crate) async fn execute_user_shell_command(
                             &output,
                             turn_context.truncation_policy,
                         ),
+                        status: if output.exit_code == 0 {
+                            ExecCommandStatus::Completed
+                        } else {
+                            ExecCommandStatus::Failed
+                        },
                     }),
                 )
                 .await;
@@ -266,6 +289,7 @@ pub(crate) async fn execute_user_shell_command(
                             &exec_output,
                             turn_context.truncation_policy,
                         ),
+                        status: ExecCommandStatus::Failed,
                     }),
                 )
                 .await;

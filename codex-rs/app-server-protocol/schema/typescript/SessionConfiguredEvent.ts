@@ -5,6 +5,8 @@ import type { AskForApproval } from "./AskForApproval";
 import type { EventMsg } from "./EventMsg";
 import type { ReasoningEffort } from "./ReasoningEffort";
 import type { SandboxPolicy } from "./SandboxPolicy";
+import type { ServiceTier } from "./ServiceTier";
+import type { SessionNetworkProxyRuntime } from "./SessionNetworkProxyRuntime";
 import type { ThreadId } from "./ThreadId";
 
 export type SessionConfiguredEvent = { session_id: ThreadId, forked_from_id: ThreadId | null, 
@@ -15,7 +17,7 @@ thread_name?: string,
 /**
  * Tell the client what model is being queried.
  */
-model: string, model_provider_id: string, 
+model: string, model_provider_id: string, service_tier: ServiceTier | null, 
 /**
  * When to escalate for approval for execution
  */
@@ -46,6 +48,10 @@ history_entry_count: number,
  * When present, UIs can use these to seed the history.
  */
 initial_messages: Array<EventMsg> | null, 
+/**
+ * Runtime proxy bind addresses, when the managed proxy was started for this session.
+ */
+network_proxy?: SessionNetworkProxyRuntime, 
 /**
  * Path in which the rollout is stored. Can be `None` for ephemeral threads
  */

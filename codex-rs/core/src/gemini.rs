@@ -405,7 +405,7 @@ fn split_function_output_content(
                     text_parts.push(text.clone());
                 }
             }
-            FunctionCallOutputContentItem::InputImage { image_url } => {
+            FunctionCallOutputContentItem::InputImage { image_url, .. } => {
                 if let Some((mime, data)) = parse_data_url(image_url) {
                     inline_parts.push(gemini_inline_data_part(mime, data));
                 } else if !image_url.trim().is_empty() {

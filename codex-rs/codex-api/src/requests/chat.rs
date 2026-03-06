@@ -155,7 +155,7 @@ impl<'a> ChatRequestBuilder<'a> {
                                 FunctionCallOutputContentItem::InputText { text } => {
                                     json!({"type":"text","text": text})
                                 }
-                                FunctionCallOutputContentItem::InputImage { image_url } => {
+                                FunctionCallOutputContentItem::InputImage { image_url, .. } => {
                                     json!({"type":"image_url","image_url": {"url": image_url}})
                                 }
                             })
@@ -199,6 +199,7 @@ impl<'a> ChatRequestBuilder<'a> {
                     continue;
                 }
                 ResponseItem::Reasoning { .. }
+                | ResponseItem::ImageGenerationCall { .. }
                 | ResponseItem::WebSearchCall { .. }
                 | ResponseItem::Other
                 | ResponseItem::Compaction { .. } => {

@@ -1,11 +1,15 @@
-use std::collections::HashSet;
-
-use codex_protocol::models::FunctionCallOutputBody;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::InputModality;
+use std::collections::HashSet;
 
 use crate::util::error_or_panic;
 use tracing::info;
+
+const IMAGE_CONTENT_OMITTED_PLACEHOLDER: &str =
+    "image content omitted because you do not support image input";
 
 pub(crate) fn ensure_call_outputs_present(items: &mut Vec<ResponseItem>) {
     // Collect synthetic outputs to insert immediately after their calls.
@@ -29,10 +33,7 @@ pub(crate) fn ensure_call_outputs_present(items: &mut Vec<ResponseItem>) {
                         idx,
                         ResponseItem::FunctionCallOutput {
                             call_id: call_id.clone(),
-                            output: FunctionCallOutputPayload {
-                                body: FunctionCallOutputBody::Text("aborted".to_string()),
-                                ..Default::default()
-                            },
+                            output: FunctionCallOutputPayload::from_text("aborted".to_string()),
                         },
                     ));
                 }
@@ -53,7 +54,7 @@ pub(crate) fn ensure_call_outputs_present(items: &mut Vec<ResponseItem>) {
                         idx,
                         ResponseItem::CustomToolCallOutput {
                             call_id: call_id.clone(),
-                            output: "aborted".to_string(),
+                            output: FunctionCallOutputPayload::from_text("aborted".to_string()),
                         },
                     ));
                 }
@@ -76,10 +77,7 @@ pub(crate) fn ensure_call_outputs_present(items: &mut Vec<ResponseItem>) {
                             idx,
                             ResponseItem::FunctionCallOutput {
                                 call_id: call_id.clone(),
-                                output: FunctionCallOutputPayload {
-                                    body: FunctionCallOutputBody::Text("aborted".to_string()),
-                                    ..Default::default()
-                                },
+                                output: FunctionCallOutputPayload::from_text("aborted".to_string()),
                             },
                         ));
                     }
@@ -209,5 +207,81 @@ where
 {
     if let Some(pos) = items.iter().position(predicate) {
         items.remove(pos);
+    }
+}
+
+pub(crate) fn rewrite_image_generation_calls_for_stateless_input(items: &mut Vec<ResponseItem>) {
+    let original_items = std::mem::take(items);
+    *items = original_items
+        .into_iter()
+        .map(|item| match item {
+            ResponseItem::ImageGenerationCall { result, .. } => {
+                let image_url = if result.starts_with("data:") {
+                    result
+                } else {
+                    format!("data:image/png;base64,{result}")
+                };
+
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputImage { image_url }],
+                    end_turn: None,
+                    phase: None,
+                }
+            }
+            _ => item,
+        })
+        .collect();
+}
+
+/// Strip image content from messages and tool outputs when the model does not support images.
+/// When `input_modalities` contains `InputModality::Image`, no stripping is performed.
+pub(crate) fn strip_images_when_unsupported(
+    input_modalities: &[InputModality],
+    items: &mut [ResponseItem],
+) {
+    let supports_images = input_modalities.contains(&InputModality::Image);
+    if supports_images {
+        return;
+    }
+
+    for item in items.iter_mut() {
+        match item {
+            ResponseItem::Message { content, .. } => {
+                let mut normalized_content = Vec::with_capacity(content.len());
+                for content_item in content.iter() {
+                    match content_item {
+                        ContentItem::InputImage { .. } => {
+                            normalized_content.push(ContentItem::InputText {
+                                text: IMAGE_CONTENT_OMITTED_PLACEHOLDER.to_string(),
+                            });
+                        }
+                        _ => normalized_content.push(content_item.clone()),
+                    }
+                }
+                *content = normalized_content;
+            }
+            ResponseItem::FunctionCallOutput { output, .. }
+            | ResponseItem::CustomToolCallOutput { output, .. } => {
+                if let Some(content_items) = output.content_items_mut() {
+                    let mut normalized_content_items = Vec::with_capacity(content_items.len());
+                    for content_item in content_items.iter() {
+                        match content_item {
+                            FunctionCallOutputContentItem::InputImage { .. } => {
+                                normalized_content_items.push(
+                                    FunctionCallOutputContentItem::InputText {
+                                        text: IMAGE_CONTENT_OMITTED_PLACEHOLDER.to_string(),
+                                    },
+                                );
+                            }
+                            _ => normalized_content_items.push(content_item.clone()),
+                        }
+                    }
+                    *content_items = normalized_content_items;
+                }
+            }
+            _ => {}
+        }
     }
 }

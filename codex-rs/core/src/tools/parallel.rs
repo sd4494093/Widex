@@ -46,7 +46,7 @@ impl ToolCallRuntime {
         }
     }
 
-    #[instrument(level = "trace", skip_all, fields(call = ?call))]
+    #[instrument(level = "trace", skip_all)]
     pub(crate) fn handle_tool_call(
         self,
         call: ToolCall,
@@ -85,7 +85,13 @@ impl ToolCallRuntime {
                         };
 
                         router
-                            .dispatch_tool_call(session, turn, tracker, call.clone())
+                            .dispatch_tool_call(
+                                session,
+                                turn,
+                                tracker,
+                                call.clone(),
+                                crate::tools::router::ToolCallSource::Direct,
+                            )
                             .instrument(dispatch_span.clone())
                             .await
                     } => res,
@@ -111,7 +117,10 @@ impl ToolCallRuntime {
         match &call.payload {
             ToolPayload::Custom { .. } => ResponseInputItem::CustomToolCallOutput {
                 call_id: call.call_id.clone(),
-                output: Self::abort_message(call, secs),
+                output: FunctionCallOutputPayload {
+                    body: FunctionCallOutputBody::Text(Self::abort_message(call, secs)),
+                    ..Default::default()
+                },
             },
             ToolPayload::Mcp { .. } => ResponseInputItem::McpToolCallOutput {
                 call_id: call.call_id.clone(),

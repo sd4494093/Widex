@@ -1,3 +1,4 @@
+use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::Verbosity;
 use codex_protocol::openai_models::ApplyPatchToolType;
 use codex_protocol::openai_models::ConfigShellToolType;
@@ -9,6 +10,7 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::openai_models::TruncationMode;
 use codex_protocol::openai_models::TruncationPolicyConfig;
+use codex_protocol::openai_models::WebSearchToolType;
 use codex_protocol::openai_models::default_input_modalities;
 
 use crate::config::Config;
@@ -56,20 +58,26 @@ macro_rules! model_info {
             visibility: ModelVisibility::None,
             supported_in_api: true,
             priority: 99,
+            availability_nux: None,
             upgrade: None,
             base_instructions: BASE_INSTRUCTIONS.to_string(),
             model_messages: None,
             supports_reasoning_summaries: false,
+            default_reasoning_summary: ReasoningSummary::Auto,
             support_verbosity: false,
             default_verbosity: None,
             apply_patch_tool_type: None,
+            web_search_tool_type: WebSearchToolType::Text,
             truncation_policy: TruncationPolicyConfig::bytes(10_000),
             supports_parallel_tool_calls: false,
+            supports_image_detail_original: false,
             context_window: Some(CONTEXT_WINDOW_272K),
             auto_compact_token_limit: None,
             effective_context_window_percent: 95,
             experimental_supported_tools: Vec::new(),
             input_modalities: default_input_modalities(),
+            prefer_websockets: false,
+            used_fallback_model_metadata: false,
         };
 
         $(
@@ -342,6 +350,14 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             default_reasoning_level: None
         )
     }
+}
+
+pub(crate) fn model_info_from_slug(slug: &str) -> ModelInfo {
+    let mut model = find_model_info_for_slug(slug);
+    if model.context_window.is_none() && model.supported_reasoning_levels.is_empty() {
+        model.used_fallback_model_metadata = true;
+    }
+    model
 }
 
 fn supported_reasoning_level_low_medium_high() -> Vec<ReasoningEffortPreset> {

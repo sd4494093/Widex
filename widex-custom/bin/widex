@@ -28,6 +28,10 @@ if [[ -n "${CODEX_HOME:-}" && "${CODEX_HOME}" != "${CODEX_HOME_DEFAULT}" && -z "
 fi
 export CODEX_HOME="${WIDEX_CODEX_HOME:-${CODEX_HOME_DEFAULT}}"
 
+# Codex canonicalizes CODEX_HOME when set, which requires the directory to exist.
+# Create it up-front so a first-run `widex` doesn't fail.
+mkdir -p -- "${CODEX_HOME}"
+
 # Hint the TUI switchover integration where to find the YAML.
 export WIDEX_API_SWITCHER_CONFIG="${WIDEX_API_SWITCHER_CONFIG:-${CODEX_HOME}/api_switchover.yaml}"
 

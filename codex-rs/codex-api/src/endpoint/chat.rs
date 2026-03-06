@@ -1,5 +1,4 @@
 use crate::auth::AuthProvider;
-use crate::common::Prompt as ApiPrompt;
 use crate::common::ResponseStream;
 use crate::endpoint::session::EndpointSession;
 use crate::error::ApiError;
@@ -9,6 +8,7 @@ use crate::sse::chat::spawn_chat_stream;
 use crate::telemetry::SseTelemetry;
 use codex_client::HttpTransport;
 use codex_client::RequestTelemetry;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::SessionSource;
 use http::HeaderMap;
 use http::HeaderValue;
@@ -47,17 +47,18 @@ impl<T: HttpTransport, A: AuthProvider> ChatClient<T, A> {
     pub async fn stream_prompt(
         &self,
         model: &str,
-        prompt: &ApiPrompt,
+        instructions: &str,
+        input: &[ResponseItem],
+        tools: &[Value],
         conversation_id: Option<String>,
         session_source: Option<SessionSource>,
     ) -> Result<ResponseStream, ApiError> {
         use crate::requests::ChatRequestBuilder;
 
-        let request =
-            ChatRequestBuilder::new(model, &prompt.instructions, &prompt.input, &prompt.tools)
-                .conversation_id(conversation_id)
-                .session_source(session_source)
-                .build(self.session.provider())?;
+        let request = ChatRequestBuilder::new(model, instructions, input, tools)
+            .conversation_id(conversation_id)
+            .session_source(session_source)
+            .build(self.session.provider())?;
 
         self.stream_request(request).await
     }
