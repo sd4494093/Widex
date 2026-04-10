@@ -1,24 +1,27 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::Prompt;
 use crate::codex::Session;
 use crate::codex::TurnContext;
+use crate::codex::built_tools;
 use crate::compact::InitialContextInjection;
 use crate::compact::insert_initial_context_before_last_real_user_or_summary;
 use crate::context_manager::ContextManager;
 use crate::context_manager::TotalTokenUsageBreakdown;
 use crate::context_manager::estimate_response_item_model_visible_bytes;
 use crate::context_manager::is_codex_generated_item;
-use crate::error::CodexErr;
-use crate::error::Result as CodexResult;
-use crate::protocol::CompactedItem;
-use crate::protocol::EventMsg;
-use crate::protocol::TurnStartedEvent;
+use codex_protocol::error::CodexErr;
+use codex_protocol::error::Result as CodexResult;
 use codex_protocol::items::ContextCompactionItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::CompactedItem;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::TurnStartedEvent;
 use futures::TryFutureExt;
+use tokio_util::sync::CancellationToken;
 use tracing::error;
 use tracing::info;
 
@@ -37,6 +40,7 @@ pub(crate) async fn run_remote_compact_task(
 ) -> CodexResult<()> {
     let start_event = EventMsg::TurnStarted(TurnStartedEvent {
         turn_id: turn_context.sub_id.clone(),
+        started_at: turn_context.turn_timing_state.started_at_unix_secs().await,
         model_context_window: turn_context.model_context_window(),
         collaboration_mode_kind: turn_context.collaboration_mode.mode,
     });
@@ -92,10 +96,20 @@ async fn run_remote_compact_task_inner_impl(
         .cloned()
         .collect();
 
+    let prompt_input = history.for_prompt(&turn_context.model_info.input_modalities);
+    let tool_router = built_tools(
+        sess.as_ref(),
+        turn_context.as_ref(),
+        &prompt_input,
+        &HashSet::new(),
+        /*skills_outcome*/ None,
+        &CancellationToken::new(),
+    )
+    .await?;
     let prompt = Prompt {
-        input: history.for_prompt(&turn_context.model_info.input_modalities),
-        tools: vec![],
-        parallel_tool_calls: false,
+        input: prompt_input,
+        tools: tool_router.model_visible_specs(),
+        parallel_tool_calls: turn_context.model_info.supports_parallel_tool_calls,
         base_instructions,
         personality: turn_context.personality,
         output_schema: None,
@@ -107,7 +121,9 @@ async fn run_remote_compact_task_inner_impl(
         .compact_conversation_history(
             &prompt,
             &turn_context.model_info,
-            &turn_context.otel_manager,
+            turn_context.reasoning_effort,
+            turn_context.reasoning_summary,
+            &turn_context.session_telemetry,
         )
         .or_else(|err| async {
             let total_usage_breakdown = sess.get_total_token_usage_breakdown().await;
@@ -181,7 +197,7 @@ pub(crate) async fn process_compacted_history(
 /// - `developer` messages because remote output can include stale/duplicated
 ///   instruction content.
 /// - non-user-content `user` messages (session prefix/instruction wrappers),
-///   keeping only real user messages as parsed by `parse_turn_item`.
+///   while preserving real user messages and persisted hook prompts.
 ///
 /// This intentionally keeps:
 /// - `assistant` messages (future remote compaction models may emit them)
@@ -193,7 +209,7 @@ fn should_keep_compacted_history_item(item: &ResponseItem) -> bool {
         ResponseItem::Message { role, .. } if role == "user" => {
             matches!(
                 crate::event_mapping::parse_turn_item(item),
-                Some(TurnItem::UserMessage(_))
+                Some(TurnItem::UserMessage(_) | TurnItem::HookPrompt(_))
             )
         }
         ResponseItem::Message { role, .. } if role == "assistant" => true,
@@ -202,7 +218,9 @@ fn should_keep_compacted_history_item(item: &ResponseItem) -> bool {
         ResponseItem::Reasoning { .. }
         | ResponseItem::LocalShellCall { .. }
         | ResponseItem::FunctionCall { .. }
+        | ResponseItem::ToolSearchCall { .. }
         | ResponseItem::FunctionCallOutput { .. }
+        | ResponseItem::ToolSearchOutput { .. }
         | ResponseItem::CustomToolCall { .. }
         | ResponseItem::CustomToolCallOutput { .. }
         | ResponseItem::WebSearchCall { .. }

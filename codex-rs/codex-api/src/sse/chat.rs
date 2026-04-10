@@ -310,6 +310,7 @@ pub async fn process_chat_sse<S>(
                     let item = ResponseItem::FunctionCall {
                         id: None,
                         name,
+                        namespace: None,
                         arguments,
                         call_id: id.unwrap_or_else(|| format!("tool-call-{index}")),
                         thought_signature: None,

@@ -1,5 +1,5 @@
 use codex_core::config::Constrained;
-use codex_core::features::Feature;
+use codex_features::Feature;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
@@ -14,6 +14,7 @@ use core_test_support::responses::ev_local_shell_call;
 use core_test_support::responses::ev_message_item_added;
 use core_test_support::responses::ev_output_text_delta;
 use core_test_support::responses::ev_reasoning_item;
+use core_test_support::responses::ev_reasoning_item_added;
 use core_test_support::responses::ev_reasoning_summary_text_delta;
 use core_test_support::responses::ev_reasoning_text_delta;
 use core_test_support::responses::ev_response_created;
@@ -106,6 +107,7 @@ async fn responses_api_emits_api_request_event() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -149,6 +151,7 @@ async fn process_sse_emits_tracing_for_output_item() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -192,6 +195,7 @@ async fn process_sse_emits_failed_event_on_parse_error() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -236,6 +240,7 @@ async fn process_sse_records_failed_event_when_stream_closes_without_completed()
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -300,6 +305,7 @@ async fn process_sse_failed_event_records_response_error_message() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -362,6 +368,7 @@ async fn process_sse_failed_event_logs_parse_error() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -411,6 +418,7 @@ async fn process_sse_failed_event_logs_missing_error() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -469,6 +477,7 @@ async fn process_sse_failed_event_logs_response_completed_parse_error() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -521,6 +530,7 @@ async fn process_sse_emits_completed_telemetry() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -593,6 +603,7 @@ async fn handle_responses_span_records_response_kind_and_tool_name() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -629,20 +640,35 @@ async fn record_responses_sets_span_fields_for_response_events() {
 
     let sse_body = sse(vec![
         ev_response_created("resp-1"),
-        ev_function_call("call-1", "fn", "{\"value\":1}"),
-        ev_custom_tool_call("custom-1", "custom_tool", "{\"key\":\"value\"}"),
+        serde_json::json!({
+            "type": "response.output_item.added",
+            "item": {
+                "type": "function_call",
+                "call_id": "call-1",
+                "name": "fn",
+                "arguments": "{\"value\":1}"
+            }
+        }),
         ev_message_item_added("msg-added", "hi there"),
+        ev_reasoning_item_added("reasoning-1", &["summary"]),
         ev_output_text_delta("delta"),
         ev_reasoning_summary_text_delta("summary-delta"),
         ev_reasoning_text_delta("raw-delta"),
         ev_function_call("call-1", "fn", "{\"key\":\"value\"}"),
-        ev_custom_tool_call("custom-1", "custom_tool", "{\"key\":\"value\"}"),
         ev_assistant_message("msg-1", "agent"),
         ev_reasoning_item("reasoning-1", &["summary"], &[]),
         ev_completed("resp-1"),
     ]);
 
     mount_response_once(&server, sse_response(sse_body)).await;
+    mount_response_once(
+        &server,
+        sse_response(sse(vec![
+            ev_assistant_message("msg-2", "follow-up complete"),
+            ev_completed("resp-2"),
+        ])),
+    )
+    .await;
 
     let TestCodex { codex, .. } = test_codex()
         .with_config(|config| {
@@ -662,6 +688,7 @@ async fn record_responses_sets_span_fields_for_response_events() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -746,6 +773,7 @@ async fn handle_response_item_records_tool_result_for_custom_tool_call() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -819,6 +847,7 @@ async fn handle_response_item_records_tool_result_for_function_call() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -902,6 +931,7 @@ async fn handle_response_item_records_tool_result_for_local_shell_missing_ids() 
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -957,6 +987,7 @@ async fn handle_response_item_records_tool_result_for_local_shell_call() {
                 .features
                 .disable(Feature::GhostCommit)
                 .expect("test config should allow feature update");
+            config.permissions.approval_policy = Constrained::allow_any(AskForApproval::Never);
         })
         .build(&server)
         .await
@@ -969,11 +1000,12 @@ async fn handle_response_item_records_tool_result_for_local_shell_call() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
 
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TokenCount(_))).await;
+    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     logs_assert(|lines: &[&str]| {
         let line = lines
@@ -1077,6 +1109,7 @@ async fn handle_container_exec_autoapprove_from_config_records_tool_decision() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -1128,6 +1161,7 @@ async fn handle_container_exec_user_approved_records_tool_decision() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -1194,6 +1228,7 @@ async fn handle_container_exec_user_approved_for_session_records_tool_decision()
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -1260,6 +1295,7 @@ async fn handle_sandbox_error_user_approves_retry_records_tool_decision() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -1326,6 +1362,7 @@ async fn handle_container_exec_user_denies_records_tool_decision() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -1392,6 +1429,7 @@ async fn handle_sandbox_error_user_approves_for_session_records_tool_decision() 
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -1459,6 +1497,7 @@ async fn handle_sandbox_error_user_denies_records_tool_decision() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();

@@ -1,16 +1,14 @@
 use crate::codex::Session;
 use crate::codex::TurnContext;
 use crate::function_tool::FunctionCallError;
+use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
-use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::handlers::parse_arguments;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
-use async_trait::async_trait;
 use codex_protocol::dynamic_tools::DynamicToolCallRequest;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
-use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::protocol::DynamicToolCallResponseEvent;
 use codex_protocol::protocol::EventMsg;
@@ -21,8 +19,9 @@ use tracing::warn;
 
 pub struct DynamicToolHandler;
 
-#[async_trait]
 impl ToolHandler for DynamicToolHandler {
+    type Output = FunctionToolOutput;
+
     fn kind(&self) -> ToolKind {
         ToolKind::Function
     }
@@ -31,7 +30,7 @@ impl ToolHandler for DynamicToolHandler {
         true
     }
 
-    async fn handle(&self, invocation: ToolInvocation) -> Result<ToolOutput, FunctionCallError> {
+    async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
         let ToolInvocation {
             session,
             turn,
@@ -67,12 +66,7 @@ impl ToolHandler for DynamicToolHandler {
             .into_iter()
             .map(FunctionCallOutputContentItem::from)
             .collect::<Vec<_>>();
-        let body = FunctionCallOutputBody::ContentItems(body);
-
-        Ok(ToolOutput::Function {
-            body,
-            success: Some(success),
-        })
+        Ok(FunctionToolOutput::from_content(body, Some(success)))
     }
 }
 

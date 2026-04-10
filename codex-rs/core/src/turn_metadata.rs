@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -6,13 +7,14 @@ use std::sync::Mutex;
 use std::sync::RwLock;
 
 use serde::Serialize;
+use serde_json::Value;
 use tokio::task::JoinHandle;
 
-use crate::git_info::get_git_remote_urls_assume_git_repo;
-use crate::git_info::get_git_repo_root;
-use crate::git_info::get_has_changes;
-use crate::git_info::get_head_commit_hash;
 use crate::sandbox_tags::sandbox_tag;
+use codex_git_utils::get_git_remote_urls_assume_git_repo;
+use codex_git_utils::get_git_repo_root;
+use codex_git_utils::get_has_changes;
+use codex_git_utils::get_head_commit_hash;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::protocol::SandboxPolicy;
 
@@ -54,6 +56,8 @@ impl From<WorkspaceGitMetadata> for TurnMetadataWorkspace {
 #[derive(Clone, Debug, Serialize, Default)]
 pub(crate) struct TurnMetadataBag {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     turn_id: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     workspaces: BTreeMap<String, TurnMetadataWorkspace>,
@@ -67,7 +71,22 @@ impl TurnMetadataBag {
     }
 }
 
+fn merge_responsesapi_client_metadata(
+    header: &str,
+    responsesapi_client_metadata: Option<&HashMap<String, String>>,
+) -> Option<String> {
+    let responsesapi_client_metadata = responsesapi_client_metadata?;
+    let mut metadata = serde_json::from_str::<serde_json::Map<String, Value>>(header).ok()?;
+    for (key, value) in responsesapi_client_metadata {
+        metadata
+            .entry(key.clone())
+            .or_insert_with(|| Value::String(value.clone()));
+    }
+    serde_json::to_string(&metadata).ok()
+}
+
 fn build_turn_metadata_bag(
+    session_id: Option<String>,
     turn_id: Option<String>,
     sandbox: Option<String>,
     repo_root: Option<String>,
@@ -81,6 +100,7 @@ fn build_turn_metadata_bag(
     }
 
     TurnMetadataBag {
+        session_id,
         turn_id,
         workspaces,
         sandbox,
@@ -90,11 +110,12 @@ fn build_turn_metadata_bag(
 pub async fn build_turn_metadata_header(cwd: &Path, sandbox: Option<&str>) -> Option<String> {
     let repo_root = get_git_repo_root(cwd).map(|root| root.to_string_lossy().into_owned());
 
-    let (latest_git_commit_hash, associated_remote_urls, has_changes) = tokio::join!(
+    let (head_commit_hash, associated_remote_urls, has_changes) = tokio::join!(
         get_head_commit_hash(cwd),
         get_git_remote_urls_assume_git_repo(cwd),
         get_has_changes(cwd),
     );
+    let latest_git_commit_hash = head_commit_hash.map(|sha| sha.0);
     if latest_git_commit_hash.is_none()
         && associated_remote_urls.is_none()
         && has_changes.is_none()
@@ -104,7 +125,8 @@ pub async fn build_turn_metadata_header(cwd: &Path, sandbox: Option<&str>) -> Op
     }
 
     build_turn_metadata_bag(
-        None,
+        /*session_id*/ None,
+        /*turn_id*/ None,
         sandbox.map(ToString::to_string),
         repo_root,
         Some(WorkspaceGitMetadata {
@@ -123,27 +145,27 @@ pub(crate) struct TurnMetadataState {
     base_metadata: TurnMetadataBag,
     base_header: String,
     enriched_header: Arc<RwLock<Option<String>>>,
+    responsesapi_client_metadata: Arc<RwLock<Option<HashMap<String, String>>>>,
     enrichment_task: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 impl TurnMetadataState {
     pub(crate) fn new(
+        session_id: String,
         turn_id: String,
         cwd: PathBuf,
         sandbox_policy: &SandboxPolicy,
         windows_sandbox_level: WindowsSandboxLevel,
-        use_linux_sandbox_bwrap: bool,
     ) -> Self {
         let repo_root = get_git_repo_root(&cwd).map(|root| root.to_string_lossy().into_owned());
-        let sandbox = Some(
-            sandbox_tag(
-                sandbox_policy,
-                windows_sandbox_level,
-                use_linux_sandbox_bwrap,
-            )
-            .to_string(),
+        let sandbox = Some(sandbox_tag(sandbox_policy, windows_sandbox_level).to_string());
+        let base_metadata = build_turn_metadata_bag(
+            Some(session_id),
+            Some(turn_id),
+            sandbox,
+            /*repo_root*/ None,
+            /*workspace_git_metadata*/ None,
         );
-        let base_metadata = build_turn_metadata_bag(Some(turn_id), sandbox, None, None);
         let base_header = base_metadata
             .to_header_value()
             .unwrap_or_else(|| "{}".to_string());
@@ -154,21 +176,46 @@ impl TurnMetadataState {
             base_metadata,
             base_header,
             enriched_header: Arc::new(RwLock::new(None)),
+            responsesapi_client_metadata: Arc::new(RwLock::new(None)),
             enrichment_task: Arc::new(Mutex::new(None)),
         }
     }
 
     pub(crate) fn current_header_value(&self) -> Option<String> {
-        if let Some(header) = self
+        let header = if let Some(header) = self
             .enriched_header
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
             .cloned()
         {
-            return Some(header);
-        }
-        Some(self.base_header.clone())
+            header
+        } else {
+            self.base_header.clone()
+        };
+        let responsesapi_client_metadata = self
+            .responsesapi_client_metadata
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        merge_responsesapi_client_metadata(&header, responsesapi_client_metadata.as_ref())
+            .or(Some(header))
+    }
+
+    pub(crate) fn current_meta_value(&self) -> Option<serde_json::Value> {
+        self.current_header_value()
+            .and_then(|header| serde_json::from_str(&header).ok())
+    }
+
+    pub(crate) fn set_responsesapi_client_metadata(
+        &self,
+        responsesapi_client_metadata: HashMap<String, String>,
+    ) {
+        *self
+            .responsesapi_client_metadata
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(responsesapi_client_metadata);
     }
 
     pub(crate) fn spawn_git_enrichment_task(&self) {
@@ -192,6 +239,7 @@ impl TurnMetadataState {
             };
 
             let enriched_metadata = build_turn_metadata_bag(
+                state.base_metadata.session_id.clone(),
                 state.base_metadata.turn_id.clone(),
                 state.base_metadata.sandbox.clone(),
                 Some(repo_root),
@@ -221,11 +269,12 @@ impl TurnMetadataState {
     }
 
     async fn fetch_workspace_git_metadata(&self) -> WorkspaceGitMetadata {
-        let (latest_git_commit_hash, associated_remote_urls, has_changes) = tokio::join!(
+        let (head_commit_hash, associated_remote_urls, has_changes) = tokio::join!(
             get_head_commit_hash(&self.cwd),
             get_git_remote_urls_assume_git_repo(&self.cwd),
             get_has_changes(&self.cwd),
         );
+        let latest_git_commit_hash = head_commit_hash.map(|sha| sha.0);
 
         WorkspaceGitMetadata {
             associated_remote_urls,
@@ -236,114 +285,5 @@ impl TurnMetadataState {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    use serde_json::Value;
-    use tempfile::TempDir;
-    use tokio::process::Command;
-
-    #[tokio::test]
-    async fn build_turn_metadata_header_includes_has_changes_for_clean_repo() {
-        let temp_dir = TempDir::new().expect("temp dir");
-        let repo_path = temp_dir.path().join("repo");
-        std::fs::create_dir_all(&repo_path).expect("create repo");
-
-        Command::new("git")
-            .args(["init"])
-            .current_dir(&repo_path)
-            .output()
-            .await
-            .expect("git init");
-        Command::new("git")
-            .args(["config", "user.name", "Test User"])
-            .current_dir(&repo_path)
-            .output()
-            .await
-            .expect("git config user.name");
-        Command::new("git")
-            .args(["config", "user.email", "test@example.com"])
-            .current_dir(&repo_path)
-            .output()
-            .await
-            .expect("git config user.email");
-
-        std::fs::write(repo_path.join("README.md"), "hello").expect("write file");
-        Command::new("git")
-            .args(["add", "."])
-            .current_dir(&repo_path)
-            .output()
-            .await
-            .expect("git add");
-        Command::new("git")
-            .args(["commit", "-m", "initial"])
-            .current_dir(&repo_path)
-            .output()
-            .await
-            .expect("git commit");
-
-        let header = build_turn_metadata_header(&repo_path, Some("none"))
-            .await
-            .expect("header");
-        let parsed: Value = serde_json::from_str(&header).expect("valid json");
-        let workspace = parsed
-            .get("workspaces")
-            .and_then(Value::as_object)
-            .and_then(|workspaces| workspaces.values().next())
-            .cloned()
-            .expect("workspace");
-
-        assert_eq!(
-            workspace.get("has_changes").and_then(Value::as_bool),
-            Some(false)
-        );
-    }
-
-    #[test]
-    fn turn_metadata_state_respects_linux_bubblewrap_toggle() {
-        let temp_dir = TempDir::new().expect("temp dir");
-        let cwd = temp_dir.path().to_path_buf();
-        let sandbox_policy = SandboxPolicy::new_read_only_policy();
-
-        let without_bubblewrap = TurnMetadataState::new(
-            "turn-a".to_string(),
-            cwd.clone(),
-            &sandbox_policy,
-            WindowsSandboxLevel::Disabled,
-            false,
-        );
-        let with_bubblewrap = TurnMetadataState::new(
-            "turn-b".to_string(),
-            cwd,
-            &sandbox_policy,
-            WindowsSandboxLevel::Disabled,
-            true,
-        );
-
-        let without_bubblewrap_header = without_bubblewrap
-            .current_header_value()
-            .expect("without_bubblewrap_header");
-        let with_bubblewrap_header = with_bubblewrap
-            .current_header_value()
-            .expect("with_bubblewrap_header");
-
-        let without_bubblewrap_json: Value =
-            serde_json::from_str(&without_bubblewrap_header).expect("without_bubblewrap_json");
-        let with_bubblewrap_json: Value =
-            serde_json::from_str(&with_bubblewrap_header).expect("with_bubblewrap_json");
-
-        let without_bubblewrap_sandbox = without_bubblewrap_json
-            .get("sandbox")
-            .and_then(Value::as_str);
-        let with_bubblewrap_sandbox = with_bubblewrap_json.get("sandbox").and_then(Value::as_str);
-
-        let expected_with_bubblewrap =
-            sandbox_tag(&sandbox_policy, WindowsSandboxLevel::Disabled, true);
-        assert_eq!(with_bubblewrap_sandbox, Some(expected_with_bubblewrap));
-
-        if cfg!(target_os = "linux") {
-            assert_eq!(with_bubblewrap_sandbox, Some("linux_bubblewrap"));
-            assert_ne!(with_bubblewrap_sandbox, without_bubblewrap_sandbox);
-        }
-    }
-}
+#[path = "turn_metadata_tests.rs"]
+mod tests;

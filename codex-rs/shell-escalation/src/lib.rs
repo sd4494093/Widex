@@ -2,6 +2,8 @@
 mod unix;
 
 #[cfg(unix)]
+pub use unix::ESCALATE_SOCKET_ENV_VAR;
+#[cfg(unix)]
 pub use unix::EscalateAction;
 #[cfg(unix)]
 pub use unix::EscalateServer;

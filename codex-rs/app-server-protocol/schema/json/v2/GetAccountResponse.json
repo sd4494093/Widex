@@ -52,10 +52,20 @@
         "plus",
         "pro",
         "team",
+        "self_serve_business_usage_based",
         "business",
+        "enterprise_cbp_usage_based",
         "enterprise",
         "edu",
         "unknown"
+      ],
+      "type": "string"
+    },
+    "WorkspaceRole": {
+      "enum": [
+        "account-owner",
+        "account-admin",
+        "standard-user"
       ],
       "type": "string"
     }
@@ -71,8 +81,24 @@
         }
       ]
     },
+    "isWorkspaceOwner": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
     "requiresOpenaiAuth": {
       "type": "boolean"
+    },
+    "workspaceRole": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/WorkspaceRole"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [

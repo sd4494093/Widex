@@ -188,7 +188,9 @@ impl<'a> ChatRequestBuilder<'a> {
                     });
                     push_tool_call_message(&mut messages, tool_call);
                 }
-                ResponseItem::CustomToolCallOutput { call_id, output } => {
+                ResponseItem::CustomToolCallOutput {
+                    call_id, output, ..
+                } => {
                     messages.push(json!({
                         "role": "tool",
                         "tool_call_id": call_id,
@@ -200,6 +202,8 @@ impl<'a> ChatRequestBuilder<'a> {
                 }
                 ResponseItem::Reasoning { .. }
                 | ResponseItem::ImageGenerationCall { .. }
+                | ResponseItem::ToolSearchCall { .. }
+                | ResponseItem::ToolSearchOutput { .. }
                 | ResponseItem::WebSearchCall { .. }
                 | ResponseItem::Other
                 | ResponseItem::Compaction { .. } => {

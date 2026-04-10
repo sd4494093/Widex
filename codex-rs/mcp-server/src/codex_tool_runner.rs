@@ -114,6 +114,7 @@ pub async fn run_codex_tool_session(
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         },
         trace: None,
     };
@@ -161,6 +162,7 @@ pub async fn run_codex_tool_session_reply(
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
     {
@@ -262,6 +264,9 @@ async fn run_codex_tool_session_inner(
                     EventMsg::Warning(_) => {
                         continue;
                     }
+                    EventMsg::GuardianAssessment(_) => {
+                        continue;
+                    }
                     EventMsg::ElicitationRequest(_) => {
                         // TODO: forward elicitation requests to the client?
                         continue;
@@ -295,7 +300,9 @@ async fn run_codex_tool_session_inner(
                             Some(msg) => msg,
                             None => "".to_string(),
                         };
-                        let result = create_call_tool_result_with_thread_id(thread_id, text, None);
+                        let result = create_call_tool_result_with_thread_id(
+                            thread_id, text, /*is_error*/ None,
+                        );
                         outgoing.send_response(request_id.clone(), result).await;
                         // unregister the id so we don't keep it in the map
                         running_requests_id_to_codex_uuid
@@ -331,10 +338,9 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::McpToolCallBegin(_)
                     | EventMsg::McpToolCallEnd(_)
                     | EventMsg::McpListToolsResponse(_)
-                    | EventMsg::ListCustomPromptsResponse(_)
                     | EventMsg::ListSkillsResponse(_)
-                    | EventMsg::ListRemoteSkillsResponse(_)
-                    | EventMsg::RemoteSkillDownloaded(_)
+                    | EventMsg::AddCreditsNudgeEmailResponse(_)
+                    | EventMsg::RealtimeConversationListVoicesResponse(_)
                     | EventMsg::ExecCommandBegin(_)
                     | EventMsg::TerminalInteraction(_)
                     | EventMsg::ExecCommandOutputDelta(_)
@@ -358,6 +364,8 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::EnteredReviewMode(_)
                     | EventMsg::ItemStarted(_)
                     | EventMsg::ItemCompleted(_)
+                    | EventMsg::HookStarted(_)
+                    | EventMsg::HookCompleted(_)
                     | EventMsg::AgentMessageContentDelta(_)
                     | EventMsg::ReasoningContentDelta(_)
                     | EventMsg::ReasoningRawContentDelta(_)
@@ -366,6 +374,7 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::UndoCompleted(_)
                     | EventMsg::ExitedReviewMode(_)
                     | EventMsg::RequestUserInput(_)
+                    | EventMsg::RequestPermissions(_)
                     | EventMsg::DynamicToolCallRequest(_)
                     | EventMsg::DynamicToolCallResponse(_)
                     | EventMsg::ContextCompacted(_)
@@ -382,6 +391,7 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::CollabResumeBegin(_)
                     | EventMsg::CollabResumeEnd(_)
                     | EventMsg::RealtimeConversationStarted(_)
+                    | EventMsg::RealtimeConversationSdp(_)
                     | EventMsg::RealtimeConversationRealtime(_)
                     | EventMsg::RealtimeConversationClosed(_)
                     | EventMsg::DeprecationNotice(_) => {
@@ -415,7 +425,11 @@ mod tests {
     #[test]
     fn call_tool_result_includes_thread_id_in_structured_content() {
         let thread_id = ThreadId::new();
-        let result = create_call_tool_result_with_thread_id(thread_id, "done".to_string(), None);
+        let result = create_call_tool_result_with_thread_id(
+            thread_id,
+            "done".to_string(),
+            /*is_error*/ None,
+        );
         assert_eq!(
             result.structured_content,
             Some(json!({

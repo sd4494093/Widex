@@ -16,6 +16,7 @@ use std::sync::Weak;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
+use tracing::error;
 
 type PendingInterruptQueue = Vec<(
     ConnectionRequestId,
@@ -44,6 +45,7 @@ pub(crate) enum ThreadListenerCommand {
 /// Per-conversation accumulation of the latest states e.g. error message while a turn runs.
 #[derive(Default, Clone)]
 pub(crate) struct TurnSummary {
+    pub(crate) started_at: Option<i64>,
     pub(crate) file_change_started: HashSet<String>,
     pub(crate) command_execution_started: HashSet<String>,
     pub(crate) last_error: Option<TurnError>,
@@ -109,10 +111,47 @@ impl ThreadState {
     }
 
     pub(crate) fn track_current_turn_event(&mut self, event: &EventMsg) {
+        if let EventMsg::TurnStarted(payload) = event {
+            self.turn_summary.started_at = payload.started_at;
+        }
         self.current_turn_history.handle_event(event);
-        if !self.current_turn_history.has_active_turn() {
+        if matches!(event, EventMsg::TurnAborted(_) | EventMsg::TurnComplete(_))
+            && !self.current_turn_history.has_active_turn()
+        {
             self.current_turn_history.reset();
         }
+    }
+}
+
+pub(crate) async fn resolve_server_request_on_thread_listener(
+    thread_state: &Arc<Mutex<ThreadState>>,
+    request_id: RequestId,
+) {
+    let (completion_tx, completion_rx) = oneshot::channel();
+    let listener_command_tx = {
+        let state = thread_state.lock().await;
+        state.listener_command_tx()
+    };
+    let Some(listener_command_tx) = listener_command_tx else {
+        error!("failed to remove pending client request: thread listener is not running");
+        return;
+    };
+
+    if listener_command_tx
+        .send(ThreadListenerCommand::ResolveServerRequest {
+            request_id,
+            completion_tx,
+        })
+        .is_err()
+    {
+        error!(
+            "failed to remove pending client request: thread listener command channel is closed"
+        );
+        return;
+    }
+
+    if let Err(err) = completion_rx.await {
+        error!("failed to remove pending client request: {err}");
     }
 }
 
@@ -196,6 +235,29 @@ impl ThreadStateManager {
         }
     }
 
+    pub(crate) async fn clear_all_listeners(&self) {
+        let thread_states = {
+            let state = self.state.lock().await;
+            state
+                .threads
+                .iter()
+                .map(|(thread_id, thread_entry)| (*thread_id, thread_entry.state.clone()))
+                .collect::<Vec<_>>()
+        };
+
+        for (thread_id, thread_state) in thread_states {
+            let mut thread_state = thread_state.lock().await;
+            tracing::debug!(
+                thread_id = %thread_id,
+                listener_generation = thread_state.listener_generation,
+                had_listener = thread_state.cancel_tx.is_some(),
+                had_active_turn = thread_state.active_turn_snapshot().is_some(),
+                "clearing thread listener during app-server shutdown"
+            );
+            thread_state.clear_listener();
+        }
+    }
+
     pub(crate) async fn unsubscribe_connection_from_thread(
         &self,
         thread_id: ThreadId,
@@ -261,7 +323,7 @@ impl ThreadStateManager {
         {
             let mut thread_state_guard = thread_state.lock().await;
             if experimental_raw_events {
-                thread_state_guard.set_experimental_raw_events(true);
+                thread_state_guard.set_experimental_raw_events(/*enabled*/ true);
             }
         }
         Some(thread_state)

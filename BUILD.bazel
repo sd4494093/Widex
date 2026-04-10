@@ -17,8 +17,15 @@ platform(
 platform(
     name = "local_windows",
     constraint_values = [
-        # We just need to pick one of the ABIs. Do the same one we target.
         "@rules_rs//rs/experimental/platforms/constraints:windows_gnullvm",
+    ],
+    parents = ["@platforms//host"],
+)
+
+platform(
+    name = "local_windows_msvc",
+    constraint_values = [
+        "@rules_rs//rs/experimental/platforms/constraints:windows_msvc",
     ],
     parents = ["@platforms//host"],
 )
@@ -28,4 +35,8 @@ alias(
     actual = "@rbe_platform",
 )
 
-exports_files(["AGENTS.md"])
+exports_files([
+    "AGENTS.md",
+    "workspace_root_test_launcher.bat.tpl",
+    "workspace_root_test_launcher.sh.tpl",
+])

@@ -1,14 +1,25 @@
 use bytes::Bytes;
+use codex_login::AuthManager;
+use codex_login::auth::read_gemini_api_key_from_env;
+use codex_login::default_client::build_reqwest_client;
+use codex_model_provider_info::ModelProviderInfo;
+use codex_protocol::error::CodexErr;
+use codex_protocol::error::Result;
+use codex_protocol::error::UnexpectedResponseError;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::TokenUsage;
+use codex_tools::ResponsesApiTool;
+use codex_tools::ToolSpec;
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use futures::TryStreamExt;
+use http::HeaderMap;
 use http::HeaderValue;
+use http::header::HeaderName;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
@@ -20,17 +31,9 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tracing::debug;
 
-use crate::AuthManager;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
-use crate::client_common::tools::ResponsesApiTool;
-use crate::client_common::tools::ToolSpec;
-use crate::default_client::build_reqwest_client;
-use crate::error::CodexErr;
-use crate::error::Result;
-use crate::error::UnexpectedResponseError;
-use crate::model_provider_info::ModelProviderInfo;
 
 static GEMINI_CALL_ID_COUNTER: AtomicI64 = AtomicI64::new(0);
 
@@ -104,10 +107,32 @@ pub(crate) async fn stream_gemini(
     };
 
     let client = build_reqwest_client();
-    let gemini_api_key = crate::auth::read_gemini_api_key_from_env()
+    let gemini_api_key = read_gemini_api_key_from_env()
         .or_else(|| auth_manager.and_then(|manager| manager.gemini_api_key_from_storage()));
 
-    let mut headers = provider.build_header_map()?;
+    let capacity = provider.http_headers.as_ref().map_or(0, HashMap::len)
+        + provider.env_http_headers.as_ref().map_or(0, HashMap::len);
+    let mut headers = HeaderMap::with_capacity(capacity);
+    if let Some(extra) = &provider.http_headers {
+        for (name, value) in extra {
+            if let (Ok(name), Ok(value)) =
+                (HeaderName::try_from(name), HeaderValue::try_from(value))
+            {
+                headers.insert(name, value);
+            }
+        }
+    }
+    if let Some(env_headers) = &provider.env_http_headers {
+        for (name, env_var) in env_headers {
+            if let Ok(value) = std::env::var(env_var)
+                && !value.trim().is_empty()
+                && let (Ok(name), Ok(value)) =
+                    (HeaderName::try_from(name), HeaderValue::try_from(value))
+            {
+                headers.insert(name, value);
+            }
+        }
+    }
     if let Some(api_key) = gemini_api_key.as_deref()
         && let Ok(value) = HeaderValue::from_str(api_key)
     {
@@ -131,6 +156,8 @@ pub(crate) async fn stream_gemini(
             url: Some(url),
             cf_ray: None,
             request_id: None,
+            identity_authorization_error: None,
+            identity_error_code: None,
         }));
     }
 
@@ -891,6 +918,7 @@ async fn process_gemini_sse<S>(
         let item = ResponseItem::FunctionCall {
             id: None,
             name,
+            namespace: None,
             arguments,
             call_id,
             thought_signature,

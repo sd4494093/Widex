@@ -30,7 +30,8 @@ impl StateRuntime {
     /// stage-1 (`memory_stage1`) and phase-2 (`memory_consolidate_global`)
     /// memory pipelines.
     pub async fn clear_memory_data(&self) -> anyhow::Result<()> {
-        self.clear_memory_data_inner(false).await
+        self.clear_memory_data_inner(/*disable_existing_threads*/ false)
+            .await
     }
 
     /// Resets persisted memory state for a clean-slate local start.
@@ -39,7 +40,8 @@ impl StateRuntime {
     /// jobs, this disables memory generation for all existing threads so
     /// historical rollouts are not immediately picked up again.
     pub async fn reset_memory_data_for_fresh_start(&self) -> anyhow::Result<()> {
-        self.clear_memory_data_inner(true).await
+        self.clear_memory_data_inner(/*disable_existing_threads*/ true)
+            .await
     }
 
     async fn clear_memory_data_inner(&self, disable_existing_threads: bool) -> anyhow::Result<()> {
@@ -164,9 +166,12 @@ SELECT
     created_at,
     updated_at,
     source,
+    agent_path,
     agent_nickname,
     agent_role,
     model_provider,
+    model,
+    reasoning_effort,
     cwd,
     cli_version,
     title,
@@ -193,12 +198,12 @@ LEFT JOIN jobs
         );
         push_thread_filters(
             &mut builder,
-            false,
+            /*archived_only*/ false,
             allowed_sources,
-            None,
-            None,
+            /*model_providers*/ None,
+            /*anchor*/ None,
             SortKey::UpdatedAt,
-            None,
+            /*search_term*/ None,
         );
         builder.push(" AND threads.memory_mode = 'enabled'");
         builder
@@ -290,6 +295,49 @@ LIMIT ?
         rows.into_iter()
             .map(|row| Stage1OutputRow::try_from_row(&row).and_then(Stage1Output::try_from))
             .collect::<Result<Vec<_>, _>>()
+    }
+
+    /// Prunes stale stage-1 outputs while preserving the latest phase-2
+    /// baseline and stage-1 job watermarks.
+    ///
+    /// Query behavior:
+    /// - considers only rows with `selected_for_phase2 = 0`
+    /// - keeps recency as `COALESCE(last_usage, source_updated_at)`
+    /// - removes rows older than `max_unused_days`
+    /// - prunes at most `limit` rows ordered from stalest to newest
+    pub async fn prune_stage1_outputs_for_retention(
+        &self,
+        max_unused_days: i64,
+        limit: usize,
+    ) -> anyhow::Result<usize> {
+        if limit == 0 {
+            return Ok(0);
+        }
+
+        let cutoff = (Utc::now() - Duration::days(max_unused_days.max(0))).timestamp();
+        let rows_affected = sqlx::query(
+            r#"
+DELETE FROM stage1_outputs
+WHERE thread_id IN (
+    SELECT thread_id
+    FROM stage1_outputs
+    WHERE selected_for_phase2 = 0
+      AND COALESCE(last_usage, source_updated_at) < ?
+    ORDER BY
+      COALESCE(last_usage, source_updated_at) ASC,
+      source_updated_at ASC,
+      thread_id ASC
+    LIMIT ?
+)
+            "#,
+        )
+        .bind(cutoff)
+        .bind(limit as i64)
+        .execute(self.pool.as_ref())
+        .await?
+        .rows_affected();
+
+        Ok(rows_affected as usize)
     }
 
     /// Returns the current phase-2 input set along with its diff against the
@@ -1251,7 +1299,7 @@ mod tests {
     #[tokio::test]
     async fn stage1_claim_skips_when_up_to_date() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
@@ -1266,7 +1314,10 @@ mod tests {
         let owner_b = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("owner id");
 
         let claim = runtime
-            .try_claim_stage1_job(thread_id, owner_a, 100, 3600, 64)
+            .try_claim_stage1_job(
+                thread_id, owner_a, /*source_updated_at*/ 100, /*lease_seconds*/ 3600,
+                /*max_running_jobs*/ 64,
+            )
             .await
             .expect("claim stage1 job");
         let ownership_token = match claim {
@@ -1279,10 +1330,10 @@ mod tests {
                 .mark_stage1_job_succeeded(
                     thread_id,
                     ownership_token.as_str(),
-                    100,
+                    /*source_updated_at*/ 100,
                     "raw",
                     "sum",
-                    None,
+                    /*rollout_slug*/ None,
                 )
                 .await
                 .expect("mark stage1 succeeded"),
@@ -1290,13 +1341,19 @@ mod tests {
         );
 
         let up_to_date = runtime
-            .try_claim_stage1_job(thread_id, owner_b, 100, 3600, 64)
+            .try_claim_stage1_job(
+                thread_id, owner_b, /*source_updated_at*/ 100, /*lease_seconds*/ 3600,
+                /*max_running_jobs*/ 64,
+            )
             .await
             .expect("claim stage1 up-to-date");
         assert_eq!(up_to_date, Stage1JobClaimOutcome::SkippedUpToDate);
 
         let needs_rerun = runtime
-            .try_claim_stage1_job(thread_id, owner_b, 101, 3600, 64)
+            .try_claim_stage1_job(
+                thread_id, owner_b, /*source_updated_at*/ 101, /*lease_seconds*/ 3600,
+                /*max_running_jobs*/ 64,
+            )
             .await
             .expect("claim stage1 newer source");
         assert!(
@@ -1310,7 +1367,7 @@ mod tests {
     #[tokio::test]
     async fn stage1_running_stale_can_be_stolen_but_fresh_running_is_skipped() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
@@ -1324,13 +1381,19 @@ mod tests {
             .expect("upsert thread");
 
         let claim_a = runtime
-            .try_claim_stage1_job(thread_id, owner_a, 100, 3600, 64)
+            .try_claim_stage1_job(
+                thread_id, owner_a, /*source_updated_at*/ 100, /*lease_seconds*/ 3600,
+                /*max_running_jobs*/ 64,
+            )
             .await
             .expect("claim a");
         assert!(matches!(claim_a, Stage1JobClaimOutcome::Claimed { .. }));
 
         let claim_b_fresh = runtime
-            .try_claim_stage1_job(thread_id, owner_b, 100, 3600, 64)
+            .try_claim_stage1_job(
+                thread_id, owner_b, /*source_updated_at*/ 100, /*lease_seconds*/ 3600,
+                /*max_running_jobs*/ 64,
+            )
             .await
             .expect("claim b fresh");
         assert_eq!(claim_b_fresh, Stage1JobClaimOutcome::SkippedRunning);
@@ -1342,7 +1405,10 @@ mod tests {
             .expect("force stale lease");
 
         let claim_b_stale = runtime
-            .try_claim_stage1_job(thread_id, owner_b, 100, 3600, 64)
+            .try_claim_stage1_job(
+                thread_id, owner_b, /*source_updated_at*/ 100, /*lease_seconds*/ 3600,
+                /*max_running_jobs*/ 64,
+            )
             .await
             .expect("claim b stale");
         assert!(matches!(
@@ -1356,7 +1422,7 @@ mod tests {
     #[tokio::test]
     async fn stage1_concurrent_claim_for_same_thread_is_conflict_safe() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
@@ -1381,7 +1447,10 @@ mod tests {
                                 owner: ThreadId| async move {
             for attempt in 0..5 {
                 match runtime
-                    .try_claim_stage1_job(thread_id, owner, 100, 3_600, 64)
+                    .try_claim_stage1_job(
+                        thread_id, owner, /*source_updated_at*/ 100,
+                        /*lease_seconds*/ 3_600, /*max_running_jobs*/ 64,
+                    )
                     .await
                 {
                     Ok(outcome) => return outcome,
@@ -1421,7 +1490,7 @@ mod tests {
     #[tokio::test]
     async fn stage1_concurrent_claims_respect_running_cap() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
@@ -1452,13 +1521,19 @@ mod tests {
         let (claim_a, claim_b) = tokio::join!(
             async move {
                 runtime_a
-                    .try_claim_stage1_job(thread_a, owner_a, 100, 3_600, 1)
+                    .try_claim_stage1_job(
+                        thread_a, owner_a, /*source_updated_at*/ 100,
+                        /*lease_seconds*/ 3_600, /*max_running_jobs*/ 1,
+                    )
                     .await
                     .expect("claim stage1 thread a")
             },
             async move {
                 runtime_b
-                    .try_claim_stage1_job(thread_b, owner_b, 101, 3_600, 1)
+                    .try_claim_stage1_job(
+                        thread_b, owner_b, /*source_updated_at*/ 101,
+                        /*lease_seconds*/ 3_600, /*max_running_jobs*/ 1,
+                    )
                     .await
                     .expect("claim stage1 thread b")
             },
@@ -1483,7 +1558,7 @@ mod tests {
     #[tokio::test]
     async fn claim_stage1_jobs_filters_by_age_idle_and_current_thread() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
@@ -1573,7 +1648,7 @@ mod tests {
     #[tokio::test]
     async fn claim_stage1_jobs_prefilters_threads_with_up_to_date_memory() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
@@ -1615,8 +1690,8 @@ mod tests {
                 up_to_date_thread_id,
                 worker_id,
                 up_to_date.updated_at.timestamp(),
-                3600,
-                64,
+                /*lease_seconds*/ 3600,
+                /*max_running_jobs*/ 64,
             )
             .await
             .expect("claim up-to-date thread for seed");
@@ -1632,7 +1707,7 @@ mod tests {
                     up_to_date.updated_at.timestamp(),
                     "raw",
                     "summary",
-                    None,
+                    /*rollout_slug*/ None,
                 )
                 .await
                 .expect("mark up-to-date thread succeeded"),
@@ -1672,7 +1747,7 @@ mod tests {
     #[tokio::test]
     async fn claim_stage1_jobs_skips_threads_with_disabled_memory_mode() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
@@ -1743,7 +1818,7 @@ mod tests {
     #[tokio::test]
     async fn reset_memory_data_for_fresh_start_clears_rows_and_disables_threads() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
@@ -1768,8 +1843,8 @@ mod tests {
                 enabled_thread_id,
                 worker_id,
                 enabled.updated_at.timestamp(),
-                3600,
-                64,
+                /*lease_seconds*/ 3600,
+                /*max_running_jobs*/ 64,
             )
             .await
             .expect("claim enabled thread");
@@ -1785,7 +1860,7 @@ mod tests {
                     enabled.updated_at.timestamp(),
                     "raw",
                     "summary",
-                    None,
+                    /*rollout_slug*/ None,
                 )
                 .await
                 .expect("mark enabled thread succeeded"),
@@ -1852,7 +1927,7 @@ mod tests {
     #[tokio::test]
     async fn claim_stage1_jobs_enforces_global_running_cap() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
@@ -1979,7 +2054,7 @@ WHERE kind = 'memory_stage1'
     #[tokio::test]
     async fn claim_stage1_jobs_processes_two_full_batches_across_startup_passes() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
@@ -2036,7 +2111,7 @@ WHERE kind = 'memory_stage1'
                         claim.thread.updated_at.timestamp(),
                         "raw",
                         "summary",
-                        None,
+                        /*rollout_slug*/ None,
                     )
                     .await
                     .expect("mark first-batch stage1 success"),
@@ -2066,7 +2141,7 @@ WHERE kind = 'memory_stage1'
     #[tokio::test]
     async fn stage1_output_cascades_on_thread_delete() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
@@ -2079,7 +2154,10 @@ WHERE kind = 'memory_stage1'
             .expect("upsert thread");
 
         let claim = runtime
-            .try_claim_stage1_job(thread_id, owner, 100, 3600, 64)
+            .try_claim_stage1_job(
+                thread_id, owner, /*source_updated_at*/ 100, /*lease_seconds*/ 3600,
+                /*max_running_jobs*/ 64,
+            )
             .await
             .expect("claim stage1");
         let ownership_token = match claim {
@@ -2091,10 +2169,10 @@ WHERE kind = 'memory_stage1'
                 .mark_stage1_job_succeeded(
                     thread_id,
                     ownership_token.as_str(),
-                    100,
+                    /*source_updated_at*/ 100,
                     "raw",
                     "sum",
-                    None,
+                    /*rollout_slug*/ None,
                 )
                 .await
                 .expect("mark stage1 succeeded"),
@@ -2133,7 +2211,7 @@ WHERE kind = 'memory_stage1'
     #[tokio::test]
     async fn mark_stage1_job_succeeded_no_output_skips_phase2_when_output_was_already_absent() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
@@ -2150,7 +2228,10 @@ WHERE kind = 'memory_stage1'
             .expect("upsert thread");
 
         let claim = runtime
-            .try_claim_stage1_job(thread_id, owner, 100, 3600, 64)
+            .try_claim_stage1_job(
+                thread_id, owner, /*source_updated_at*/ 100, /*lease_seconds*/ 3600,
+                /*max_running_jobs*/ 64,
+            )
             .await
             .expect("claim stage1");
         let ownership_token = match claim {
@@ -2179,7 +2260,10 @@ WHERE kind = 'memory_stage1'
         );
 
         let up_to_date = runtime
-            .try_claim_stage1_job(thread_id, owner_b, 100, 3600, 64)
+            .try_claim_stage1_job(
+                thread_id, owner_b, /*source_updated_at*/ 100, /*lease_seconds*/ 3600,
+                /*max_running_jobs*/ 64,
+            )
             .await
             .expect("claim stage1 up-to-date");
         assert_eq!(up_to_date, Stage1JobClaimOutcome::SkippedUpToDate);
@@ -2197,7 +2281,7 @@ WHERE kind = 'memory_stage1'
         );
 
         let claim_phase2 = runtime
-            .try_claim_global_phase2_job(owner, 3600)
+            .try_claim_global_phase2_job(owner, /*lease_seconds*/ 3600)
             .await
             .expect("claim phase2");
         assert_eq!(
@@ -2212,7 +2296,7 @@ WHERE kind = 'memory_stage1'
     #[tokio::test]
     async fn mark_stage1_job_succeeded_no_output_enqueues_phase2_when_deleting_output() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
@@ -2229,7 +2313,10 @@ WHERE kind = 'memory_stage1'
             .expect("upsert thread");
 
         let first_claim = runtime
-            .try_claim_stage1_job(thread_id, owner, 100, 3600, 64)
+            .try_claim_stage1_job(
+                thread_id, owner, /*source_updated_at*/ 100, /*lease_seconds*/ 3600,
+                /*max_running_jobs*/ 64,
+            )
             .await
             .expect("claim initial stage1");
         let first_token = match first_claim {
@@ -2238,14 +2325,21 @@ WHERE kind = 'memory_stage1'
         };
         assert!(
             runtime
-                .mark_stage1_job_succeeded(thread_id, first_token.as_str(), 100, "raw", "sum", None)
+                .mark_stage1_job_succeeded(
+                    thread_id,
+                    first_token.as_str(),
+                    /*source_updated_at*/ 100,
+                    "raw",
+                    "sum",
+                    /*rollout_slug*/ None
+                )
                 .await
                 .expect("mark initial stage1 succeeded"),
             "initial stage1 success should create stage1 output"
         );
 
         let phase2_claim = runtime
-            .try_claim_global_phase2_job(owner, 3600)
+            .try_claim_global_phase2_job(owner, /*lease_seconds*/ 3600)
             .await
             .expect("claim phase2 after initial output");
         let (phase2_token, phase2_input_watermark) = match phase2_claim {
@@ -2269,7 +2363,10 @@ WHERE kind = 'memory_stage1'
         );
 
         let no_output_claim = runtime
-            .try_claim_stage1_job(thread_id, owner_b, 101, 3600, 64)
+            .try_claim_stage1_job(
+                thread_id, owner_b, /*source_updated_at*/ 101, /*lease_seconds*/ 3600,
+                /*max_running_jobs*/ 64,
+            )
             .await
             .expect("claim stage1 for no-output delete");
         let no_output_token = match no_output_claim {
@@ -2295,7 +2392,7 @@ WHERE kind = 'memory_stage1'
         assert_eq!(output_row_count, 0);
 
         let claim_phase2 = runtime
-            .try_claim_global_phase2_job(owner, 3600)
+            .try_claim_global_phase2_job(owner, /*lease_seconds*/ 3600)
             .await
             .expect("claim phase2 after no-output deletion");
         let (phase2_token, phase2_input_watermark) = match claim_phase2 {
@@ -2323,7 +2420,7 @@ WHERE kind = 'memory_stage1'
     #[tokio::test]
     async fn stage1_retry_exhaustion_does_not_block_newer_watermark() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
@@ -2340,7 +2437,10 @@ WHERE kind = 'memory_stage1'
 
         for attempt in 0..3 {
             let claim = runtime
-                .try_claim_stage1_job(thread_id, owner, 100, 3_600, 64)
+                .try_claim_stage1_job(
+                    thread_id, owner, /*source_updated_at*/ 100, /*lease_seconds*/ 3_600,
+                    /*max_running_jobs*/ 64,
+                )
                 .await
                 .expect("claim stage1 for retry exhaustion");
             let ownership_token = match claim {
@@ -2352,7 +2452,12 @@ WHERE kind = 'memory_stage1'
             };
             assert!(
                 runtime
-                    .mark_stage1_job_failed(thread_id, ownership_token.as_str(), "boom", 0)
+                    .mark_stage1_job_failed(
+                        thread_id,
+                        ownership_token.as_str(),
+                        "boom",
+                        /*retry_delay_seconds*/ 0
+                    )
                     .await
                     .expect("mark stage1 failed"),
                 "attempt {} should decrement retry budget",
@@ -2361,7 +2466,10 @@ WHERE kind = 'memory_stage1'
         }
 
         let exhausted_claim = runtime
-            .try_claim_stage1_job(thread_id, owner, 100, 3_600, 64)
+            .try_claim_stage1_job(
+                thread_id, owner, /*source_updated_at*/ 100, /*lease_seconds*/ 3_600,
+                /*max_running_jobs*/ 64,
+            )
             .await
             .expect("claim stage1 after retry exhaustion");
         assert_eq!(
@@ -2370,7 +2478,10 @@ WHERE kind = 'memory_stage1'
         );
 
         let newer_source_claim = runtime
-            .try_claim_stage1_job(thread_id, owner, 101, 3_600, 64)
+            .try_claim_stage1_job(
+                thread_id, owner, /*source_updated_at*/ 101, /*lease_seconds*/ 3_600,
+                /*max_running_jobs*/ 64,
+            )
             .await
             .expect("claim stage1 with newer source watermark");
         assert!(
@@ -2405,19 +2516,19 @@ WHERE kind = 'memory_stage1'
     #[tokio::test]
     async fn phase2_global_consolidation_reruns_when_watermark_advances() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
         let owner = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("owner id");
 
         runtime
-            .enqueue_global_consolidation(100)
+            .enqueue_global_consolidation(/*input_watermark*/ 100)
             .await
             .expect("enqueue global consolidation");
 
         let claim = runtime
-            .try_claim_global_phase2_job(owner, 3600)
+            .try_claim_global_phase2_job(owner, /*lease_seconds*/ 3600)
             .await
             .expect("claim phase2");
         let (ownership_token, input_watermark) = match claim {
@@ -2436,18 +2547,18 @@ WHERE kind = 'memory_stage1'
         );
 
         let claim_up_to_date = runtime
-            .try_claim_global_phase2_job(owner, 3600)
+            .try_claim_global_phase2_job(owner, /*lease_seconds*/ 3600)
             .await
             .expect("claim phase2 up-to-date");
         assert_eq!(claim_up_to_date, Phase2JobClaimOutcome::SkippedNotDirty);
 
         runtime
-            .enqueue_global_consolidation(101)
+            .enqueue_global_consolidation(/*input_watermark*/ 101)
             .await
             .expect("enqueue global consolidation again");
 
         let claim_rerun = runtime
-            .try_claim_global_phase2_job(owner, 3600)
+            .try_claim_global_phase2_job(owner, /*lease_seconds*/ 3600)
             .await
             .expect("claim phase2 rerun");
         assert!(
@@ -2461,7 +2572,7 @@ WHERE kind = 'memory_stage1'
     #[tokio::test]
     async fn list_stage1_outputs_for_global_returns_latest_outputs() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
@@ -2485,7 +2596,13 @@ WHERE kind = 'memory_stage1'
             .expect("upsert thread b");
 
         let claim = runtime
-            .try_claim_stage1_job(thread_id_a, owner, 100, 3600, 64)
+            .try_claim_stage1_job(
+                thread_id_a,
+                owner,
+                /*source_updated_at*/ 100,
+                /*lease_seconds*/ 3600,
+                /*max_running_jobs*/ 64,
+            )
             .await
             .expect("claim stage1 a");
         let ownership_token = match claim {
@@ -2497,10 +2614,10 @@ WHERE kind = 'memory_stage1'
                 .mark_stage1_job_succeeded(
                     thread_id_a,
                     ownership_token.as_str(),
-                    100,
+                    /*source_updated_at*/ 100,
                     "raw memory a",
                     "summary a",
-                    None,
+                    /*rollout_slug*/ None,
                 )
                 .await
                 .expect("mark stage1 succeeded a"),
@@ -2508,7 +2625,13 @@ WHERE kind = 'memory_stage1'
         );
 
         let claim = runtime
-            .try_claim_stage1_job(thread_id_b, owner, 101, 3600, 64)
+            .try_claim_stage1_job(
+                thread_id_b,
+                owner,
+                /*source_updated_at*/ 101,
+                /*lease_seconds*/ 3600,
+                /*max_running_jobs*/ 64,
+            )
             .await
             .expect("claim stage1 b");
         let ownership_token = match claim {
@@ -2520,7 +2643,7 @@ WHERE kind = 'memory_stage1'
                 .mark_stage1_job_succeeded(
                     thread_id_b,
                     ownership_token.as_str(),
-                    101,
+                    /*source_updated_at*/ 101,
                     "raw memory b",
                     "summary b",
                     Some("rollout-b"),
@@ -2531,7 +2654,7 @@ WHERE kind = 'memory_stage1'
         );
 
         let outputs = runtime
-            .list_stage1_outputs_for_global(10)
+            .list_stage1_outputs_for_global(/*n*/ 10)
             .await
             .expect("list stage1 outputs for global");
         assert_eq!(outputs.len(), 2);
@@ -2552,7 +2675,7 @@ WHERE kind = 'memory_stage1'
     #[tokio::test]
     async fn list_stage1_outputs_for_global_skips_empty_payloads() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
@@ -2607,7 +2730,7 @@ VALUES (?, ?, ?, ?, ?)
         .expect("insert empty stage1 output");
 
         let outputs = runtime
-            .list_stage1_outputs_for_global(1)
+            .list_stage1_outputs_for_global(/*n*/ 1)
             .await
             .expect("list stage1 outputs for global");
         assert_eq!(outputs.len(), 1);
@@ -2621,7 +2744,7 @@ VALUES (?, ?, ?, ?, ?)
     #[tokio::test]
     async fn list_stage1_outputs_for_global_skips_polluted_threads() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
@@ -2645,7 +2768,10 @@ VALUES (?, ?, ?, ?, ?)
                 .expect("upsert thread");
 
             let claim = runtime
-                .try_claim_stage1_job(thread_id, owner, 100, 3600, 64)
+                .try_claim_stage1_job(
+                    thread_id, owner, /*source_updated_at*/ 100, /*lease_seconds*/ 3600,
+                    /*max_running_jobs*/ 64,
+                )
                 .await
                 .expect("claim stage1");
             let ownership_token = match claim {
@@ -2657,10 +2783,10 @@ VALUES (?, ?, ?, ?, ?)
                     .mark_stage1_job_succeeded(
                         thread_id,
                         ownership_token.as_str(),
-                        100,
+                        /*source_updated_at*/ 100,
                         "raw memory",
                         "summary",
-                        None,
+                        /*rollout_slug*/ None,
                     )
                     .await
                     .expect("mark stage1 succeeded"),
@@ -2674,7 +2800,7 @@ VALUES (?, ?, ?, ?, ?)
             .expect("mark thread polluted");
 
         let outputs = runtime
-            .list_stage1_outputs_for_global(10)
+            .list_stage1_outputs_for_global(/*n*/ 10)
             .await
             .expect("list stage1 outputs for global");
         assert_eq!(outputs.len(), 1);
@@ -2686,7 +2812,7 @@ VALUES (?, ?, ?, ?, ?)
     #[tokio::test]
     async fn get_phase2_input_selection_reports_added_retained_and_removed_rows() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
@@ -2716,7 +2842,10 @@ VALUES (?, ?, ?, ?, ?)
             (thread_id_c, 102, Some("rollout-c")),
         ] {
             let claim = runtime
-                .try_claim_stage1_job(thread_id, owner, updated_at, 3600, 64)
+                .try_claim_stage1_job(
+                    thread_id, owner, updated_at, /*lease_seconds*/ 3600,
+                    /*max_running_jobs*/ 64,
+                )
                 .await
                 .expect("claim stage1");
             let ownership_token = match claim {
@@ -2740,7 +2869,7 @@ VALUES (?, ?, ?, ?, ?)
         }
 
         let claim = runtime
-            .try_claim_global_phase2_job(owner, 3600)
+            .try_claim_global_phase2_job(owner, /*lease_seconds*/ 3600)
             .await
             .expect("claim phase2");
         let (ownership_token, input_watermark) = match claim {
@@ -2752,7 +2881,7 @@ VALUES (?, ?, ?, ?, ?)
         };
         assert_eq!(input_watermark, 102);
         let selected_outputs = runtime
-            .list_stage1_outputs_for_global(10)
+            .list_stage1_outputs_for_global(/*n*/ 10)
             .await
             .expect("list stage1 outputs for global")
             .into_iter()
@@ -2771,7 +2900,7 @@ VALUES (?, ?, ?, ?, ?)
         );
 
         let selection = runtime
-            .get_phase2_input_selection(2, 36_500)
+            .get_phase2_input_selection(/*n*/ 2, /*max_unused_days*/ 36_500)
             .await
             .expect("load phase2 input selection");
 
@@ -2798,7 +2927,7 @@ VALUES (?, ?, ?, ?, ?)
     #[tokio::test]
     async fn get_phase2_input_selection_marks_polluted_previous_selection_as_removed() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
@@ -2819,7 +2948,10 @@ VALUES (?, ?, ?, ?, ?)
                 .expect("upsert thread");
 
             let claim = runtime
-                .try_claim_stage1_job(thread_id, owner, updated_at, 3600, 64)
+                .try_claim_stage1_job(
+                    thread_id, owner, updated_at, /*lease_seconds*/ 3600,
+                    /*max_running_jobs*/ 64,
+                )
                 .await
                 .expect("claim stage1");
             let ownership_token = match claim {
@@ -2834,7 +2966,7 @@ VALUES (?, ?, ?, ?, ?)
                         updated_at,
                         &format!("raw-{updated_at}"),
                         &format!("summary-{updated_at}"),
-                        None,
+                        /*rollout_slug*/ None,
                     )
                     .await
                     .expect("mark stage1 succeeded"),
@@ -2843,7 +2975,7 @@ VALUES (?, ?, ?, ?, ?)
         }
 
         let claim = runtime
-            .try_claim_global_phase2_job(owner, 3600)
+            .try_claim_global_phase2_job(owner, /*lease_seconds*/ 3600)
             .await
             .expect("claim phase2");
         let (ownership_token, input_watermark) = match claim {
@@ -2854,7 +2986,7 @@ VALUES (?, ?, ?, ?, ?)
             other => panic!("unexpected phase2 claim outcome: {other:?}"),
         };
         let selected_outputs = runtime
-            .list_stage1_outputs_for_global(10)
+            .list_stage1_outputs_for_global(/*n*/ 10)
             .await
             .expect("list stage1 outputs for global");
         assert!(
@@ -2875,7 +3007,7 @@ VALUES (?, ?, ?, ?, ?)
             .expect("mark thread polluted");
 
         let selection = runtime
-            .get_phase2_input_selection(2, 36_500)
+            .get_phase2_input_selection(/*n*/ 2, /*max_unused_days*/ 36_500)
             .await
             .expect("load phase2 input selection");
 
@@ -2904,7 +3036,7 @@ VALUES (?, ?, ?, ?, ?)
     #[tokio::test]
     async fn mark_thread_memory_mode_polluted_enqueues_phase2_for_selected_threads() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
@@ -2920,7 +3052,10 @@ VALUES (?, ?, ?, ?, ?)
             .expect("upsert thread");
 
         let claim = runtime
-            .try_claim_stage1_job(thread_id, owner, 100, 3600, 64)
+            .try_claim_stage1_job(
+                thread_id, owner, /*source_updated_at*/ 100, /*lease_seconds*/ 3600,
+                /*max_running_jobs*/ 64,
+            )
             .await
             .expect("claim stage1");
         let ownership_token = match claim {
@@ -2932,10 +3067,10 @@ VALUES (?, ?, ?, ?, ?)
                 .mark_stage1_job_succeeded(
                     thread_id,
                     ownership_token.as_str(),
-                    100,
+                    /*source_updated_at*/ 100,
                     "raw",
                     "summary",
-                    None,
+                    /*rollout_slug*/ None,
                 )
                 .await
                 .expect("mark stage1 succeeded"),
@@ -2943,7 +3078,7 @@ VALUES (?, ?, ?, ?, ?)
         );
 
         let phase2_claim = runtime
-            .try_claim_global_phase2_job(owner, 3600)
+            .try_claim_global_phase2_job(owner, /*lease_seconds*/ 3600)
             .await
             .expect("claim phase2");
         let (phase2_token, input_watermark) = match phase2_claim {
@@ -2954,7 +3089,7 @@ VALUES (?, ?, ?, ?, ?)
             other => panic!("unexpected phase2 claim outcome: {other:?}"),
         };
         let selected_outputs = runtime
-            .list_stage1_outputs_for_global(10)
+            .list_stage1_outputs_for_global(/*n*/ 10)
             .await
             .expect("list stage1 outputs");
         assert!(
@@ -2978,7 +3113,7 @@ VALUES (?, ?, ?, ?, ?)
         );
 
         let next_claim = runtime
-            .try_claim_global_phase2_job(owner, 3600)
+            .try_claim_global_phase2_job(owner, /*lease_seconds*/ 3600)
             .await
             .expect("claim phase2 after pollution");
         assert!(matches!(next_claim, Phase2JobClaimOutcome::Claimed { .. }));
@@ -2989,7 +3124,7 @@ VALUES (?, ?, ?, ?, ?)
     #[tokio::test]
     async fn get_phase2_input_selection_treats_regenerated_selected_rows_as_added() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
@@ -3005,7 +3140,10 @@ VALUES (?, ?, ?, ?, ?)
             .expect("upsert thread");
 
         let first_claim = runtime
-            .try_claim_stage1_job(thread_id, owner, 100, 3600, 64)
+            .try_claim_stage1_job(
+                thread_id, owner, /*source_updated_at*/ 100, /*lease_seconds*/ 3600,
+                /*max_running_jobs*/ 64,
+            )
             .await
             .expect("claim initial stage1");
         let first_token = match first_claim {
@@ -3017,7 +3155,7 @@ VALUES (?, ?, ?, ?, ?)
                 .mark_stage1_job_succeeded(
                     thread_id,
                     first_token.as_str(),
-                    100,
+                    /*source_updated_at*/ 100,
                     "raw-100",
                     "summary-100",
                     Some("rollout-100"),
@@ -3028,7 +3166,7 @@ VALUES (?, ?, ?, ?, ?)
         );
 
         let phase2_claim = runtime
-            .try_claim_global_phase2_job(owner, 3600)
+            .try_claim_global_phase2_job(owner, /*lease_seconds*/ 3600)
             .await
             .expect("claim phase2");
         let (phase2_token, input_watermark) = match phase2_claim {
@@ -3039,7 +3177,7 @@ VALUES (?, ?, ?, ?, ?)
             other => panic!("unexpected phase2 claim outcome: {other:?}"),
         };
         let selected_outputs = runtime
-            .list_stage1_outputs_for_global(1)
+            .list_stage1_outputs_for_global(/*n*/ 1)
             .await
             .expect("list selected outputs");
         assert!(
@@ -3055,7 +3193,10 @@ VALUES (?, ?, ?, ?, ?)
         );
 
         let refreshed_claim = runtime
-            .try_claim_stage1_job(thread_id, owner, 101, 3600, 64)
+            .try_claim_stage1_job(
+                thread_id, owner, /*source_updated_at*/ 101, /*lease_seconds*/ 3600,
+                /*max_running_jobs*/ 64,
+            )
             .await
             .expect("claim refreshed stage1");
         let refreshed_token = match refreshed_claim {
@@ -3067,7 +3208,7 @@ VALUES (?, ?, ?, ?, ?)
                 .mark_stage1_job_succeeded(
                     thread_id,
                     refreshed_token.as_str(),
-                    101,
+                    /*source_updated_at*/ 101,
                     "raw-101",
                     "summary-101",
                     Some("rollout-101"),
@@ -3078,7 +3219,7 @@ VALUES (?, ?, ?, ?, ?)
         );
 
         let selection = runtime
-            .get_phase2_input_selection(1, 36_500)
+            .get_phase2_input_selection(/*n*/ 1, /*max_unused_days*/ 36_500)
             .await
             .expect("load phase2 input selection");
         assert_eq!(selection.selected.len(), 1);
@@ -3105,7 +3246,7 @@ VALUES (?, ?, ?, ?, ?)
     #[tokio::test]
     async fn get_phase2_input_selection_reports_regenerated_previous_selection_as_removed() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
@@ -3138,7 +3279,10 @@ VALUES (?, ?, ?, ?, ?)
             (thread_id_d, 98, Some("rollout-d-98")),
         ] {
             let claim = runtime
-                .try_claim_stage1_job(thread_id, owner, updated_at, 3600, 64)
+                .try_claim_stage1_job(
+                    thread_id, owner, updated_at, /*lease_seconds*/ 3600,
+                    /*max_running_jobs*/ 64,
+                )
                 .await
                 .expect("claim initial stage1");
             let ownership_token = match claim {
@@ -3162,7 +3306,7 @@ VALUES (?, ?, ?, ?, ?)
         }
 
         let phase2_claim = runtime
-            .try_claim_global_phase2_job(owner, 3600)
+            .try_claim_global_phase2_job(owner, /*lease_seconds*/ 3600)
             .await
             .expect("claim phase2");
         let (phase2_token, input_watermark) = match phase2_claim {
@@ -3173,7 +3317,7 @@ VALUES (?, ?, ?, ?, ?)
             other => panic!("unexpected phase2 claim outcome: {other:?}"),
         };
         let selected_outputs = runtime
-            .list_stage1_outputs_for_global(2)
+            .list_stage1_outputs_for_global(/*n*/ 2)
             .await
             .expect("list selected outputs");
         assert_eq!(
@@ -3201,7 +3345,10 @@ VALUES (?, ?, ?, ?, ?)
             (thread_id_d, 104, Some("rollout-d-104")),
         ] {
             let claim = runtime
-                .try_claim_stage1_job(thread_id, owner, updated_at, 3600, 64)
+                .try_claim_stage1_job(
+                    thread_id, owner, updated_at, /*lease_seconds*/ 3600,
+                    /*max_running_jobs*/ 64,
+                )
                 .await
                 .expect("claim refreshed stage1");
             let ownership_token = match claim {
@@ -3225,7 +3372,7 @@ VALUES (?, ?, ?, ?, ?)
         }
 
         let selection = runtime
-            .get_phase2_input_selection(2, 36_500)
+            .get_phase2_input_selection(/*n*/ 2, /*max_unused_days*/ 36_500)
             .await
             .expect("load phase2 input selection");
         assert_eq!(
@@ -3260,7 +3407,7 @@ VALUES (?, ?, ?, ?, ?)
     #[tokio::test]
     async fn mark_global_phase2_job_succeeded_updates_selected_snapshot_timestamp() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
@@ -3276,7 +3423,10 @@ VALUES (?, ?, ?, ?, ?)
             .expect("upsert thread");
 
         let initial_claim = runtime
-            .try_claim_stage1_job(thread_id, owner, 100, 3600, 64)
+            .try_claim_stage1_job(
+                thread_id, owner, /*source_updated_at*/ 100, /*lease_seconds*/ 3600,
+                /*max_running_jobs*/ 64,
+            )
             .await
             .expect("claim initial stage1");
         let initial_token = match initial_claim {
@@ -3288,7 +3438,7 @@ VALUES (?, ?, ?, ?, ?)
                 .mark_stage1_job_succeeded(
                     thread_id,
                     initial_token.as_str(),
-                    100,
+                    /*source_updated_at*/ 100,
                     "raw-100",
                     "summary-100",
                     Some("rollout-100"),
@@ -3299,7 +3449,7 @@ VALUES (?, ?, ?, ?, ?)
         );
 
         let first_phase2_claim = runtime
-            .try_claim_global_phase2_job(owner, 3600)
+            .try_claim_global_phase2_job(owner, /*lease_seconds*/ 3600)
             .await
             .expect("claim first phase2");
         let (first_phase2_token, first_input_watermark) = match first_phase2_claim {
@@ -3310,7 +3460,7 @@ VALUES (?, ?, ?, ?, ?)
             other => panic!("unexpected first phase2 claim outcome: {other:?}"),
         };
         let first_selected_outputs = runtime
-            .list_stage1_outputs_for_global(1)
+            .list_stage1_outputs_for_global(/*n*/ 1)
             .await
             .expect("list first selected outputs");
         assert!(
@@ -3326,7 +3476,10 @@ VALUES (?, ?, ?, ?, ?)
         );
 
         let refreshed_claim = runtime
-            .try_claim_stage1_job(thread_id, owner, 101, 3600, 64)
+            .try_claim_stage1_job(
+                thread_id, owner, /*source_updated_at*/ 101, /*lease_seconds*/ 3600,
+                /*max_running_jobs*/ 64,
+            )
             .await
             .expect("claim refreshed stage1");
         let refreshed_token = match refreshed_claim {
@@ -3338,7 +3491,7 @@ VALUES (?, ?, ?, ?, ?)
                 .mark_stage1_job_succeeded(
                     thread_id,
                     refreshed_token.as_str(),
-                    101,
+                    /*source_updated_at*/ 101,
                     "raw-101",
                     "summary-101",
                     Some("rollout-101"),
@@ -3349,7 +3502,7 @@ VALUES (?, ?, ?, ?, ?)
         );
 
         let second_phase2_claim = runtime
-            .try_claim_global_phase2_job(owner, 3600)
+            .try_claim_global_phase2_job(owner, /*lease_seconds*/ 3600)
             .await
             .expect("claim second phase2");
         let (second_phase2_token, second_input_watermark) = match second_phase2_claim {
@@ -3360,7 +3513,7 @@ VALUES (?, ?, ?, ?, ?)
             other => panic!("unexpected second phase2 claim outcome: {other:?}"),
         };
         let second_selected_outputs = runtime
-            .list_stage1_outputs_for_global(1)
+            .list_stage1_outputs_for_global(/*n*/ 1)
             .await
             .expect("list second selected outputs");
         assert_eq!(
@@ -3380,7 +3533,7 @@ VALUES (?, ?, ?, ?, ?)
         );
 
         let selection = runtime
-            .get_phase2_input_selection(1, 36_500)
+            .get_phase2_input_selection(/*n*/ 1, /*max_unused_days*/ 36_500)
             .await
             .expect("load phase2 input selection after refresh");
         assert_eq!(selection.retained_thread_ids, vec![thread_id]);
@@ -3402,7 +3555,7 @@ VALUES (?, ?, ?, ?, ?)
     #[tokio::test]
     async fn mark_global_phase2_job_succeeded_only_marks_exact_selected_snapshots() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
@@ -3418,7 +3571,10 @@ VALUES (?, ?, ?, ?, ?)
             .expect("upsert thread");
 
         let initial_claim = runtime
-            .try_claim_stage1_job(thread_id, owner, 100, 3600, 64)
+            .try_claim_stage1_job(
+                thread_id, owner, /*source_updated_at*/ 100, /*lease_seconds*/ 3600,
+                /*max_running_jobs*/ 64,
+            )
             .await
             .expect("claim initial stage1");
         let initial_token = match initial_claim {
@@ -3430,7 +3586,7 @@ VALUES (?, ?, ?, ?, ?)
                 .mark_stage1_job_succeeded(
                     thread_id,
                     initial_token.as_str(),
-                    100,
+                    /*source_updated_at*/ 100,
                     "raw-100",
                     "summary-100",
                     Some("rollout-100"),
@@ -3441,7 +3597,7 @@ VALUES (?, ?, ?, ?, ?)
         );
 
         let phase2_claim = runtime
-            .try_claim_global_phase2_job(owner, 3600)
+            .try_claim_global_phase2_job(owner, /*lease_seconds*/ 3600)
             .await
             .expect("claim phase2");
         let (phase2_token, input_watermark) = match phase2_claim {
@@ -3452,13 +3608,16 @@ VALUES (?, ?, ?, ?, ?)
             other => panic!("unexpected phase2 claim outcome: {other:?}"),
         };
         let selected_outputs = runtime
-            .list_stage1_outputs_for_global(1)
+            .list_stage1_outputs_for_global(/*n*/ 1)
             .await
             .expect("list selected outputs");
         assert_eq!(selected_outputs[0].source_updated_at.timestamp(), 100);
 
         let refreshed_claim = runtime
-            .try_claim_stage1_job(thread_id, owner, 101, 3600, 64)
+            .try_claim_stage1_job(
+                thread_id, owner, /*source_updated_at*/ 101, /*lease_seconds*/ 3600,
+                /*max_running_jobs*/ 64,
+            )
             .await
             .expect("claim refreshed stage1");
         let refreshed_token = match refreshed_claim {
@@ -3470,7 +3629,7 @@ VALUES (?, ?, ?, ?, ?)
                 .mark_stage1_job_succeeded(
                     thread_id,
                     refreshed_token.as_str(),
-                    101,
+                    /*source_updated_at*/ 101,
                     "raw-101",
                     "summary-101",
                     Some("rollout-101"),
@@ -3504,7 +3663,7 @@ VALUES (?, ?, ?, ?, ?)
         assert_eq!(selected_for_phase2_source_updated_at, None);
 
         let selection = runtime
-            .get_phase2_input_selection(1, 36_500)
+            .get_phase2_input_selection(/*n*/ 1, /*max_unused_days*/ 36_500)
             .await
             .expect("load phase2 input selection");
         assert_eq!(selection.selected.len(), 1);
@@ -3517,7 +3676,7 @@ VALUES (?, ?, ?, ?, ?)
     #[tokio::test]
     async fn record_stage1_output_usage_updates_usage_metadata() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
@@ -3544,7 +3703,10 @@ VALUES (?, ?, ?, ?, ?)
             .expect("upsert thread b");
 
         let claim_a = runtime
-            .try_claim_stage1_job(thread_a, owner, 100, 3600, 64)
+            .try_claim_stage1_job(
+                thread_a, owner, /*source_updated_at*/ 100, /*lease_seconds*/ 3600,
+                /*max_running_jobs*/ 64,
+            )
             .await
             .expect("claim stage1 a");
         let token_a = match claim_a {
@@ -3553,13 +3715,23 @@ VALUES (?, ?, ?, ?, ?)
         };
         assert!(
             runtime
-                .mark_stage1_job_succeeded(thread_a, token_a.as_str(), 100, "raw a", "sum a", None)
+                .mark_stage1_job_succeeded(
+                    thread_a,
+                    token_a.as_str(),
+                    /*source_updated_at*/ 100,
+                    "raw a",
+                    "sum a",
+                    /*rollout_slug*/ None
+                )
                 .await
                 .expect("mark stage1 succeeded a")
         );
 
         let claim_b = runtime
-            .try_claim_stage1_job(thread_b, owner, 101, 3600, 64)
+            .try_claim_stage1_job(
+                thread_b, owner, /*source_updated_at*/ 101, /*lease_seconds*/ 3600,
+                /*max_running_jobs*/ 64,
+            )
             .await
             .expect("claim stage1 b");
         let token_b = match claim_b {
@@ -3568,7 +3740,14 @@ VALUES (?, ?, ?, ?, ?)
         };
         assert!(
             runtime
-                .mark_stage1_job_succeeded(thread_b, token_b.as_str(), 101, "raw b", "sum b", None)
+                .mark_stage1_job_succeeded(
+                    thread_b,
+                    token_b.as_str(),
+                    /*source_updated_at*/ 101,
+                    "raw b",
+                    "sum b",
+                    /*rollout_slug*/ None
+                )
                 .await
                 .expect("mark stage1 succeeded b")
         );
@@ -3616,7 +3795,7 @@ VALUES (?, ?, ?, ?, ?)
     #[tokio::test]
     async fn get_phase2_input_selection_prioritizes_usage_count_then_recent_usage() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
@@ -3648,7 +3827,13 @@ VALUES (?, ?, ?, ?, ?)
         ] {
             let source_updated_at = generated_at.timestamp();
             let claim = runtime
-                .try_claim_stage1_job(thread_id, owner, source_updated_at, 3600, 64)
+                .try_claim_stage1_job(
+                    thread_id,
+                    owner,
+                    source_updated_at,
+                    /*lease_seconds*/ 3600,
+                    /*max_running_jobs*/ 64,
+                )
                 .await
                 .expect("claim stage1");
             let ownership_token = match claim {
@@ -3663,7 +3848,7 @@ VALUES (?, ?, ?, ?, ?)
                         source_updated_at,
                         &format!("raw-{summary}"),
                         summary,
-                        None,
+                        /*rollout_slug*/ None,
                     )
                     .await
                     .expect("mark stage1 success"),
@@ -3688,7 +3873,7 @@ VALUES (?, ?, ?, ?, ?)
         }
 
         let selection = runtime
-            .get_phase2_input_selection(3, 30)
+            .get_phase2_input_selection(/*n*/ 3, /*max_unused_days*/ 30)
             .await
             .expect("load phase2 input selection");
 
@@ -3707,7 +3892,7 @@ VALUES (?, ?, ?, ?, ?)
     #[tokio::test]
     async fn get_phase2_input_selection_excludes_stale_used_memories_but_keeps_fresh_never_used() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
@@ -3739,7 +3924,13 @@ VALUES (?, ?, ?, ?, ?)
         ] {
             let source_updated_at = generated_at.timestamp();
             let claim = runtime
-                .try_claim_stage1_job(thread_id, owner, source_updated_at, 3600, 64)
+                .try_claim_stage1_job(
+                    thread_id,
+                    owner,
+                    source_updated_at,
+                    /*lease_seconds*/ 3600,
+                    /*max_running_jobs*/ 64,
+                )
                 .await
                 .expect("claim stage1");
             let ownership_token = match claim {
@@ -3754,7 +3945,7 @@ VALUES (?, ?, ?, ?, ?)
                         source_updated_at,
                         &format!("raw-{summary}"),
                         summary,
-                        None,
+                        /*rollout_slug*/ None,
                     )
                     .await
                     .expect("mark stage1 success"),
@@ -3779,7 +3970,7 @@ VALUES (?, ?, ?, ?, ?)
         }
 
         let selection = runtime
-            .get_phase2_input_selection(3, 30)
+            .get_phase2_input_selection(/*n*/ 3, /*max_unused_days*/ 30)
             .await
             .expect("load phase2 input selection");
 
@@ -3798,7 +3989,7 @@ VALUES (?, ?, ?, ?, ?)
     #[tokio::test]
     async fn get_phase2_input_selection_prefers_recent_thread_updates_over_recent_generation() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
@@ -3827,7 +4018,13 @@ VALUES (?, ?, ?, ?, ?)
             (newer_thread, 200_i64, "summary-newer"),
         ] {
             let claim = runtime
-                .try_claim_stage1_job(thread_id, owner, source_updated_at, 3600, 64)
+                .try_claim_stage1_job(
+                    thread_id,
+                    owner,
+                    source_updated_at,
+                    /*lease_seconds*/ 3600,
+                    /*max_running_jobs*/ 64,
+                )
                 .await
                 .expect("claim stage1");
             let ownership_token = match claim {
@@ -3842,7 +4039,7 @@ VALUES (?, ?, ?, ?, ?)
                         source_updated_at,
                         &format!("raw-{summary}"),
                         summary,
-                        None,
+                        /*rollout_slug*/ None,
                     )
                     .await
                     .expect("mark stage1 success"),
@@ -3864,7 +4061,7 @@ VALUES (?, ?, ?, ?, ?)
             .expect("update newer generated_at");
 
         let selection = runtime
-            .get_phase2_input_selection(1, 36_500)
+            .get_phase2_input_selection(/*n*/ 1, /*max_unused_days*/ 36_500)
             .await
             .expect("load phase2 input selection");
 
@@ -3876,9 +4073,229 @@ VALUES (?, ?, ?, ?, ?)
     }
 
     #[tokio::test]
+    async fn prune_stage1_outputs_for_retention_prunes_stale_unselected_rows_only() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("initialize runtime");
+
+        let owner = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("owner id");
+        let stale_unused =
+            ThreadId::from_string(&Uuid::new_v4().to_string()).expect("stale unused");
+        let stale_used = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("stale used");
+        let stale_selected =
+            ThreadId::from_string(&Uuid::new_v4().to_string()).expect("stale selected");
+        let fresh_used = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("fresh used");
+
+        for (thread_id, workspace) in [
+            (stale_unused, "workspace-stale-unused"),
+            (stale_used, "workspace-stale-used"),
+            (stale_selected, "workspace-stale-selected"),
+            (fresh_used, "workspace-fresh-used"),
+        ] {
+            runtime
+                .upsert_thread(&test_thread_metadata(
+                    &codex_home,
+                    thread_id,
+                    codex_home.join(workspace),
+                ))
+                .await
+                .expect("upsert thread");
+        }
+
+        let now = Utc::now().timestamp();
+        for (thread_id, source_updated_at, summary) in [
+            (
+                stale_unused,
+                now - Duration::days(60).num_seconds(),
+                "stale-unused",
+            ),
+            (
+                stale_used,
+                now - Duration::days(50).num_seconds(),
+                "stale-used",
+            ),
+            (
+                stale_selected,
+                now - Duration::days(45).num_seconds(),
+                "stale-selected",
+            ),
+            (
+                fresh_used,
+                now - Duration::days(10).num_seconds(),
+                "fresh-used",
+            ),
+        ] {
+            let claim = runtime
+                .try_claim_stage1_job(
+                    thread_id,
+                    owner,
+                    source_updated_at,
+                    /*lease_seconds*/ 3600,
+                    /*max_running_jobs*/ 64,
+                )
+                .await
+                .expect("claim stage1");
+            let ownership_token = match claim {
+                Stage1JobClaimOutcome::Claimed { ownership_token } => ownership_token,
+                other => panic!("unexpected stage1 claim outcome: {other:?}"),
+            };
+            assert!(
+                runtime
+                    .mark_stage1_job_succeeded(
+                        thread_id,
+                        ownership_token.as_str(),
+                        source_updated_at,
+                        &format!("raw-{summary}"),
+                        summary,
+                        /*rollout_slug*/ None,
+                    )
+                    .await
+                    .expect("mark stage1 success"),
+                "stage1 success should persist output"
+            );
+        }
+
+        sqlx::query(
+            "UPDATE stage1_outputs SET usage_count = ?, last_usage = ? WHERE thread_id = ?",
+        )
+        .bind(3_i64)
+        .bind(now - Duration::days(40).num_seconds())
+        .bind(stale_used.to_string())
+        .execute(runtime.pool.as_ref())
+        .await
+        .expect("set stale used metadata");
+        sqlx::query(
+            "UPDATE stage1_outputs SET selected_for_phase2 = 1, selected_for_phase2_source_updated_at = source_updated_at WHERE thread_id = ?",
+        )
+        .bind(stale_selected.to_string())
+        .execute(runtime.pool.as_ref())
+        .await
+        .expect("mark selected for phase2");
+        sqlx::query(
+            "UPDATE stage1_outputs SET usage_count = ?, last_usage = ? WHERE thread_id = ?",
+        )
+        .bind(8_i64)
+        .bind(now - Duration::days(2).num_seconds())
+        .bind(fresh_used.to_string())
+        .execute(runtime.pool.as_ref())
+        .await
+        .expect("set fresh used metadata");
+
+        let before_jobs_count =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM jobs WHERE kind = 'memory_stage1'")
+                .fetch_one(runtime.pool.as_ref())
+                .await
+                .expect("count stage1 jobs before prune");
+
+        let pruned = runtime
+            .prune_stage1_outputs_for_retention(/*max_unused_days*/ 30, /*limit*/ 100)
+            .await
+            .expect("prune stage1 outputs");
+        assert_eq!(pruned, 2);
+
+        let remaining = sqlx::query_scalar::<_, String>(
+            "SELECT thread_id FROM stage1_outputs ORDER BY thread_id",
+        )
+        .fetch_all(runtime.pool.as_ref())
+        .await
+        .expect("load remaining stage1 outputs");
+        let mut expected_remaining = vec![fresh_used.to_string(), stale_selected.to_string()];
+        expected_remaining.sort();
+        assert_eq!(remaining, expected_remaining);
+
+        let after_jobs_count =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM jobs WHERE kind = 'memory_stage1'")
+                .fetch_one(runtime.pool.as_ref())
+                .await
+                .expect("count stage1 jobs after prune");
+        assert_eq!(after_jobs_count, before_jobs_count);
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn prune_stage1_outputs_for_retention_respects_batch_limit() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("initialize runtime");
+
+        let owner = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("owner id");
+        let thread_a = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("thread a");
+        let thread_b = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("thread b");
+        let thread_c = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("thread c");
+
+        for (thread_id, workspace) in [
+            (thread_a, "workspace-a"),
+            (thread_b, "workspace-b"),
+            (thread_c, "workspace-c"),
+        ] {
+            runtime
+                .upsert_thread(&test_thread_metadata(
+                    &codex_home,
+                    thread_id,
+                    codex_home.join(workspace),
+                ))
+                .await
+                .expect("upsert thread");
+        }
+
+        let now = Utc::now().timestamp();
+        for (thread_id, source_updated_at, summary) in [
+            (thread_a, now - Duration::days(60).num_seconds(), "stale-a"),
+            (thread_b, now - Duration::days(50).num_seconds(), "stale-b"),
+            (thread_c, now - Duration::days(40).num_seconds(), "stale-c"),
+        ] {
+            let claim = runtime
+                .try_claim_stage1_job(
+                    thread_id,
+                    owner,
+                    source_updated_at,
+                    /*lease_seconds*/ 3600,
+                    /*max_running_jobs*/ 64,
+                )
+                .await
+                .expect("claim stage1");
+            let ownership_token = match claim {
+                Stage1JobClaimOutcome::Claimed { ownership_token } => ownership_token,
+                other => panic!("unexpected stage1 claim outcome: {other:?}"),
+            };
+            assert!(
+                runtime
+                    .mark_stage1_job_succeeded(
+                        thread_id,
+                        ownership_token.as_str(),
+                        source_updated_at,
+                        &format!("raw-{summary}"),
+                        summary,
+                        /*rollout_slug*/ None,
+                    )
+                    .await
+                    .expect("mark stage1 success"),
+                "stage1 success should persist output"
+            );
+        }
+
+        let pruned = runtime
+            .prune_stage1_outputs_for_retention(/*max_unused_days*/ 30, /*limit*/ 2)
+            .await
+            .expect("prune stage1 outputs with limit");
+        assert_eq!(pruned, 2);
+
+        let remaining_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM stage1_outputs")
+            .fetch_one(runtime.pool.as_ref())
+            .await
+            .expect("count remaining stage1 outputs");
+        assert_eq!(remaining_count, 1);
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
     async fn mark_stage1_job_succeeded_enqueues_global_consolidation() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
@@ -3904,7 +4321,10 @@ VALUES (?, ?, ?, ?, ?)
             .expect("upsert thread b");
 
         let claim_a = runtime
-            .try_claim_stage1_job(thread_a, owner, 100, 3600, 64)
+            .try_claim_stage1_job(
+                thread_a, owner, /*source_updated_at*/ 100, /*lease_seconds*/ 3600,
+                /*max_running_jobs*/ 64,
+            )
             .await
             .expect("claim stage1 a");
         let token_a = match claim_a {
@@ -3916,10 +4336,10 @@ VALUES (?, ?, ?, ?, ?)
                 .mark_stage1_job_succeeded(
                     thread_a,
                     token_a.as_str(),
-                    100,
+                    /*source_updated_at*/ 100,
                     "raw-a",
                     "summary-a",
-                    None,
+                    /*rollout_slug*/ None,
                 )
                 .await
                 .expect("mark stage1 succeeded a"),
@@ -3927,7 +4347,10 @@ VALUES (?, ?, ?, ?, ?)
         );
 
         let claim_b = runtime
-            .try_claim_stage1_job(thread_b, owner, 101, 3600, 64)
+            .try_claim_stage1_job(
+                thread_b, owner, /*source_updated_at*/ 101, /*lease_seconds*/ 3600,
+                /*max_running_jobs*/ 64,
+            )
             .await
             .expect("claim stage1 b");
         let token_b = match claim_b {
@@ -3939,10 +4362,10 @@ VALUES (?, ?, ?, ?, ?)
                 .mark_stage1_job_succeeded(
                     thread_b,
                     token_b.as_str(),
-                    101,
+                    /*source_updated_at*/ 101,
                     "raw-b",
                     "summary-b",
-                    None,
+                    /*rollout_slug*/ None,
                 )
                 .await
                 .expect("mark stage1 succeeded b"),
@@ -3950,7 +4373,7 @@ VALUES (?, ?, ?, ?, ?)
         );
 
         let claim = runtime
-            .try_claim_global_phase2_job(owner, 3600)
+            .try_claim_global_phase2_job(owner, /*lease_seconds*/ 3600)
             .await
             .expect("claim global consolidation");
         let input_watermark = match claim {
@@ -3967,12 +4390,12 @@ VALUES (?, ?, ?, ?, ?)
     #[tokio::test]
     async fn phase2_global_lock_allows_only_one_fresh_runner() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
         runtime
-            .enqueue_global_consolidation(200)
+            .enqueue_global_consolidation(/*input_watermark*/ 200)
             .await
             .expect("enqueue global consolidation");
 
@@ -3980,7 +4403,7 @@ VALUES (?, ?, ?, ?, ?)
         let owner_b = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("owner b");
 
         let running_claim = runtime
-            .try_claim_global_phase2_job(owner_a, 3600)
+            .try_claim_global_phase2_job(owner_a, /*lease_seconds*/ 3600)
             .await
             .expect("claim global lock");
         assert!(
@@ -3989,7 +4412,7 @@ VALUES (?, ?, ?, ?, ?)
         );
 
         let second_claim = runtime
-            .try_claim_global_phase2_job(owner_b, 3600)
+            .try_claim_global_phase2_job(owner_b, /*lease_seconds*/ 3600)
             .await
             .expect("claim global lock from second owner");
         assert_eq!(second_claim, Phase2JobClaimOutcome::SkippedRunning);
@@ -4000,12 +4423,12 @@ VALUES (?, ?, ?, ?, ?)
     #[tokio::test]
     async fn phase2_global_lock_stale_lease_allows_takeover() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
         runtime
-            .enqueue_global_consolidation(300)
+            .enqueue_global_consolidation(/*input_watermark*/ 300)
             .await
             .expect("enqueue global consolidation");
 
@@ -4013,7 +4436,7 @@ VALUES (?, ?, ?, ?, ?)
         let owner_b = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("owner b");
 
         let initial_claim = runtime
-            .try_claim_global_phase2_job(owner_a, 3600)
+            .try_claim_global_phase2_job(owner_a, /*lease_seconds*/ 3600)
             .await
             .expect("claim initial global lock");
         let token_a = match initial_claim {
@@ -4032,7 +4455,7 @@ VALUES (?, ?, ?, ?, ?)
             .expect("expire global consolidation lease");
 
         let takeover_claim = runtime
-            .try_claim_global_phase2_job(owner_b, 3600)
+            .try_claim_global_phase2_job(owner_b, /*lease_seconds*/ 3600)
             .await
             .expect("claim stale global lock");
         let (token_b, input_watermark) = match takeover_claim {
@@ -4047,7 +4470,11 @@ VALUES (?, ?, ?, ?, ?)
 
         assert_eq!(
             runtime
-                .mark_global_phase2_job_succeeded(token_a.as_str(), 300, &[])
+                .mark_global_phase2_job_succeeded(
+                    token_a.as_str(),
+                    /*completed_watermark*/ 300,
+                    &[]
+                )
                 .await
                 .expect("mark stale owner success result"),
             false,
@@ -4055,7 +4482,11 @@ VALUES (?, ?, ?, ?, ?)
         );
         assert!(
             runtime
-                .mark_global_phase2_job_succeeded(token_b.as_str(), 300, &[])
+                .mark_global_phase2_job_succeeded(
+                    token_b.as_str(),
+                    /*completed_watermark*/ 300,
+                    &[]
+                )
                 .await
                 .expect("mark takeover owner success"),
             "takeover owner should finalize consolidation"
@@ -4067,17 +4498,17 @@ VALUES (?, ?, ?, ?, ?)
     #[tokio::test]
     async fn phase2_backfilled_inputs_below_last_success_still_become_dirty() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
         runtime
-            .enqueue_global_consolidation(500)
+            .enqueue_global_consolidation(/*input_watermark*/ 500)
             .await
             .expect("enqueue initial consolidation");
         let owner_a = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("owner a");
         let claim_a = runtime
-            .try_claim_global_phase2_job(owner_a, 3_600)
+            .try_claim_global_phase2_job(owner_a, /*lease_seconds*/ 3_600)
             .await
             .expect("claim initial consolidation");
         let token_a = match claim_a {
@@ -4092,20 +4523,24 @@ VALUES (?, ?, ?, ?, ?)
         };
         assert!(
             runtime
-                .mark_global_phase2_job_succeeded(token_a.as_str(), 500, &[])
+                .mark_global_phase2_job_succeeded(
+                    token_a.as_str(),
+                    /*completed_watermark*/ 500,
+                    &[]
+                )
                 .await
                 .expect("mark initial phase2 success"),
             "initial phase2 success should finalize"
         );
 
         runtime
-            .enqueue_global_consolidation(400)
+            .enqueue_global_consolidation(/*input_watermark*/ 400)
             .await
             .expect("enqueue backfilled consolidation");
 
         let owner_b = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("owner b");
         let claim_b = runtime
-            .try_claim_global_phase2_job(owner_b, 3_600)
+            .try_claim_global_phase2_job(owner_b, /*lease_seconds*/ 3_600)
             .await
             .expect("claim backfilled consolidation");
         match claim_b {
@@ -4126,18 +4561,18 @@ VALUES (?, ?, ?, ?, ?)
     #[tokio::test]
     async fn phase2_failure_fallback_updates_unowned_running_job() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
 
         runtime
-            .enqueue_global_consolidation(400)
+            .enqueue_global_consolidation(/*input_watermark*/ 400)
             .await
             .expect("enqueue global consolidation");
 
         let owner = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("owner");
         let claim = runtime
-            .try_claim_global_phase2_job(owner, 3_600)
+            .try_claim_global_phase2_job(owner, /*lease_seconds*/ 3_600)
             .await
             .expect("claim global consolidation");
         let ownership_token = match claim {
@@ -4156,7 +4591,11 @@ VALUES (?, ?, ?, ?, ?)
 
         assert_eq!(
             runtime
-                .mark_global_phase2_job_failed(ownership_token.as_str(), "lost", 3_600)
+                .mark_global_phase2_job_failed(
+                    ownership_token.as_str(),
+                    "lost",
+                    /*retry_delay_seconds*/ 3_600
+                )
                 .await
                 .expect("mark phase2 failed with strict ownership"),
             false,
@@ -4164,14 +4603,18 @@ VALUES (?, ?, ?, ?, ?)
         );
         assert!(
             runtime
-                .mark_global_phase2_job_failed_if_unowned(ownership_token.as_str(), "lost", 3_600)
+                .mark_global_phase2_job_failed_if_unowned(
+                    ownership_token.as_str(),
+                    "lost",
+                    /*retry_delay_seconds*/ 3_600
+                )
                 .await
                 .expect("fallback failure update should match unowned running job"),
             "fallback failure update should transition the unowned running job"
         );
 
         let claim = runtime
-            .try_claim_global_phase2_job(ThreadId::new(), 3_600)
+            .try_claim_global_phase2_job(ThreadId::new(), /*lease_seconds*/ 3_600)
             .await
             .expect("claim after fallback failure");
         assert_eq!(claim, Phase2JobClaimOutcome::SkippedNotDirty);

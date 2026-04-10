@@ -29,7 +29,9 @@
         "plus",
         "pro",
         "team",
+        "self_serve_business_usage_based",
         "business",
+        "enterprise_cbp_usage_based",
         "enterprise",
         "edu",
         "unknown"
@@ -89,6 +91,16 @@
               "type": "null"
             }
           ]
+        },
+        "spendControl": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SpendControlSnapshot"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "type": "object"
@@ -116,6 +128,17 @@
       },
       "required": [
         "usedPercent"
+      ],
+      "type": "object"
+    },
+    "SpendControlSnapshot": {
+      "properties": {
+        "reached": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "reached"
       ],
       "type": "object"
     }
