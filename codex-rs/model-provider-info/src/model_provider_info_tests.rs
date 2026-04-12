@@ -177,3 +177,15 @@ refresh_interval_ms = 0
     assert_eq!(auth.refresh_interval_ms, 0);
     assert_eq!(auth.refresh_interval(), None);
 }
+
+#[test]
+fn built_in_model_providers_hide_non_mainline_widex_providers() {
+    let providers = built_in_model_providers(/*openai_base_url*/ None);
+
+    assert!(providers.contains_key(OPENAI_PROVIDER_ID));
+    assert!(providers.contains_key(OLLAMA_OSS_PROVIDER_ID));
+    assert!(providers.contains_key(LMSTUDIO_OSS_PROVIDER_ID));
+    assert!(!providers.contains_key("gemini"));
+    assert!(!providers.contains_key("grok-vectorengine"));
+    assert!(!providers.contains_key("grok-xai"));
+}

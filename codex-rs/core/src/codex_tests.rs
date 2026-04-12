@@ -104,7 +104,7 @@ use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::test_codex::test_codex;
 use core_test_support::tracing::install_test_tracing;
-use core_test_support::wait_for_event;
+use core_test_support::wait_for_event_with_timeout;
 use opentelemetry::trace::TraceContextExt;
 use opentelemetry::trace::TraceId;
 use std::path::Path;
@@ -1275,6 +1275,7 @@ async fn record_initial_history_reconstructs_forked_transcript() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fork_startup_context_then_first_turn_diff_snapshot() -> anyhow::Result<()> {
+    let turn_timeout = Duration::from_secs(30);
     let server = start_mock_server().await;
     mount_sse_once(
         &server,
@@ -1309,7 +1310,12 @@ async fn fork_startup_context_then_first_turn_diff_snapshot() -> anyhow::Result<
             responsesapi_client_metadata: None,
         })
         .await?;
-    wait_for_event(&initial.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    wait_for_event_with_timeout(
+        &initial.codex,
+        |ev| matches!(ev, EventMsg::TurnComplete(_)),
+        turn_timeout,
+    )
+    .await;
     // Forking reads the persisted rollout JSONL, so force the completed source turn to disk
     // before snapshotting from it.
     initial.codex.ensure_rollout_materialized().await;
@@ -1366,7 +1372,12 @@ async fn fork_startup_context_then_first_turn_diff_snapshot() -> anyhow::Result<
             responsesapi_client_metadata: None,
         })
         .await?;
-    wait_for_event(&forked.thread, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    wait_for_event_with_timeout(
+        &forked.thread,
+        |ev| matches!(ev, EventMsg::TurnComplete(_)),
+        turn_timeout,
+    )
+    .await;
 
     let request = first_forked_request.single_request();
     let snapshot = context_snapshot::format_labeled_requests_snapshot(
@@ -2621,6 +2632,32 @@ async fn session_configuration_apply_rederives_legacy_file_system_policy_on_cwd_
             &project_root,
         )
     );
+}
+
+#[tokio::test]
+async fn session_configuration_apply_does_not_auto_switch_provider_for_hidden_multi_llm_models() {
+    let session_configuration = make_session_configuration_for_tests().await;
+    let expected_provider = session_configuration.provider.clone();
+
+    for model in ["gemini-3-pro-preview-codex", "grok-4.1"] {
+        let updated = session_configuration
+            .apply(&SessionSettingsUpdate {
+                collaboration_mode: Some(CollaborationMode {
+                    mode: ModeKind::Default,
+                    settings: Settings {
+                        model: model.to_string(),
+                        reasoning_effort: session_configuration
+                            .collaboration_mode
+                            .reasoning_effort(),
+                        developer_instructions: None,
+                    },
+                }),
+                ..Default::default()
+            })
+            .expect("model update should succeed");
+
+        assert_eq!(updated.provider, expected_provider);
+    }
 }
 
 #[tokio::test]
@@ -5240,6 +5277,7 @@ async fn tool_calls_reopen_mailbox_delivery_for_current_turn() {
         namespace: None,
         arguments: "{}".to_string(),
         call_id: "call-1".to_string(),
+        thought_signature: None,
     };
     let mut ctx = HandleOutputCtx {
         sess: Arc::clone(&sess),

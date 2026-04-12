@@ -89,6 +89,21 @@ impl Match for RealtimeCallRequestCapture {
     }
 }
 
+fn multipart_form_body_part<'a>(
+    body: &'a str,
+    boundary: &str,
+    name: &str,
+    content_type: &str,
+) -> Option<&'a str> {
+    let part_header = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\nContent-Type: {content_type}\r\n\r\n"
+    );
+    let start = body.find(&part_header)? + part_header.len();
+    let remainder = &body[start..];
+    let end = remainder.find(&format!("\r\n--{boundary}"))?;
+    Some(&remainder[..end])
+}
+
 fn websocket_request_text(
     request: &core_test_support::responses::WebSocketRequest,
 ) -> Option<String> {
@@ -507,23 +522,25 @@ async fn conversation_webrtc_start_posts_generated_session() -> Result<()> {
         Some("multipart/form-data; boundary=codex-realtime-call-boundary")
     );
     let body = String::from_utf8(request.body).context("multipart body should be utf-8")?;
-    let session = r#"{"audio":{"input":{"format":{"type":"audio/pcm","rate":24000}},"output":{"voice":"cove"}},"type":"quicksilver","model":"realtime-test-model","instructions":"backend prompt\n\nstartup context"}"#;
+    let boundary = "codex-realtime-call-boundary";
     assert_eq!(
-        body,
-        format!(
-            "--codex-realtime-call-boundary\r\n\
-             Content-Disposition: form-data; name=\"sdp\"\r\n\
-             Content-Type: application/sdp\r\n\
-             \r\n\
-             v=offer\r\n\
-             \r\n\
-             --codex-realtime-call-boundary\r\n\
-             Content-Disposition: form-data; name=\"session\"\r\n\
-             Content-Type: application/json\r\n\
-             \r\n\
-             {session}\r\n\
-             --codex-realtime-call-boundary--\r\n"
-        )
+        multipart_form_body_part(&body, boundary, "sdp", "application/sdp"),
+        Some("v=offer\r\n")
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(
+            multipart_form_body_part(&body, boundary, "session", "application/json")
+                .context("session part should be present")?
+        )?,
+        json!({
+            "audio": {
+                "input": { "format": { "type": "audio/pcm", "rate": 24000 } },
+                "output": { "voice": "cove" },
+            },
+            "type": "quicksilver",
+            "model": "realtime-test-model",
+            "instructions": "backend prompt\n\nstartup context",
+        })
     );
 
     // Phase 3: the server joins that same call over the direct sideband WebSocket, sends the

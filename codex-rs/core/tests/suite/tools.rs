@@ -420,13 +420,16 @@ async fn shell_timeout_handles_background_grandchild_stdout() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let mut builder = test_codex().with_model("gpt-5.1").with_config(|config| {
-        config
-            .permissions
-            .sandbox_policy
-            .set(SandboxPolicy::DangerFullAccess)
-            .expect("set sandbox policy");
-    });
+    let mut builder = test_codex()
+        .with_model("gpt-5.1")
+        .with_exclusive_test_harness_permit()
+        .with_config(|config| {
+            config
+                .permissions
+                .sandbox_policy
+                .set(SandboxPolicy::DangerFullAccess)
+                .expect("set sandbox policy");
+        });
     let test = builder.build(&server).await?;
 
     let call_id = "shell-grandchild-timeout";

@@ -1,5 +1,7 @@
 use anyhow::Result;
+use codex_config::types::AppToolApproval;
 use codex_config::types::McpServerConfig;
+use codex_config::types::McpServerToolConfig;
 use codex_config::types::McpServerTransportConfig;
 use codex_features::Feature;
 use codex_protocol::ThreadId;
@@ -35,6 +37,20 @@ use std::fs;
 use tokio::time::Duration;
 use tracing_subscriber::prelude::*;
 use uuid::Uuid;
+
+fn approve_mcp_tools(tool_names: &[&str]) -> HashMap<String, McpServerToolConfig> {
+    tool_names
+        .iter()
+        .map(|tool_name| {
+            (
+                (*tool_name).to_string(),
+                McpServerToolConfig {
+                    approval_mode: Some(AppToolApproval::Approve),
+                },
+            )
+        })
+        .collect()
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn new_thread_is_recorded_in_state_db() -> Result<()> {
@@ -375,7 +391,7 @@ async fn mcp_call_marks_thread_memory_mode_polluted_when_configured() -> Result<
                 disabled_tools: None,
                 scopes: None,
                 oauth_resource: None,
-                tools: HashMap::new(),
+                tools: approve_mcp_tools(&["echo"]),
             },
         );
         config
@@ -397,7 +413,7 @@ async fn mcp_call_marks_thread_memory_mode_polluted_when_configured() -> Result<
             cwd: test.cwd_path().to_path_buf(),
             approval_policy: AskForApproval::Never,
             approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: test.session_configured.model.clone(),
             effort: None,
             summary: None,

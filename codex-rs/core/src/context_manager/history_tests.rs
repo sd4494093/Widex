@@ -395,6 +395,7 @@ fn for_prompt_strips_images_when_model_does_not_support_images() {
             namespace: None,
             arguments: "{}".to_string(),
             call_id: "call-1".to_string(),
+            thought_signature: None,
         },
         ResponseItem::FunctionCallOutput {
             call_id: "call-1".to_string(),
@@ -458,6 +459,7 @@ fn for_prompt_strips_images_when_model_does_not_support_images() {
             namespace: None,
             arguments: "{}".to_string(),
             call_id: "call-1".to_string(),
+            thought_signature: None,
         },
         ResponseItem::FunctionCallOutput {
             call_id: "call-1".to_string(),
@@ -694,6 +696,7 @@ fn remove_last_item_removes_matching_call_for_output() {
             namespace: None,
             arguments: "{}".to_string(),
             call_id: "call-delete-last".to_string(),
+            thought_signature: None,
         },
         ResponseItem::FunctionCallOutput {
             call_id: "call-delete-last".to_string(),

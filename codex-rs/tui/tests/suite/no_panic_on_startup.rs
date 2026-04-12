@@ -1,9 +1,16 @@
-use codex_core::AuthManager;
-use codex_core::CodexAuth;
 use codex_core::ThreadManager;
 use codex_core::config::ConfigBuilder;
+use codex_exec_server::EnvironmentManager;
+use codex_features::Feature;
+use codex_login::AuthManager;
+use codex_login::CodexAuth;
+use codex_models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use codex_protocol::protocol::SessionSource;
 use pretty_assertions::assert_eq;
+use std::collections::HashMap;
+use std::time::Duration;
+use tokio::select;
+use tokio::time::timeout;
 
 /// Regression test for https://github.com/openai/codex/issues/8803.
 #[tokio::test]
@@ -45,7 +52,17 @@ model_provider = "ollama"
 
     let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
     let auth_manager = AuthManager::from_auth_for_testing_with_home(auth, codex_home.clone());
-    let manager = ThreadManager::new(codex_home, auth_manager, SessionSource::Cli);
+    let manager = ThreadManager::new(
+        &config,
+        auth_manager,
+        SessionSource::Cli,
+        CollaborationModesConfig {
+            default_mode_request_user_input: config
+                .features
+                .enabled(Feature::DefaultModeRequestUserInput),
+        },
+        std::sync::Arc::new(EnvironmentManager::new(/*exec_server_url*/ None)),
+    );
 
     let err = manager
         .start_thread(config)
@@ -55,6 +72,10 @@ model_provider = "ollama"
     let msg = err.to_string();
     assert_eq!(msg.contains("failed to load rules"), true);
     assert_eq!(msg.contains("failed to read rules files"), true);
+
+    let codex_cli = codex_utils_cargo_bin::cargo_bin("codex")?;
+    let mut env = HashMap::new();
+    env.insert("CODEX_HOME".to_string(), codex_home.display().to_string());
 
     let args = vec!["-c".to_string(), "analytics.enabled=false".to_string()];
     let spawned = codex_utils_pty::spawn_pty_process(
@@ -112,8 +133,8 @@ model_provider = "ollama"
     }
 
     let output = String::from_utf8_lossy(&output);
-    Ok(CodexCliOutput {
-        exit_code,
-        output: output.to_string(),
-    })
+    assert_ne!(exit_code, 0);
+    assert!(output.contains("failed to load rules"));
+    assert!(output.contains("failed to read rules files"));
+    Ok(())
 }

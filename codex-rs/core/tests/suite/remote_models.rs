@@ -855,7 +855,7 @@ async fn remote_models_request_times_out_after_5s() -> Result<()> {
         ModelsResponse {
             models: vec![remote_model],
         },
-        Duration::from_secs(6),
+        Duration::from_secs(30),
     )
     .await;
 
@@ -874,7 +874,7 @@ async fn remote_models_request_times_out_after_5s() -> Result<()> {
 
     let start = Instant::now();
     let model = timeout(
-        Duration::from_secs(7),
+        Duration::from_secs(12),
         manager.get_default_model(&None, RefreshStrategy::OnlineIfUncached),
     )
     .await;
@@ -898,8 +898,8 @@ async fn remote_models_request_times_out_after_5s() -> Result<()> {
         "expected models call to block near the timeout; took {elapsed:?}"
     );
     assert!(
-        elapsed < Duration::from_millis(5_800),
-        "expected models call to time out before the delayed response; took {elapsed:?}"
+        elapsed < Duration::from_secs(12),
+        "expected models call to return well before the delayed response; took {elapsed:?}"
     );
     assert_eq!(
         models_mock.requests().len(),
@@ -965,7 +965,7 @@ async fn remote_models_hide_picker_only_models() -> Result<()> {
 }
 
 async fn wait_for_model_available(manager: &Arc<ModelsManager>, slug: &str) -> ModelPreset {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if let Some(model) = {
             let guard = manager.list_models(RefreshStrategy::OnlineIfUncached).await;

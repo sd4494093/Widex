@@ -1,5 +1,17 @@
 # Widex 快速跟随上游（openai/codex）更新指南
 
+## 当前产品重点（2026-04）
+
+后续 Widex 维护策略统一按下面执行：
+
+- 第一优先级：持续跟随 `upstream/main`，尽量缩小与上游的长期漂移。
+- 第二优先级：保持 `ralph-widex` 主线能力稳定，包括：
+  - TUI `/ralph-widex ...`
+  - CLI `widex ralph-widex ...`
+  - `.ralph/` 状态/监控/恢复链路
+- 多 LLM 集成（例如 Gemini / Grok / 其它非上游默认 provider）目前**不再作为 Widex 主产品线持续演进目标**。
+- 相关文档、设计记录、历史实现说明继续保留在仓库中，作为后续可能重新接回这些能力时的参考资料；但在新的 upstream 跟随过程中，不再默认以“必须继续扩展/保活这些多 LLM 集成”为目标。
+
 本仓库有两条主线分支：
 
 - `main`：本地集成分支，用来在本机对齐 `upstream/main`，方便后续合并到 `widex`
@@ -188,9 +200,9 @@ cargo build -p codex-cli --bin codex --profile widex-release
 
 4. **Widex 定制不能机械地“全选 ours / theirs”**
    - 要优先保留 Widex 的：
-     - `Gemini / Grok / Chat Completions` 支持
-     - API switchover 逻辑
      - Ralph Widex TUI 流程
+     - `widex` wrapper / 独立 `CODEX_HOME` 约束
+     - `ralph-widex` 运行与监控链路
    - 同时也要接住上游的新字段 / 新事件 / 新结构
 
 5. **本机验证可能被系统依赖卡住**
@@ -231,10 +243,20 @@ git fetch upstream && git fetch origin
   - `codex-rs/tui/`
   - `codex-rs/codex-api/`
 - 处理冲突时不要只图“先编过”，要检查：
-  - provider / wire API 是否仍正确
-  - switchover 是否仍生效
+  - 是否尽量保持对 upstream 的低漂移
   - Ralph Widex 是否仍能在当前会话里前台工作
-  - model picker / slash command / onboarding 是否还保留 Widex 行为
+  - `widex` wrapper / 独立 `CODEX_HOME` / 启动链路是否仍正常
+  - model picker / slash command / onboarding 是否还保留 Widex 主线行为
+
+### 6.3.1 多 LLM 集成的当前处理原则
+
+- `widex-custom/docs/LLMs_intergration/` 以及相关设计文档继续保留，不删除。
+- 这些文档现在属于“历史能力 / 可回收设计资料”，不是当前版本的主维护目标。
+- 如果上游更新与 Gemini / Grok / 其它多 LLM 定制发生冲突，默认优先：
+  - upstream 对齐
+  - `ralph-widex` 稳定性
+  - Widex 主线启动、会话、TUI 交互稳定性
+- 除非有明确新需求，不再为了保住多 LLM 集成而扩大对上游核心代码的长期分叉面。
 
 ### 6.3.1 版本号同步要求
 

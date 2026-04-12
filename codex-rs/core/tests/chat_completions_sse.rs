@@ -1,20 +1,20 @@
 use assert_matches::assert_matches;
-use codex_core::AuthManager;
 use std::sync::Arc;
 use tracing_test::traced_test;
 
-use codex_core::CodexAuth;
-use codex_core::ContentItem;
 use codex_core::ModelClient;
-use codex_core::ModelProviderInfo;
 use codex_core::Prompt;
 use codex_core::ResponseEvent;
-use codex_core::ResponseItem;
-use codex_core::WireApi;
-use codex_core::models_manager::manager::ModelsManager;
-use codex_otel::OtelManager;
+use codex_login::AuthManager;
+use codex_login::CodexAuth;
+use codex_model_provider_info::WireApi;
+use codex_model_provider_info::create_oss_provider_with_base_url;
+use codex_otel::SessionTelemetry;
+use codex_otel::TelemetryAuthMode;
 use codex_protocol::ThreadId;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::ReasoningItemContent;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::SessionSource;
 use core_test_support::load_default_config_for_test;
 use core_test_support::skip_if_no_network;
@@ -45,21 +45,12 @@ async fn run_stream_with_bytes(sse_body: &[u8]) -> Vec<ResponseEvent> {
         .mount(&server)
         .await;
 
-    let provider = ModelProviderInfo {
-        name: "mock".into(),
-        base_url: Some(format!("{}/v1", server.uri())),
-        env_key: None,
-        env_key_instructions: None,
-        experimental_bearer_token: None,
-        wire_api: WireApi::Chat,
-        query_params: None,
-        http_headers: None,
-        env_http_headers: None,
-        request_max_retries: Some(0),
-        stream_max_retries: Some(0),
-        stream_idle_timeout_ms: Some(5_000),
-        requires_openai_auth: false,
-    };
+    let mut provider =
+        create_oss_provider_with_base_url(&format!("{}/v1", server.uri()), WireApi::Chat);
+    provider.name = "mock".into();
+    provider.request_max_retries = Some(0);
+    provider.stream_max_retries = Some(0);
+    provider.stream_idle_timeout_ms = Some(5_000);
 
     let codex_home = match TempDir::new() {
         Ok(dir) => dir,
@@ -75,33 +66,34 @@ async fn run_stream_with_bytes(sse_body: &[u8]) -> Vec<ResponseEvent> {
 
     let conversation_id = ThreadId::new();
     let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
-    let auth_mode = auth_manager.get_auth_mode();
-    let model = ModelsManager::get_model_offline(config.model.as_deref());
-    let model_info = ModelsManager::construct_model_info_offline(model.as_str(), &config);
-    let otel_manager = OtelManager::new(
+    let model = codex_core::test_support::get_model_offline(config.model.as_deref());
+    let model_info =
+        codex_core::test_support::construct_model_info_offline(model.as_str(), &config);
+    let session_telemetry = SessionTelemetry::new(
         conversation_id,
         model.as_str(),
         model_info.slug.as_str(),
         None,
         Some("test@test.com".to_string()),
-        auth_mode,
+        auth_manager.auth_mode().map(TelemetryAuthMode::from),
+        "test_originator".to_string(),
         false,
         "test".to_string(),
         SessionSource::Exec,
     );
 
-    let mut client = ModelClient::new(
-        Arc::clone(&config),
-        None,
-        model_info,
-        otel_manager,
-        provider,
-        effort,
-        summary,
+    let client = ModelClient::new(
+        Some(auth_manager),
         conversation_id,
+        /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
+        provider,
         SessionSource::Exec,
-    )
-    .new_session();
+        config.model_verbosity,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+    );
+    let mut client = client.new_session();
 
     let mut prompt = Prompt::default();
     prompt.input = vec![ResponseItem::Message {
@@ -111,9 +103,21 @@ async fn run_stream_with_bytes(sse_body: &[u8]) -> Vec<ResponseEvent> {
             text: "hello".to_string(),
         }],
         end_turn: None,
+        phase: None,
     }];
 
-    let mut stream = match client.stream(&prompt).await {
+    let mut stream = match client
+        .stream(
+            &prompt,
+            &model_info,
+            &session_telemetry,
+            effort,
+            summary.unwrap_or(model_info.default_reasoning_summary),
+            /*service_tier*/ None,
+            /*turn_metadata_header*/ None,
+        )
+        .await
+    {
         Ok(s) => s,
         Err(e) => panic!("stream chat failed: {e}"),
     };
@@ -153,7 +157,7 @@ fn assert_reasoning(item: &ResponseItem, expected: &str) {
         for part in parts {
             match part {
                 ReasoningItemContent::ReasoningText { text }
-                | ReasoningItemContent::Text { text } => combined.push_str(text),
+                | ReasoningItemContent::Text { text } => combined.push_str(&text),
             }
         }
         assert_eq!(combined, expected);
@@ -269,29 +273,18 @@ async fn falls_back_to_fast_model_on_429_for_grok_4_1() {
 
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
-        .and(body_string_contains(
-            "\"model\":\"grok-4-1-fast-non-reasoning\"",
-        ))
+        .and(body_string_contains("\"model\":\"grok-4-fast-reasoning\""))
         .respond_with(template)
         .expect(1)
         .mount(&server)
         .await;
 
-    let provider = ModelProviderInfo {
-        name: "mock".into(),
-        base_url: Some(format!("{}/v1", server.uri())),
-        env_key: None,
-        env_key_instructions: None,
-        experimental_bearer_token: None,
-        wire_api: WireApi::Chat,
-        query_params: None,
-        http_headers: None,
-        env_http_headers: None,
-        request_max_retries: Some(0),
-        stream_max_retries: Some(0),
-        stream_idle_timeout_ms: Some(5_000),
-        requires_openai_auth: false,
-    };
+    let mut provider =
+        create_oss_provider_with_base_url(&format!("{}/v1", server.uri()), WireApi::Chat);
+    provider.name = "mock".into();
+    provider.request_max_retries = Some(0);
+    provider.stream_max_retries = Some(0);
+    provider.stream_idle_timeout_ms = Some(5_000);
 
     let codex_home = match TempDir::new() {
         Ok(dir) => dir,
@@ -309,33 +302,34 @@ async fn falls_back_to_fast_model_on_429_for_grok_4_1() {
 
     let conversation_id = ThreadId::new();
     let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
-    let auth_mode = auth_manager.get_auth_mode();
-    let model = ModelsManager::get_model_offline(config.model.as_deref());
-    let model_info = ModelsManager::construct_model_info_offline(model.as_str(), &config);
-    let otel_manager = OtelManager::new(
+    let model = codex_core::test_support::get_model_offline(config.model.as_deref());
+    let model_info =
+        codex_core::test_support::construct_model_info_offline(model.as_str(), &config);
+    let session_telemetry = SessionTelemetry::new(
         conversation_id,
         model.as_str(),
         model_info.slug.as_str(),
         None,
         Some("test@test.com".to_string()),
-        auth_mode,
+        auth_manager.auth_mode().map(TelemetryAuthMode::from),
+        "test_originator".to_string(),
         false,
         "test".to_string(),
         SessionSource::Exec,
     );
 
-    let mut client = ModelClient::new(
-        Arc::clone(&config),
-        None,
-        model_info,
-        otel_manager,
-        provider,
-        effort,
-        summary,
+    let client = ModelClient::new(
+        Some(auth_manager),
         conversation_id,
+        /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
+        provider,
         SessionSource::Exec,
-    )
-    .new_session();
+        config.model_verbosity,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+    );
+    let mut client = client.new_session();
 
     let mut prompt = Prompt::default();
     prompt.input = vec![ResponseItem::Message {
@@ -345,9 +339,21 @@ async fn falls_back_to_fast_model_on_429_for_grok_4_1() {
             text: "hello".to_string(),
         }],
         end_turn: None,
+        phase: None,
     }];
 
-    let mut stream = client.stream(&prompt).await.expect("stream chat");
+    let mut stream = client
+        .stream(
+            &prompt,
+            &model_info,
+            &session_telemetry,
+            effort,
+            summary.unwrap_or(model_info.default_reasoning_summary),
+            /*service_tier*/ None,
+            /*turn_metadata_header*/ None,
+        )
+        .await
+        .expect("stream chat");
     let mut saw_hi = false;
     while let Some(event) = stream.next().await {
         match event.expect("stream error") {

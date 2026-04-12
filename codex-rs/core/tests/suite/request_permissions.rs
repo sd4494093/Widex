@@ -38,6 +38,7 @@ use serde_json::Value;
 use serde_json::json;
 use std::fs;
 use std::path::Path;
+use std::time::Duration;
 
 fn absolute_path(path: &Path) -> AbsolutePathBuf {
     AbsolutePathBuf::try_from(path).expect("absolute path")
@@ -321,18 +322,20 @@ async fn with_additional_permissions_requires_approval_under_on_request() -> Res
     let sandbox_policy = SandboxPolicy::new_read_only_policy();
     let sandbox_policy_for_config = sandbox_policy.clone();
 
-    let mut builder = test_codex().with_config(move |config| {
-        config.permissions.approval_policy = Constrained::allow_any(approval_policy);
-        config.permissions.sandbox_policy = Constrained::allow_any(sandbox_policy_for_config);
-        config
-            .features
-            .enable(Feature::ExecPermissionApprovals)
-            .expect("test config should allow feature update");
-        config
-            .features
-            .enable(Feature::RequestPermissionsTool)
-            .expect("test config should allow feature update");
-    });
+    let mut builder = test_codex()
+        .with_exclusive_test_harness_permit()
+        .with_config(move |config| {
+            config.permissions.approval_policy = Constrained::allow_any(approval_policy);
+            config.permissions.sandbox_policy = Constrained::allow_any(sandbox_policy_for_config);
+            config
+                .features
+                .enable(Feature::ExecPermissionApprovals)
+                .expect("test config should allow feature update");
+            config
+                .features
+                .enable(Feature::RequestPermissionsTool)
+                .expect("test config should allow feature update");
+        });
     let test = builder.build(&server).await?;
 
     let requested_dir = test.workspace_path("requested-dir");
@@ -1107,10 +1110,17 @@ async fn request_permissions_grants_apply_to_later_exec_command_calls() -> Resul
         wait_for_completion(&test).await;
     }
 
-    let exec_output = responses
-        .function_call_output_text("exec-call")
-        .map(|output| json!({ "output": output }))
-        .unwrap_or_else(|| panic!("expected exec-call output"));
+    let exec_output_text = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(output) = responses.function_call_output_text("exec-call") {
+                break output;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("timed out waiting for exec-call output");
+    let exec_output = json!({ "output": exec_output_text });
     let result = parse_result(&exec_output);
     assert_eq!(result.exit_code, Some(0));
     assert_eq!(result.stdout.trim(), "sticky-grant-ok");

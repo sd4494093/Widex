@@ -10477,6 +10477,11 @@ After you make progress, append a short update to `.ralph/@fix_progress.md` unde
         self.has_chatgpt_account
     }
 
+    #[cfg(test)]
+    pub(crate) fn is_task_running_for_test(&self) -> bool {
+        self.bottom_pane.is_task_running()
+    }
+
     fn usage_based_workspace_rate_limit_state(&self) -> Option<UsageBasedWorkspaceRateLimitState> {
         let block_kind = self.usage_based_workspace_block_kind()?;
         let is_workspace_owner = self.current_is_workspace_owner()?;

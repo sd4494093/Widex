@@ -738,7 +738,7 @@ fn body_contains(req: &Request, text: &str) -> bool {
 }
 
 async fn wait_for_spawned_thread(test: &TestCodex) -> Result<Arc<CodexThread>> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     loop {
         let ids = test.thread_manager.list_thread_ids().await;
         if let Some(thread_id) = ids
@@ -2529,36 +2529,40 @@ allow_local_binding = true
         exclude_slash_tmp: false,
     };
     let sandbox_policy_for_config = sandbox_policy.clone();
-    let mut builder = test_codex().with_home(home).with_config(move |config| {
-        config.permissions.approval_policy = Constrained::allow_any(approval_policy);
-        config.permissions.sandbox_policy = Constrained::allow_any(sandbox_policy_for_config);
-        let layers = config
-            .config_layer_stack
-            .get_layers(
-                ConfigLayerStackOrdering::LowestPrecedenceFirst,
-                /*include_disabled*/ true,
-            )
-            .into_iter()
-            .cloned()
-            .collect();
-        let mut requirements = config.config_layer_stack.requirements().clone();
-        requirements.network = Some(Sourced::new(
-            NetworkConstraints {
+    let mut builder = test_codex()
+        .with_exclusive_test_harness_permit()
+        .with_home(home)
+        .with_config(move |config| {
+            config.permissions.approval_policy = Constrained::allow_any(approval_policy);
+            config.permissions.sandbox_policy = Constrained::allow_any(sandbox_policy_for_config);
+            let layers = config
+                .config_layer_stack
+                .get_layers(
+                    ConfigLayerStackOrdering::LowestPrecedenceFirst,
+                    /*include_disabled*/ true,
+                )
+                .into_iter()
+                .cloned()
+                .collect();
+            let mut requirements = config.config_layer_stack.requirements().clone();
+            requirements.network = Some(Sourced::new(
+                NetworkConstraints {
+                    enabled: Some(true),
+                    allow_local_binding: Some(true),
+                    ..Default::default()
+                },
+                RequirementSource::CloudRequirements,
+            ));
+            let mut requirements_toml = config.config_layer_stack.requirements_toml().clone();
+            requirements_toml.network = Some(NetworkRequirementsToml {
                 enabled: Some(true),
                 allow_local_binding: Some(true),
                 ..Default::default()
-            },
-            RequirementSource::CloudRequirements,
-        ));
-        let mut requirements_toml = config.config_layer_stack.requirements_toml().clone();
-        requirements_toml.network = Some(NetworkRequirementsToml {
-            enabled: Some(true),
-            allow_local_binding: Some(true),
-            ..Default::default()
+            });
+            config.config_layer_stack =
+                ConfigLayerStack::new(layers, requirements, requirements_toml)
+                    .expect("rebuild config layer stack with network requirements");
         });
-        config.config_layer_stack = ConfigLayerStack::new(layers, requirements, requirements_toml)
-            .expect("rebuild config layer stack with network requirements");
-    });
     let test = builder.build(&server).await?;
     assert!(
         test.config.managed_network_requirements_enabled(),

@@ -164,9 +164,11 @@ pub fn fetch_dotslash_file(
 /// temporary directory. Using a per-test directory keeps tests hermetic and
 /// avoids clobbering a developer’s real `~/.codex`.
 pub async fn load_default_config_for_test(codex_home: &TempDir) -> Config {
+    let mut overrides = default_test_overrides();
+    overrides.cwd = Some(codex_home.path().to_path_buf());
     ConfigBuilder::default()
         .codex_home(codex_home.path().to_path_buf())
-        .harness_overrides(default_test_overrides())
+        .harness_overrides(overrides)
         .build()
         .await
         .expect("defaults for test should always succeed")
@@ -281,15 +283,20 @@ where
 {
     use tokio::time::Duration;
     use tokio::time::timeout;
+    let mut seen_events = Vec::new();
     loop {
-        // Allow a bit more time to accommodate async startup work (e.g. config IO, tool discovery)
-        let ev = timeout(wait_time.max(Duration::from_secs(10)), codex.next_event())
+        // Suite tests spin up mock servers, temp workspaces, and background tasks concurrently.
+        // A 10s floor flakes under load, so keep a wider default budget for event waits.
+        let ev = timeout(wait_time.max(Duration::from_secs(30)), codex.next_event())
             .await
-            .expect("timeout waiting for event")
+            .unwrap_or_else(|err| {
+                panic!("timeout waiting for event after seeing: {seen_events:#?}: {err:?}")
+            })
             .expect("stream ended unexpectedly");
         if predicate(&ev.msg) {
             return ev.msg;
         }
+        seen_events.push(format!("{:?}", ev.msg));
     }
 }
 

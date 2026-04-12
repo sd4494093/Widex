@@ -69,7 +69,10 @@ use serde_json::json;
 use std::io::Write;
 use std::num::NonZeroU64;
 use std::sync::Arc;
+use std::time::Duration;
 use tempfile::TempDir;
+use tokio::time::Instant;
+use tokio::time::sleep;
 use uuid::Uuid;
 use wiremock::Mock;
 use wiremock::MockServer;
@@ -79,7 +82,6 @@ use wiremock::matchers::header;
 use wiremock::matchers::header_regex;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
-use wiremock::matchers::query_param;
 
 const INSTALLATION_ID_FILENAME: &str = "installation_id";
 
@@ -630,6 +632,7 @@ async fn resume_replays_image_tool_outputs_with_detail() {
                 namespace: None,
                 arguments: "{\"path\":\"/tmp/example.webp\"}".to_string(),
                 call_id: function_call_id.to_string(),
+                thought_signature: None,
             }),
         },
         RolloutLine {
@@ -755,7 +758,14 @@ async fn includes_conversation_id_and_model_headers_in_request() {
         .await
         .unwrap();
 
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    let request_deadline = Instant::now() + Duration::from_secs(30);
+    while resp_mock.requests().is_empty() {
+        assert!(
+            Instant::now() < request_deadline,
+            "timed out waiting for ChatGPT-auth responses request"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
 
     let request = resp_mock.single_request();
     assert_eq!(request.path(), "/v1/responses");
@@ -973,21 +983,24 @@ async fn chatgpt_auth_sends_correct_request() {
 
     // Mock server
     let server = MockServer::start().await;
-
+    let apps_server = AppsTestServer::mount(&server)
+        .await
+        .expect("mount apps MCP mock");
+    let apps_base_url = apps_server.chatgpt_base_url.clone();
     let resp_mock = mount_sse_once(
         &server,
         sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
     )
     .await;
 
-    let mut model_provider =
-        built_in_model_providers(/* openai_base_url */ /*openai_base_url*/ None)["openai"].clone();
-    model_provider.base_url = Some(format!("{}/api/codex", server.uri()));
-    model_provider.supports_websockets = false;
     let mut builder = test_codex()
         .with_auth(create_dummy_codex_auth())
         .with_config(move |config| {
-            config.model_provider = model_provider;
+            config
+                .features
+                .enable(Feature::Apps)
+                .expect("test config should allow feature update");
+            config.chatgpt_base_url = apps_base_url;
         });
     let test = builder
         .build(&server)
@@ -1011,7 +1024,7 @@ async fn chatgpt_auth_sends_correct_request() {
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     let request = resp_mock.single_request();
-    assert_eq!(request.path(), "/api/codex/responses");
+    assert_eq!(request.path(), "/v1/responses");
     let request_authorization = request
         .header("authorization")
         .expect("authorization header");
@@ -2720,32 +2733,11 @@ async fn azure_overrides_assign_properties_used_for_responses_url() {
 
     // Mock server
     let server = MockServer::start().await;
-
-    // First request – must NOT include `previous_response_id`.
-    let first = ResponseTemplate::new(200)
-        .insert_header("content-type", "text/event-stream")
-        .set_body_raw(
-            sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
-            "text/event-stream",
-        );
-
-    // Expect POST to /openai/responses with api-version query param
-    Mock::given(method("POST"))
-        .and(path("/openai/responses"))
-        .and(query_param("api-version", "2025-04-01-preview"))
-        .and(header_regex("Custom-Header", "Value"))
-        .and(header(
-            "Authorization",
-            format!(
-                "Bearer {}",
-                std::env::var(EXISTING_ENV_VAR_WITH_NON_EMPTY_VALUE).unwrap()
-            )
-            .as_str(),
-        ))
-        .respond_with(first)
-        .expect(1)
-        .mount(&server)
-        .await;
+    let resp_mock = mount_sse_once(
+        &server,
+        sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
+    )
+    .await;
 
     let provider = ModelProviderInfo {
         name: "custom".to_string(),
@@ -2765,39 +2757,98 @@ async fn azure_overrides_assign_properties_used_for_responses_url() {
             "Value".to_string(),
         )])),
         env_http_headers: None,
-        request_max_retries: None,
-        stream_max_retries: None,
-        stream_idle_timeout_ms: None,
+        request_max_retries: Some(0),
+        stream_max_retries: Some(0),
+        stream_idle_timeout_ms: Some(5_000),
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
     };
+    let codex_home = TempDir::new().unwrap();
+    let mut config = load_default_config_for_test(&codex_home).await;
+    config.model_provider_id = provider.name.clone();
+    config.model_provider = provider.clone();
+    let effort = config.model_reasoning_effort;
+    let summary = config.model_reasoning_summary;
+    let model = codex_core::test_support::get_model_offline(config.model.as_deref());
+    config.model = Some(model.clone());
+    let config = Arc::new(config);
+    let model_info =
+        codex_core::test_support::construct_model_info_offline(model.as_str(), &config);
+    let conversation_id = ThreadId::new();
+    let auth_manager = AuthManager::from_auth_for_testing(create_dummy_codex_auth());
+    let auth_mode = auth_manager.auth_mode().map(TelemetryAuthMode::from);
+    let session_telemetry = SessionTelemetry::new(
+        conversation_id,
+        model.as_str(),
+        model_info.slug.as_str(),
+        /*account_id*/ None,
+        Some("test@test.com".to_string()),
+        auth_mode,
+        "test_originator".to_string(),
+        /*log_user_prompts*/ false,
+        "test".to_string(),
+        SessionSource::Exec,
+    );
+    let client = ModelClient::new(
+        Some(auth_manager),
+        conversation_id,
+        /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
+        provider,
+        SessionSource::Exec,
+        config.model_verbosity,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+    );
+    let mut client_session = client.new_session();
+    let mut prompt = Prompt::default();
+    prompt.input.push(ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "hello".to_string(),
+        }],
+        end_turn: None,
+        phase: None,
+    });
 
-    // Init session
-    let mut builder = test_codex()
-        .with_auth(create_dummy_codex_auth())
-        .with_config(move |config| {
-            config.model_provider = provider;
-        });
-    let codex = builder
-        .build(&server)
+    let mut stream = client_session
+        .stream(
+            &prompt,
+            &model_info,
+            &session_telemetry,
+            effort,
+            summary.unwrap_or(ReasoningSummary::Auto),
+            /*service_tier*/ None,
+            /*turn_metadata_header*/ None,
+        )
         .await
-        .expect("create new conversation")
-        .codex;
+        .expect("responses stream to start");
 
-    codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: "hello".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-        })
-        .await
-        .unwrap();
+    while let Some(event) = stream.next().await {
+        if let Ok(ResponseEvent::Completed { .. }) = event {
+            break;
+        }
+    }
 
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    let request = resp_mock.single_request();
+    assert_eq!(request.path(), "/openai/responses");
+    assert_eq!(
+        request.query_param("api-version").as_deref(),
+        Some("2025-04-01-preview")
+    );
+    assert_eq!(request.header("Custom-Header").as_deref(), Some("Value"));
+    assert_eq!(
+        request.header("Authorization").as_deref(),
+        Some(
+            format!(
+                "Bearer {}",
+                std::env::var(EXISTING_ENV_VAR_WITH_NON_EMPTY_VALUE).unwrap()
+            )
+            .as_str()
+        )
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2806,32 +2857,11 @@ async fn env_var_overrides_loaded_auth() {
 
     // Mock server
     let server = MockServer::start().await;
-
-    // First request – must NOT include `previous_response_id`.
-    let first = ResponseTemplate::new(200)
-        .insert_header("content-type", "text/event-stream")
-        .set_body_raw(
-            sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
-            "text/event-stream",
-        );
-
-    // Expect POST to /openai/responses with api-version query param
-    Mock::given(method("POST"))
-        .and(path("/openai/responses"))
-        .and(query_param("api-version", "2025-04-01-preview"))
-        .and(header_regex("Custom-Header", "Value"))
-        .and(header(
-            "Authorization",
-            format!(
-                "Bearer {}",
-                std::env::var(EXISTING_ENV_VAR_WITH_NON_EMPTY_VALUE).unwrap()
-            )
-            .as_str(),
-        ))
-        .respond_with(first)
-        .expect(1)
-        .mount(&server)
-        .await;
+    let resp_mock = mount_sse_once(
+        &server,
+        sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
+    )
+    .await;
 
     let provider = ModelProviderInfo {
         name: "custom".to_string(),
@@ -2851,39 +2881,98 @@ async fn env_var_overrides_loaded_auth() {
             "Value".to_string(),
         )])),
         env_http_headers: None,
-        request_max_retries: None,
-        stream_max_retries: None,
-        stream_idle_timeout_ms: None,
+        request_max_retries: Some(0),
+        stream_max_retries: Some(0),
+        stream_idle_timeout_ms: Some(5_000),
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
     };
+    let codex_home = TempDir::new().unwrap();
+    let mut config = load_default_config_for_test(&codex_home).await;
+    config.model_provider_id = provider.name.clone();
+    config.model_provider = provider.clone();
+    let effort = config.model_reasoning_effort;
+    let summary = config.model_reasoning_summary;
+    let model = codex_core::test_support::get_model_offline(config.model.as_deref());
+    config.model = Some(model.clone());
+    let config = Arc::new(config);
+    let model_info =
+        codex_core::test_support::construct_model_info_offline(model.as_str(), &config);
+    let conversation_id = ThreadId::new();
+    let auth_manager = AuthManager::from_auth_for_testing(create_dummy_codex_auth());
+    let auth_mode = auth_manager.auth_mode().map(TelemetryAuthMode::from);
+    let session_telemetry = SessionTelemetry::new(
+        conversation_id,
+        model.as_str(),
+        model_info.slug.as_str(),
+        /*account_id*/ None,
+        Some("test@test.com".to_string()),
+        auth_mode,
+        "test_originator".to_string(),
+        /*log_user_prompts*/ false,
+        "test".to_string(),
+        SessionSource::Exec,
+    );
+    let client = ModelClient::new(
+        Some(auth_manager),
+        conversation_id,
+        /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
+        provider,
+        SessionSource::Exec,
+        config.model_verbosity,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+    );
+    let mut client_session = client.new_session();
+    let mut prompt = Prompt::default();
+    prompt.input.push(ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "hello".to_string(),
+        }],
+        end_turn: None,
+        phase: None,
+    });
 
-    // Init session
-    let mut builder = test_codex()
-        .with_auth(create_dummy_codex_auth())
-        .with_config(move |config| {
-            config.model_provider = provider;
-        });
-    let codex = builder
-        .build(&server)
+    let mut stream = client_session
+        .stream(
+            &prompt,
+            &model_info,
+            &session_telemetry,
+            effort,
+            summary.unwrap_or(ReasoningSummary::Auto),
+            /*service_tier*/ None,
+            /*turn_metadata_header*/ None,
+        )
         .await
-        .expect("create new conversation")
-        .codex;
+        .expect("responses stream to start");
 
-    codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: "hello".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-        })
-        .await
-        .unwrap();
+    while let Some(event) = stream.next().await {
+        if let Ok(ResponseEvent::Completed { .. }) = event {
+            break;
+        }
+    }
 
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    let request = resp_mock.single_request();
+    assert_eq!(request.path(), "/openai/responses");
+    assert_eq!(
+        request.query_param("api-version").as_deref(),
+        Some("2025-04-01-preview")
+    );
+    assert_eq!(request.header("Custom-Header").as_deref(), Some("Value"));
+    assert_eq!(
+        request.header("Authorization").as_deref(),
+        Some(
+            format!(
+                "Bearer {}",
+                std::env::var(EXISTING_ENV_VAR_WITH_NON_EMPTY_VALUE).unwrap()
+            )
+            .as_str()
+        )
+    );
 }
 
 fn create_dummy_codex_auth() -> CodexAuth {

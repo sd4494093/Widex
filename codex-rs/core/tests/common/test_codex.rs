@@ -5,6 +5,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -41,6 +42,8 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use futures::future::BoxFuture;
 use serde_json::Value;
 use tempfile::TempDir;
+use tokio::sync::OwnedSemaphorePermit;
+use tokio::sync::Semaphore;
 use wiremock::MockServer;
 
 use crate::PathBufExt;
@@ -65,6 +68,20 @@ const TEST_MODEL_WITH_EXPERIMENTAL_TOOLS: &str = "test-gpt-5.1-codex";
 const REMOTE_EXEC_SERVER_START_TIMEOUT: Duration = Duration::from_secs(5);
 const REMOTE_EXEC_SERVER_POLL_INTERVAL: Duration = Duration::from_millis(25);
 static REMOTE_EXEC_SERVER_INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
+static TEST_HARNESS_PERMITS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+
+fn test_harness_semaphore() -> Arc<Semaphore> {
+    TEST_HARNESS_PERMITS
+        .get_or_init(|| Arc::new(Semaphore::new(1)))
+        .clone()
+}
+
+async fn acquire_test_harness_permit() -> OwnedSemaphorePermit {
+    test_harness_semaphore()
+        .acquire_owned()
+        .await
+        .expect("test harness semaphore should not be closed")
+}
 
 #[derive(Debug)]
 struct RemoteExecServerProcess {
@@ -337,6 +354,7 @@ pub struct TestCodexBuilder {
     workspace_setups: Vec<Box<WorkspaceSetup>>,
     home: Option<Arc<TempDir>>,
     user_shell_override: Option<Shell>,
+    hold_test_harness_permit: bool,
 }
 
 impl TestCodexBuilder {
@@ -388,6 +406,11 @@ impl TestCodexBuilder {
         self
     }
 
+    pub fn with_exclusive_test_harness_permit(mut self) -> Self {
+        self.hold_test_harness_permit = true;
+        self
+    }
+
     pub fn with_windows_cmd_shell(self) -> Self {
         if cfg!(windows) {
             self.with_user_shell(get_shell_by_model_provided_path(&PathBuf::from("cmd.exe")))
@@ -397,34 +420,41 @@ impl TestCodexBuilder {
     }
 
     pub async fn build(&mut self, server: &wiremock::MockServer) -> anyhow::Result<TestCodex> {
+        let permit = self.acquire_test_harness_permit().await;
         let home = match self.home.clone() {
             Some(home) => home,
             None => Arc::new(TempDir::new()?),
         };
         let base_url = format!("{}/v1", server.uri());
         let test_env = TestEnv::local().await?;
-        Box::pin(self.build_with_home_and_base_url(base_url, home, /*resume_from*/ None, test_env))
-            .await
+        Box::pin(self.build_with_home_and_base_url(
+            base_url, home, /*resume_from*/ None, test_env, permit,
+        ))
+        .await
     }
 
     pub async fn build_remote_aware(
         &mut self,
         server: &wiremock::MockServer,
     ) -> anyhow::Result<TestCodex> {
+        let permit = self.acquire_test_harness_permit().await;
         let home = match self.home.clone() {
             Some(home) => home,
             None => Arc::new(TempDir::new()?),
         };
         let base_url = format!("{}/v1", server.uri());
         let test_env = test_env().await?;
-        Box::pin(self.build_with_home_and_base_url(base_url, home, /*resume_from*/ None, test_env))
-            .await
+        Box::pin(self.build_with_home_and_base_url(
+            base_url, home, /*resume_from*/ None, test_env, permit,
+        ))
+        .await
     }
 
     pub async fn build_with_streaming_server(
         &mut self,
         server: &StreamingSseServer,
     ) -> anyhow::Result<TestCodex> {
+        let permit = self.acquire_test_harness_permit().await;
         let base_url = server.uri();
         let home = match self.home.clone() {
             Some(home) => home,
@@ -436,6 +466,7 @@ impl TestCodexBuilder {
             home,
             /*resume_from*/ None,
             test_env,
+            permit,
         ))
         .await
     }
@@ -444,6 +475,7 @@ impl TestCodexBuilder {
         &mut self,
         server: &WebSocketTestServer,
     ) -> anyhow::Result<TestCodex> {
+        let permit = self.acquire_test_harness_permit().await;
         let base_url = format!("{}/v1", server.uri());
         let home = match self.home.clone() {
             Some(home) => home,
@@ -457,8 +489,10 @@ impl TestCodexBuilder {
             config.realtime.version = RealtimeWsVersion::V1;
         }));
         let test_env = TestEnv::local().await?;
-        Box::pin(self.build_with_home_and_base_url(base_url, home, /*resume_from*/ None, test_env))
-            .await
+        Box::pin(self.build_with_home_and_base_url(
+            base_url, home, /*resume_from*/ None, test_env, permit,
+        ))
+        .await
     }
 
     pub async fn resume(
@@ -467,10 +501,25 @@ impl TestCodexBuilder {
         home: Arc<TempDir>,
         rollout_path: PathBuf,
     ) -> anyhow::Result<TestCodex> {
+        let permit = self.acquire_test_harness_permit().await;
         let base_url = format!("{}/v1", server.uri());
         let test_env = TestEnv::local().await?;
-        Box::pin(self.build_with_home_and_base_url(base_url, home, Some(rollout_path), test_env))
-            .await
+        Box::pin(self.build_with_home_and_base_url(
+            base_url,
+            home,
+            Some(rollout_path),
+            test_env,
+            permit,
+        ))
+        .await
+    }
+
+    async fn acquire_test_harness_permit(&self) -> Option<OwnedSemaphorePermit> {
+        if self.hold_test_harness_permit {
+            Some(acquire_test_harness_permit().await)
+        } else {
+            None
+        }
     }
 
     async fn build_with_home_and_base_url(
@@ -479,7 +528,13 @@ impl TestCodexBuilder {
         home: Arc<TempDir>,
         resume_from: Option<PathBuf>,
         test_env: TestEnv,
+        test_harness_permit: Option<OwnedSemaphorePermit>,
     ) -> anyhow::Result<TestCodex> {
+        let _queued_permit = if test_harness_permit.is_none() {
+            Some(acquire_test_harness_permit().await)
+        } else {
+            None
+        };
         let (config, fallback_cwd) = self
             .prepare_config(base_url, &home, test_env.cwd().clone())
             .await?;
@@ -500,6 +555,7 @@ impl TestCodexBuilder {
             resume_from,
             test_env,
             environment_manager,
+            test_harness_permit,
         ))
         .await
     }
@@ -512,6 +568,7 @@ impl TestCodexBuilder {
         resume_from: Option<PathBuf>,
         test_env: TestEnv,
         environment_manager: Arc<codex_exec_server::EnvironmentManager>,
+        test_harness_permit: Option<OwnedSemaphorePermit>,
     ) -> anyhow::Result<TestCodex> {
         let auth = self.auth.clone();
         let thread_manager = if config.model_catalog.is_some() {
@@ -578,6 +635,7 @@ impl TestCodexBuilder {
             session_configured: new_conversation.session_configured,
             thread_manager,
             _test_env: test_env,
+            _test_harness_permit: test_harness_permit,
         })
     }
 
@@ -587,6 +645,10 @@ impl TestCodexBuilder {
         home: &TempDir,
         cwd_override: AbsolutePathBuf,
     ) -> anyhow::Result<(Config, Arc<TempDir>)> {
+        let chatgpt_base_url = base_url
+            .strip_suffix("/v1")
+            .unwrap_or(base_url.as_str())
+            .to_string();
         let model_provider = ModelProviderInfo {
             base_url: Some(base_url),
             // Most core tests use SSE-only mock servers, so keep websocket transport off unless
@@ -598,6 +660,9 @@ impl TestCodexBuilder {
         let mut config = load_default_config_for_test(home).await;
         config.cwd = cwd_override;
         config.model_provider = model_provider;
+        if self.auth.is_chatgpt_auth() {
+            config.chatgpt_base_url = chatgpt_base_url;
+        }
         for hook in self.pre_build_hooks.drain(..) {
             hook(home.path());
         }
@@ -668,6 +733,7 @@ pub struct TestCodex {
     pub config: Config,
     pub thread_manager: Arc<ThreadManager>,
     _test_env: TestEnv,
+    _test_harness_permit: Option<OwnedSemaphorePermit>,
 }
 
 impl TestCodex {
@@ -745,6 +811,11 @@ impl TestCodex {
         sandbox_policy: SandboxPolicy,
         service_tier: Option<Option<ServiceTier>>,
     ) -> Result<()> {
+        let _permit = if self._test_harness_permit.is_none() {
+            Some(acquire_test_harness_permit().await)
+        } else {
+            None
+        };
         let session_model = self.session_configured.model.clone();
         self.codex
             .submit(Op::UserTurn {
@@ -1003,6 +1074,7 @@ pub fn test_codex() -> TestCodexBuilder {
         workspace_setups: vec![],
         home: None,
         user_shell_override: None,
+        hold_test_harness_permit: false,
     }
 }
 

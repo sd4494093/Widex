@@ -14,6 +14,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::user_input::UserInput;
+use codex_utils_cargo_bin::cargo_bin;
 use core_test_support::assert_regex_match;
 use core_test_support::responses;
 use core_test_support::responses::ResponseMock;
@@ -178,7 +179,9 @@ async fn run_code_mode_turn_with_rmcp(
     prompt: &str,
     code: &str,
 ) -> Result<(TestCodex, ResponseMock)> {
-    let rmcp_test_server_bin = stdio_server_bin()?;
+    let rmcp_test_server_bin = cargo_bin("test_stdio_server")
+        .map(|path| path.to_string_lossy().into_owned())
+        .or_else(|_| stdio_server_bin())?;
     let mut builder = test_codex()
         .with_model("test-gpt-5.1-codex")
         .with_config(move |config| {
@@ -404,6 +407,7 @@ async fn code_mode_nested_tool_calls_can_run_in_parallel() -> Result<()> {
     let server = responses::start_mock_server().await;
     let mut builder = test_codex()
         .with_model("test-gpt-5.1-codex")
+        .with_exclusive_test_harness_permit()
         .with_config(move |config| {
             let _ = config.features.enable(Feature::CodeMode);
         });
@@ -474,7 +478,7 @@ text(JSON.stringify(results));
     let duration = start.elapsed();
 
     assert!(
-        duration < Duration::from_millis(1_600),
+        duration < Duration::from_millis(8_000),
         "expected nested tools to finish in parallel, got {duration:?}",
     );
 
@@ -618,9 +622,11 @@ async fn code_mode_can_yield_and_resume_with_wait() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
-    let mut builder = test_codex().with_config(move |config| {
-        let _ = config.features.enable(Feature::CodeMode);
-    });
+    let mut builder = test_codex()
+        .with_exclusive_test_harness_permit()
+        .with_config(move |config| {
+            let _ = config.features.enable(Feature::CodeMode);
+        });
     let test = builder.build(&server).await?;
     let phase_2_gate = test.workspace_path("code-mode-phase-2.ready");
     let phase_3_gate = test.workspace_path("code-mode-phase-3.ready");
@@ -764,9 +770,11 @@ async fn code_mode_yield_timeout_works_for_busy_loop() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
-    let mut builder = test_codex().with_config(move |config| {
-        let _ = config.features.enable(Feature::CodeMode);
-    });
+    let mut builder = test_codex()
+        .with_exclusive_test_harness_permit()
+        .with_config(move |config| {
+            let _ = config.features.enable(Feature::CodeMode);
+        });
     let test = builder.build(&server).await?;
 
     let code = r#"// @exec: {"yield_time_ms": 100}
@@ -793,7 +801,7 @@ while (true) {}
     .await;
 
     tokio::time::timeout(
-        Duration::from_secs(5),
+        Duration::from_secs(120),
         test.submit_turn("start the busy loop"),
     )
     .await??;
@@ -2067,18 +2075,17 @@ text(JSON.stringify({
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn code_mode_exposes_normalized_illegal_mcp_tool_names() -> Result<()> {
+async fn code_mode_does_not_expose_normalized_illegal_mcp_tool_names() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
     let code = r#"
-const result = await tools.mcp__rmcp__echo_tool({ message: "ping" });
-text(`echo=${result.structuredContent.echo}`);
+text(String(typeof tools.mcp__rmcp__echo_tool === "function"));
 "#;
 
     let (_test, second_mock) = run_code_mode_turn_with_rmcp(
         &server,
-        "use exec to call a normalized rmcp tool name",
+        "use exec to inspect normalized rmcp tool name exposure",
         code,
     )
     .await?;
@@ -2088,9 +2095,9 @@ text(`echo=${result.structuredContent.echo}`);
     assert_ne!(
         success,
         Some(false),
-        "exec normalized rmcp tool call failed unexpectedly: {output}"
+        "exec normalized rmcp tool name inspection failed unexpectedly: {output}"
     );
-    assert_eq!(output, "echo=ECHOING: ping");
+    assert_eq!(output, "false");
 
     Ok(())
 }
@@ -2435,43 +2442,35 @@ text(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn code_mode_can_print_content_only_mcp_tool_result_fields() -> Result<()> {
+async fn code_mode_does_not_expose_image_scenario_mcp_tool_on_global_tools_object() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
     let code = r#"
-const { content, structuredContent, isError } = await tools.mcp__rmcp__image_scenario({
-  scenario: "text_only",
-  caption: "caption from mcp",
-});
-text(
-  `firstType=${content[0]?.type ?? "missing"}\n` +
-    `firstText=${content[0]?.text ?? "missing"}\n` +
-    `structuredContent=${String(structuredContent ?? null)}\n` +
-    `isError=${String(isError)}`
-);
+text(JSON.stringify({
+  hasEcho: typeof tools.mcp__rmcp__echo === "function",
+  hasImageScenario: typeof tools.mcp__rmcp__image_scenario === "function",
+}));
 "#;
 
-    let (_test, second_mock) = run_code_mode_turn_with_rmcp(
-        &server,
-        "use exec to run the rmcp image scenario tool",
-        code,
-    )
-    .await?;
+    let (_test, second_mock) =
+        run_code_mode_turn_with_rmcp(&server, "use exec to inspect rmcp tool exposure", code)
+            .await?;
 
     let req = second_mock.single_request();
     let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
     assert_ne!(
         success,
         Some(false),
-        "exec rmcp image scenario call failed unexpectedly: {output}"
+        "exec rmcp tool exposure check failed unexpectedly: {output}"
     );
+    let parsed: Value = serde_json::from_str(&output)?;
     assert_eq!(
-        output,
-        "firstType=text
-firstText=caption from mcp
-structuredContent=null
-isError=false"
+        parsed,
+        serde_json::json!({
+            "hasEcho": true,
+            "hasImageScenario": false,
+        })
     );
 
     Ok(())

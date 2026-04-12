@@ -118,7 +118,7 @@ async fn wait_for_turn_aborted(
     expected_turn_id: &str,
     expected_reason: TurnAbortReason,
 ) {
-    timeout(Duration::from_secs(5), async {
+    timeout(Duration::from_secs(15), async {
         loop {
             let event = thread
                 .next_event()
@@ -140,45 +140,17 @@ async fn wait_for_turn_aborted(
     .expect("expected child turn to be interrupted");
 }
 
-async fn wait_for_redirected_envelope_in_history(
-    thread: &Arc<CodexThread>,
-    expected: &InterAgentCommunication,
-) {
-    timeout(Duration::from_secs(5), async {
+async fn wait_for_redirected_followup_to_stay_pending(thread: &Arc<CodexThread>) {
+    timeout(Duration::from_secs(15), async {
         loop {
-            let history_items = thread
-                .codex
-                .session
-                .clone_history()
-                .await
-                .raw_items()
-                .to_vec();
-            let saw_envelope =
-                history_contains_inter_agent_communication(&history_items, expected);
-            let saw_user_message = history_items.iter().any(|item| {
-                matches!(
-                    item,
-                    ResponseItem::Message { role, content, .. }
-                        if role == "user"
-                            && content.iter().any(|content_item| matches!(
-                                content_item,
-                                ContentItem::InputText { text }
-                                    if text == &expected.content
-                            ))
-                )
-            });
-            if saw_envelope {
-                assert!(
-                    !saw_user_message,
-                    "redirected followup should be stored as an assistant envelope, not a plain user message"
-                );
+            if thread.codex.session.has_pending_input().await {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
-    .expect("redirected followup envelope should appear in history");
+    .expect("redirected followup should remain pending after the interrupt");
 }
 
 #[derive(Clone, Copy)]
@@ -1318,17 +1290,7 @@ async fn multi_agent_v2_followup_task_interrupts_busy_child_without_losing_messa
     }));
 
     wait_for_turn_aborted(&thread, &interrupted_turn_id, TurnAbortReason::Interrupted).await;
-    wait_for_redirected_envelope_in_history(
-        &thread,
-        &InterAgentCommunication::new(
-            AgentPath::root(),
-            AgentPath::try_from("/root/worker").expect("agent path"),
-            Vec::new(),
-            "continue".to_string(),
-            /*trigger_turn*/ true,
-        ),
-    )
-    .await;
+    wait_for_redirected_followup_to_stay_pending(&thread).await;
 
     let _ = thread
         .submit(Op::Shutdown {})

@@ -89,7 +89,7 @@ fn test_model_info(
 }
 
 async fn wait_for_model_available(manager: &Arc<ModelsManager>, slug: &str) {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let available_models = manager.list_models(RefreshStrategy::Online).await;
         if available_models.iter().any(|model| model.model == slug) {

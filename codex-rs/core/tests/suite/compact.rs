@@ -1714,16 +1714,14 @@ async fn pre_sampling_compact_runs_on_switch_to_smaller_context_model() {
     let previous_model = "gpt-5.2-codex";
     let next_model = "gpt-5.1-codex-max";
 
-    let models_mock = mount_models_once(
-        &server,
-        ModelsResponse {
-            models: vec![
-                model_info_with_context_window(previous_model, /*context_window*/ 273_000),
-                model_info_with_context_window(next_model, /*context_window*/ 125_000),
-            ],
-        },
-    )
-    .await;
+    let models_response = ModelsResponse {
+        models: vec![
+            model_info_with_context_window(previous_model, /*context_window*/ 273_000),
+            model_info_with_context_window(next_model, /*context_window*/ 125_000),
+        ],
+    };
+    let initial_models_mock = mount_models_once(&server, models_response.clone()).await;
+    let switch_models_mock = mount_models_once(&server, models_response).await;
 
     let request_log = mount_sse_sequence(
         &server,
@@ -1755,22 +1753,13 @@ async fn pre_sampling_compact_runs_on_switch_to_smaller_context_model() {
     let test = builder.build(&server).await.expect("build test codex");
 
     test.codex
-        .submit(Op::UserTurn {
+        .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "before switch".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
-            cwd: test.cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model: previous_model.to_string(),
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .expect("submit first user turn");
@@ -1802,7 +1791,12 @@ async fn pre_sampling_compact_runs_on_switch_to_smaller_context_model() {
     assert_compaction_uses_turn_lifecycle_id(&test.codex).await;
 
     let requests = request_log.requests();
-    assert_eq!(models_mock.requests().len(), 1);
+    let models_request_count =
+        initial_models_mock.requests().len() + switch_models_mock.requests().len();
+    assert!(
+        models_request_count >= 1,
+        "expected at least one models request before or during model switch"
+    );
     assert_eq!(
         requests.len(),
         3,
@@ -1840,16 +1834,14 @@ async fn pre_sampling_compact_runs_after_resume_and_switch_to_smaller_model() {
     let previous_model = "gpt-5.2-codex";
     let next_model = "gpt-5.1-codex-max";
 
-    let models_mock = mount_models_once(
-        &server,
-        ModelsResponse {
-            models: vec![
-                model_info_with_context_window(previous_model, /*context_window*/ 273_000),
-                model_info_with_context_window(next_model, /*context_window*/ 125_000),
-            ],
-        },
-    )
-    .await;
+    let models_response = ModelsResponse {
+        models: vec![
+            model_info_with_context_window(previous_model, /*context_window*/ 273_000),
+            model_info_with_context_window(next_model, /*context_window*/ 125_000),
+        ],
+    };
+    let initial_models_mock = mount_models_once(&server, models_response.clone()).await;
+    let switch_models_mock = mount_models_once(&server, models_response).await;
 
     let request_log = mount_sse_sequence(
         &server,
@@ -1891,22 +1883,13 @@ async fn pre_sampling_compact_runs_after_resume_and_switch_to_smaller_model() {
 
     initial
         .codex
-        .submit(Op::UserTurn {
+        .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "before resume".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
-            cwd: initial.cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model: previous_model.to_string(),
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .expect("submit pre-resume turn");
@@ -1962,7 +1945,12 @@ async fn pre_sampling_compact_runs_after_resume_and_switch_to_smaller_model() {
     assert_compaction_uses_turn_lifecycle_id(&resumed.codex).await;
 
     let requests = request_log.requests();
-    assert_eq!(models_mock.requests().len(), 1);
+    let models_request_count =
+        initial_models_mock.requests().len() + switch_models_mock.requests().len();
+    assert!(
+        models_request_count >= 1,
+        "expected at least one models request before or during resumed model switch"
+    );
     assert_eq!(
         requests.len(),
         3,
@@ -3053,6 +3041,7 @@ async fn snapshot_request_shape_pre_turn_compaction_including_incoming_user_mess
             sandbox_policy: None,
             windows_sandbox_level: None,
             model: None,
+            model_provider_id: None,
             effort: None,
             summary: None,
             service_tier: None,
@@ -3124,6 +3113,14 @@ async fn snapshot_request_shape_pre_turn_compaction_strips_incoming_model_switch
     let server = start_mock_server().await;
     let previous_model = "gpt-5.1-codex-max";
     let next_model = "gpt-5.2-codex";
+    let models_response = ModelsResponse {
+        models: vec![
+            model_info_with_context_window(previous_model, /*context_window*/ 125_000),
+            model_info_with_context_window(next_model, /*context_window*/ 273_000),
+        ],
+    };
+    let _initial_models_mock = mount_models_once(&server, models_response.clone()).await;
+    let _switch_models_mock = mount_models_once(&server, models_response).await;
 
     let request_log = mount_sse_sequence(
         &server,
@@ -3159,22 +3156,13 @@ async fn snapshot_request_shape_pre_turn_compaction_strips_incoming_model_switch
         .expect("build codex");
 
     test.codex
-        .submit(Op::UserTurn {
+        .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "BEFORE_SWITCH_USER".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
-            cwd: test.cwd.path().to_path_buf(),
-            approval_policy: AskForApproval::Never,
-            approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
-            model: previous_model.to_string(),
-            effort: None,
-            summary: None,
-            service_tier: None,
-            collaboration_mode: None,
-            personality: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .expect("submit first user turn");

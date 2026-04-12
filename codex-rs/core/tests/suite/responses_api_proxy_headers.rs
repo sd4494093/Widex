@@ -17,6 +17,7 @@ use core_test_support::test_codex::test_codex;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
+use std::io::Read;
 use std::io::Write;
 use std::path::Path;
 use std::process::Child;
@@ -47,7 +48,7 @@ impl ResponsesApiProxy {
             .arg(dump_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()?;
 
         child
@@ -69,8 +70,12 @@ impl ResponsesApiProxy {
                 });
             }
             if let Some(status) = child.try_wait()? {
+                let mut stderr = String::new();
+                if let Some(mut stderr_reader) = child.stderr.take() {
+                    let _ = stderr_reader.read_to_string(&mut stderr);
+                }
                 return Err(anyhow!(
-                    "responses-api-proxy exited before writing server info: {status}"
+                    "responses-api-proxy exited before writing server info: {status}; stderr: {stderr}"
                 ));
             }
             if Instant::now() >= deadline {

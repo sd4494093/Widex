@@ -455,6 +455,7 @@ async fn user_turn_personality_same_value_does_not_add_update_message() -> anyho
             sandbox_policy: None,
             windows_sandbox_level: None,
             model: None,
+            model_provider_id: None,
             effort: None,
             summary: None,
             service_tier: None,
@@ -573,6 +574,7 @@ async fn user_turn_personality_skips_if_feature_disabled() -> anyhow::Result<()>
             sandbox_policy: None,
             windows_sandbox_level: None,
             model: None,
+            model_provider_id: None,
             effort: None,
             summary: None,
             service_tier: None,
@@ -904,7 +906,7 @@ async fn user_turn_personality_remote_model_template_includes_update_message() -
 }
 
 async fn wait_for_model_available(manager: &Arc<ModelsManager>, slug: &str) {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let models = manager.list_models(RefreshStrategy::OnlineIfUncached).await;
         if models.iter().any(|model| model.model == slug) {

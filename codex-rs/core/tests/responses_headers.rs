@@ -25,10 +25,18 @@ use wiremock::matchers::header;
 
 fn normalize_git_remote_url(url: &str) -> String {
     let normalized = url.trim().trim_end_matches('/');
-    normalized
-        .strip_suffix(".git")
-        .unwrap_or(normalized)
-        .to_string()
+    let normalized = normalized.strip_suffix(".git").unwrap_or(normalized);
+    let normalized = normalized
+        .strip_prefix("https://")
+        .or_else(|| normalized.strip_prefix("http://"))
+        .or_else(|| normalized.strip_prefix("ssh://"))
+        .unwrap_or(normalized);
+    if let Some(stripped) = normalized.strip_prefix("git@")
+        && let Some((host, path)) = stripped.split_once(':')
+    {
+        return format!("{host}/{path}");
+    }
+    normalized.to_string()
 }
 
 const TEST_INSTALLATION_ID: &str = "11111111-1111-4111-8111-111111111111";

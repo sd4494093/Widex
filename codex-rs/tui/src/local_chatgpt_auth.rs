@@ -100,6 +100,8 @@ mod tests {
         let auth = AuthDotJson {
             auth_mode: Some(AuthMode::Chatgpt),
             openai_api_key: None,
+            gemini_api_key: None,
+            widex_saved_api_keys: Default::default(),
             tokens: Some(TokenData {
                 id_token: codex_login::token_data::parse_chatgpt_jwt_claims(&id_token)
                     .expect("id token should parse"),
@@ -152,6 +154,8 @@ mod tests {
             &AuthDotJson {
                 auth_mode: Some(AuthMode::ApiKey),
                 openai_api_key: Some("sk-test".to_string()),
+                gemini_api_key: None,
+                widex_saved_api_keys: Default::default(),
                 tokens: None,
                 last_refresh: None,
             },

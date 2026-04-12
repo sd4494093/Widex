@@ -2,20 +2,18 @@
 
 use std::sync::Arc;
 
-use codex_app_server_protocol::AuthMode;
-use codex_core::ContentItem;
-use codex_core::LocalShellAction;
-use codex_core::LocalShellExecAction;
-use codex_core::LocalShellStatus;
 use codex_core::ModelClient;
-use codex_core::ModelProviderInfo;
 use codex_core::Prompt;
-use codex_core::ResponseItem;
-use codex_core::WireApi;
-use codex_core::models_manager::manager::ModelsManager;
-use codex_otel::OtelManager;
+use codex_model_provider_info::WireApi;
+use codex_model_provider_info::create_oss_provider_with_base_url;
+use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::LocalShellAction;
+use codex_protocol::models::LocalShellExecAction;
+use codex_protocol::models::LocalShellStatus;
 use codex_protocol::models::ReasoningItemContent;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::SessionSource;
 use core_test_support::load_default_config_for_test;
 use core_test_support::skip_if_no_network;
@@ -45,21 +43,12 @@ async fn run_request(input: Vec<ResponseItem>) -> Value {
         .mount(&server)
         .await;
 
-    let provider = ModelProviderInfo {
-        name: "mock".into(),
-        base_url: Some(format!("{}/v1", server.uri())),
-        env_key: None,
-        env_key_instructions: None,
-        experimental_bearer_token: None,
-        wire_api: WireApi::Chat,
-        query_params: None,
-        http_headers: None,
-        env_http_headers: None,
-        request_max_retries: Some(0),
-        stream_max_retries: Some(0),
-        stream_idle_timeout_ms: Some(5_000),
-        requires_openai_auth: false,
-    };
+    let mut provider =
+        create_oss_provider_with_base_url(&format!("{}/v1", server.uri()), WireApi::Chat);
+    provider.name = "mock".into();
+    provider.request_max_retries = Some(0);
+    provider.stream_max_retries = Some(0);
+    provider.stream_idle_timeout_ms = Some(5_000);
 
     let codex_home = match TempDir::new() {
         Ok(dir) => dir,
@@ -74,37 +63,50 @@ async fn run_request(input: Vec<ResponseItem>) -> Value {
     let config = Arc::new(config);
 
     let conversation_id = ThreadId::new();
-    let model = ModelsManager::get_model_offline(config.model.as_deref());
-    let model_info = ModelsManager::construct_model_info_offline(model.as_str(), &config);
-    let otel_manager = OtelManager::new(
+    let model = codex_core::test_support::get_model_offline(config.model.as_deref());
+    let model_info =
+        codex_core::test_support::construct_model_info_offline(model.as_str(), &config);
+    let session_telemetry = SessionTelemetry::new(
         conversation_id,
         model.as_str(),
         model_info.slug.as_str(),
         None,
         Some("test@test.com".to_string()),
-        Some(AuthMode::ApiKey),
+        None,
+        "test_originator".to_string(),
         false,
         "test".to_string(),
         SessionSource::Exec,
     );
 
-    let mut client_session = ModelClient::new(
-        Arc::clone(&config),
-        None,
-        model_info,
-        otel_manager,
-        provider,
-        effort,
-        summary,
+    let client = ModelClient::new(
+        /*auth_manager*/ None,
         conversation_id,
+        /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
+        provider,
         SessionSource::Exec,
-    )
-    .new_session();
+        config.model_verbosity,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+    );
+    let mut client_session = client.new_session();
 
     let mut prompt = Prompt::default();
     prompt.input = input;
 
-    let mut stream = match client_session.stream(&prompt).await {
+    let mut stream = match client_session
+        .stream(
+            &prompt,
+            &model_info,
+            &session_telemetry,
+            effort,
+            summary.unwrap_or(model_info.default_reasoning_summary),
+            /*service_tier*/ None,
+            /*turn_metadata_header*/ None,
+        )
+        .await
+    {
         Ok(s) => s,
         Err(e) => panic!("stream chat failed: {e}"),
     };
@@ -136,6 +138,7 @@ fn user_message(text: &str) -> ResponseItem {
             text: text.to_string(),
         }],
         end_turn: None,
+        phase: None,
     }
 }
 
@@ -147,6 +150,7 @@ fn assistant_message(text: &str) -> ResponseItem {
             text: text.to_string(),
         }],
         end_turn: None,
+        phase: None,
     }
 }
 
@@ -165,6 +169,7 @@ fn function_call() -> ResponseItem {
     ResponseItem::FunctionCall {
         id: None,
         name: "f".to_string(),
+        namespace: None,
         arguments: "{}".to_string(),
         call_id: "c1".to_string(),
         thought_signature: None,

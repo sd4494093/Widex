@@ -855,6 +855,30 @@ fn build_available_models_picks_default_after_hiding_hidden_models() {
 }
 
 #[test]
+fn build_available_models_filters_temporarily_hidden_multi_llm_models() {
+    let codex_home = tempdir().expect("temp dir");
+    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
+    let provider = provider_for("http://example.test".to_string());
+    let manager = ModelsManager::with_provider_for_tests(
+        codex_home.path().to_path_buf(),
+        auth_manager,
+        provider,
+    );
+
+    let openai_model = remote_model("gpt-5.2-codex", "GPT 5.2 Codex", /*priority*/ 0);
+    let gemini_model = remote_model("gemini-3-pro-preview-codex", "Gemini", /*priority*/ 1);
+    let grok_model = remote_model("grok-4.1", "Grok", /*priority*/ 2);
+
+    let available =
+        manager.build_available_models(vec![grok_model, openai_model.clone(), gemini_model]);
+
+    let mut expected_openai = ModelPreset::from(openai_model);
+    expected_openai.is_default = true;
+
+    assert_eq!(available, vec![expected_openai]);
+}
+
+#[test]
 fn bundled_models_json_roundtrips() {
     let response = crate::bundled_models_response()
         .unwrap_or_else(|err| panic!("bundled models.json should parse: {err}"));

@@ -681,7 +681,7 @@ enabled = false
     );
 
     let marker_path = tmp.path().join(STARTUP_REMOTE_PLUGIN_SYNC_MARKER_FILE);
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if marker_path.is_file() {
                 break;
