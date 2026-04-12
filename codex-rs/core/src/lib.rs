@@ -17,7 +17,6 @@ mod realtime_prompt;
 pub use codex::SteerInputError;
 mod codex_thread;
 mod compact_remote;
-mod gemini;
 pub use codex_thread::CodexThread;
 pub use codex_thread::ThreadConfigSnapshot;
 mod agent;

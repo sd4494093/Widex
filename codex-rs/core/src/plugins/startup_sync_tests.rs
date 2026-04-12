@@ -467,7 +467,7 @@ exit 1
     let err = sync_openai_plugins_repo_via_git(tmp.path(), git_path.to_str().expect("utf8 path"))
         .expect_err("git sync should fail");
 
-    assert!(err.contains("fatal: early EOF"));
+    assert!(err.contains("git clone curated plugins repo failed with status"));
     assert!(!has_plugins_clone_dirs(tmp.path()));
 }
 

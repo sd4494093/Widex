@@ -2016,8 +2016,7 @@
     "WireApi": {
       "enum": [
         "responses",
-        "chat",
-        "gemini"
+        "chat"
       ],
       "type": "string"
     }

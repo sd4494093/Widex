@@ -65,7 +65,6 @@ use crate::tui::TuiEvent;
 use crate::update_action::UpdateAction;
 use crate::version::CODEX_CLI_VERSION;
 use codex_ansi_escape::ansi_escape_line;
-use codex_api_switchover::ApiSwitchoverConfig;
 use codex_app_server_client::AppServerRequestHandle;
 use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::ClientRequest;
@@ -101,9 +100,6 @@ use codex_config::types::ApprovalsReviewer;
 use codex_config::types::ModelAvailabilityNuxConfig;
 use codex_exec_server::EnvironmentManager;
 use codex_features::Feature;
-use codex_login::AuthDotJson;
-use codex_login::load_auth_dot_json;
-use codex_login::save_auth;
 use codex_models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use codex_models_manager::model_presets::HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG;
 use codex_models_manager::model_presets::HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG;
@@ -285,21 +281,6 @@ fn guardian_approvals_mode() -> GuardianApprovalsMode {
 /// Smooth-mode streaming drains one line per tick, so this interval controls
 /// perceived typing speed for non-backlogged output.
 const COMMIT_ANIMATION_TICK: Duration = tui::TARGET_FRAME_INTERVAL;
-
-fn api_switchover_config_path_for_codex_home(codex_home: &Path) -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("WIDEX_API_SWITCHER_CONFIG") {
-        let trimmed = path.trim();
-        if !trimmed.is_empty() {
-            return Some(PathBuf::from(trimmed));
-        }
-    }
-
-    let codex_home_path = codex_home.join("api_switchover.yaml");
-    if codex_home_path.exists() {
-        return Some(codex_home_path);
-    }
-    None
-}
 
 #[derive(Debug, Clone)]
 pub struct AppExitInfo {
@@ -1590,10 +1571,6 @@ impl App {
         {
             handle.abort();
         }
-    }
-
-    fn api_switchover_config_path(&self) -> Option<PathBuf> {
-        api_switchover_config_path_for_codex_home(&self.config.codex_home)
     }
 
     fn ensure_thread_channel(&mut self, thread_id: ThreadId) -> &mut ThreadEventChannel {
@@ -3667,119 +3644,6 @@ impl App {
         if let Some(updated_model) = config.model.clone() {
             model = updated_model;
         }
-        let mut startup_switchover_warnings: Vec<String> = Vec::new();
-        if let Some(config_path) = api_switchover_config_path_for_codex_home(&config.codex_home) {
-            match ApiSwitchoverConfig::load_from_path(&config_path) {
-                Ok(switchover) => match switchover.resolve_codex_plan_for_model(&model) {
-                    Ok(Some(plan)) => {
-                        if let Some(next_provider_id) = plan.provider_id.clone() {
-                            if let Some(provider) = config.model_providers.get(&next_provider_id) {
-                                config.model_provider_id = next_provider_id;
-                                config.model_provider = provider.clone();
-                            } else {
-                                startup_switchover_warnings.push(format!(
-                                    "API switchover profile `{}` references provider `{next_provider_id}`, but it is not present in config.toml `model_providers`.",
-                                    plan.profile_id
-                                ));
-                            }
-                        }
-
-                        if plan.auth.wants_openai_api_key || plan.auth.wants_gemini_api_key {
-                            let mut auth = load_auth_dot_json(
-                                &config.codex_home,
-                                config.cli_auth_credentials_store_mode,
-                            )
-                            .unwrap_or(None)
-                            .unwrap_or(AuthDotJson {
-                                auth_mode: None,
-                                openai_api_key: None,
-                                gemini_api_key: None,
-                                widex_saved_api_keys: Default::default(),
-                                tokens: None,
-                                last_refresh: None,
-                            });
-                            let mut changed = false;
-                            let openai_cache_key =
-                                format!("profile:{}:OPENAI_API_KEY", plan.profile_id);
-                            let gemini_cache_key =
-                                format!("profile:{}:GEMINI_API_KEY", plan.profile_id);
-
-                            if plan.auth.wants_openai_api_key {
-                                if let Some(key) = plan.auth.openai_api_key.clone() {
-                                    if auth
-                                        .widex_saved_api_keys
-                                        .get(&openai_cache_key)
-                                        .is_none_or(|saved| saved != &key)
-                                    {
-                                        auth.widex_saved_api_keys
-                                            .insert(openai_cache_key, key.clone());
-                                        changed = true;
-                                    }
-                                    if auth.openai_api_key.as_deref() != Some(key.as_str()) {
-                                        auth.openai_api_key = Some(key);
-                                        changed = true;
-                                    }
-                                } else if let Some(saved) =
-                                    auth.widex_saved_api_keys.get(&openai_cache_key)
-                                    && auth.openai_api_key.as_deref() != Some(saved.as_str())
-                                {
-                                    auth.openai_api_key = Some(saved.clone());
-                                    changed = true;
-                                }
-                            }
-
-                            if plan.auth.wants_gemini_api_key {
-                                if let Some(key) = plan.auth.gemini_api_key.clone() {
-                                    if auth
-                                        .widex_saved_api_keys
-                                        .get(&gemini_cache_key)
-                                        .is_none_or(|saved| saved != &key)
-                                    {
-                                        auth.widex_saved_api_keys
-                                            .insert(gemini_cache_key, key.clone());
-                                        changed = true;
-                                    }
-                                    if auth.gemini_api_key.as_deref() != Some(key.as_str()) {
-                                        auth.gemini_api_key = Some(key);
-                                        changed = true;
-                                    }
-                                } else if let Some(saved) =
-                                    auth.widex_saved_api_keys.get(&gemini_cache_key)
-                                    && auth.gemini_api_key.as_deref() != Some(saved.as_str())
-                                {
-                                    auth.gemini_api_key = Some(saved.clone());
-                                    changed = true;
-                                }
-                            }
-
-                            if changed
-                                && let Err(err) = save_auth(
-                                    &config.codex_home,
-                                    &auth,
-                                    config.cli_auth_credentials_store_mode,
-                                )
-                            {
-                                startup_switchover_warnings.push(format!(
-                                    "Failed to persist auth.json updates from api switchover: {err}"
-                                ));
-                            }
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(err) => {
-                        startup_switchover_warnings.push(format!(
-                            "Failed to resolve api switchover for startup model `{model}`: {err}"
-                        ));
-                    }
-                },
-                Err(err) => {
-                    startup_switchover_warnings.push(format!(
-                        "Failed to load api switchover config at {}: {err}",
-                        config_path.display()
-                    ));
-                }
-            }
-        }
         let model_catalog = Arc::new(ModelCatalog::new(
             available_models.clone(),
             CollaborationModesConfig {
@@ -3926,10 +3790,6 @@ impl App {
                 (ChatWidget::new_with_app_event(init), Some(forked))
             }
         };
-
-        for warning in startup_switchover_warnings {
-            chat_widget.add_error_message(warning);
-        }
 
         chat_widget
             .maybe_prompt_windows_sandbox_enable(should_prompt_windows_sandbox_nux_at_startup);
@@ -4721,153 +4581,6 @@ impl App {
                 self.on_update_reasoning_effort(effort);
             }
             AppEvent::ApplyModelSelection { model, effort } => {
-                let mut provider_id: Option<String> = None;
-                let mut switchover_profile: Option<String> = None;
-
-                if let Some(config_path) = self.api_switchover_config_path() {
-                    match ApiSwitchoverConfig::load_from_path(&config_path) {
-                        Ok(cfg) => match cfg.resolve_codex_plan_for_model(&model) {
-                            Ok(Some(plan)) => {
-                                switchover_profile = Some(plan.profile_id.clone());
-
-                                if let Some(next_provider_id) = plan.provider_id.clone() {
-                                    if let Some(provider) =
-                                        self.config.model_providers.get(&next_provider_id)
-                                    {
-                                        provider_id = Some(next_provider_id.clone());
-                                        self.config.model_provider_id = next_provider_id.clone();
-                                        self.config.model_provider = provider.clone();
-                                        self.chat_widget
-                                            .set_model_provider(next_provider_id, provider.clone());
-                                    } else {
-                                        self.chat_widget.add_error_message(format!(
-                                            "API switchover profile `{}` references provider `{next_provider_id}`, but it is not present in config.toml `model_providers`.",
-                                            plan.profile_id
-                                        ));
-                                    }
-                                }
-
-                                if plan.auth.wants_openai_api_key || plan.auth.wants_gemini_api_key
-                                {
-                                    let mut auth = load_auth_dot_json(
-                                        &self.config.codex_home,
-                                        self.config.cli_auth_credentials_store_mode,
-                                    )
-                                    .unwrap_or(None)
-                                    .unwrap_or(AuthDotJson {
-                                        auth_mode: None,
-                                        openai_api_key: None,
-                                        gemini_api_key: None,
-                                        widex_saved_api_keys: Default::default(),
-                                        tokens: None,
-                                        last_refresh: None,
-                                    });
-
-                                    let mut changed = false;
-                                    let openai_cache_key =
-                                        format!("profile:{}:OPENAI_API_KEY", plan.profile_id);
-                                    let gemini_cache_key =
-                                        format!("profile:{}:GEMINI_API_KEY", plan.profile_id);
-
-                                    let openai_key = plan.auth.openai_api_key.clone();
-                                    let gemini_key = plan.auth.gemini_api_key.clone();
-
-                                    if plan.auth.wants_openai_api_key {
-                                        if let Some(key) = openai_key {
-                                            if auth
-                                                .widex_saved_api_keys
-                                                .get(&openai_cache_key)
-                                                .is_none_or(|saved| saved != &key)
-                                            {
-                                                auth.widex_saved_api_keys
-                                                    .insert(openai_cache_key, key.clone());
-                                                changed = true;
-                                            }
-                                            if auth.openai_api_key.as_deref() != Some(key.as_str())
-                                            {
-                                                auth.openai_api_key = Some(key);
-                                                changed = true;
-                                            }
-                                        } else if let Some(saved) =
-                                            auth.widex_saved_api_keys.get(&openai_cache_key)
-                                            && auth.openai_api_key.as_deref()
-                                                != Some(saved.as_str())
-                                        {
-                                            auth.openai_api_key = Some(saved.clone());
-                                            changed = true;
-                                        } else if !auth
-                                            .widex_saved_api_keys
-                                            .contains_key(&openai_cache_key)
-                                        {
-                                            self.chat_widget.add_error_message(format!(
-                                                "API switchover profile `{}` requires OPENAI_API_KEY, but none was provided and no saved key was found.\n\nHint: set the env var referenced by api_switchover.yaml, switch once to save it, then you can unset the env var.",
-                                                plan.profile_id
-                                            ));
-                                        }
-                                    }
-
-                                    if plan.auth.wants_gemini_api_key {
-                                        if let Some(key) = gemini_key {
-                                            if auth
-                                                .widex_saved_api_keys
-                                                .get(&gemini_cache_key)
-                                                .is_none_or(|saved| saved != &key)
-                                            {
-                                                auth.widex_saved_api_keys
-                                                    .insert(gemini_cache_key, key.clone());
-                                                changed = true;
-                                            }
-                                            if auth.gemini_api_key.as_deref() != Some(key.as_str())
-                                            {
-                                                auth.gemini_api_key = Some(key);
-                                                changed = true;
-                                            }
-                                        } else if let Some(saved) =
-                                            auth.widex_saved_api_keys.get(&gemini_cache_key)
-                                            && auth.gemini_api_key.as_deref()
-                                                != Some(saved.as_str())
-                                        {
-                                            auth.gemini_api_key = Some(saved.clone());
-                                            changed = true;
-                                        } else if !auth
-                                            .widex_saved_api_keys
-                                            .contains_key(&gemini_cache_key)
-                                        {
-                                            self.chat_widget.add_error_message(format!(
-                                                "API switchover profile `{}` requires GEMINI_API_KEY, but none was provided and no saved key was found.\n\nHint: set the env var referenced by api_switchover.yaml, switch once to save it, then you can unset the env var.",
-                                                plan.profile_id
-                                            ));
-                                        }
-                                    }
-                                    if changed {
-                                        if let Err(err) = save_auth(
-                                            &self.config.codex_home,
-                                            &auth,
-                                            self.config.cli_auth_credentials_store_mode,
-                                        ) {
-                                            self.chat_widget.add_error_message(format!(
-                                                "Failed to persist auth.json updates from api switchover: {err}"
-                                            ));
-                                        }
-                                    }
-                                }
-                            }
-                            Ok(None) => {}
-                            Err(err) => {
-                                self.chat_widget.add_error_message(format!(
-                                    "Failed to resolve api switchover for model `{model}`: {err}"
-                                ));
-                            }
-                        },
-                        Err(err) => {
-                            self.chat_widget.add_error_message(format!(
-                                "Failed to load api switchover config at {}: {err}",
-                                config_path.display()
-                            ));
-                        }
-                    }
-                }
-
                 self.chat_widget.submit_op(Op::OverrideTurnContext {
                     cwd: None,
                     approval_policy: None,
@@ -4875,7 +4588,7 @@ impl App {
                     sandbox_policy: None,
                     windows_sandbox_level: None,
                     model: Some(model.clone()),
-                    model_provider_id: provider_id.clone(),
+                    model_provider_id: None,
                     effort: Some(effort),
                     summary: None,
                     service_tier: None,
@@ -4887,27 +4600,15 @@ impl App {
                 self.on_update_reasoning_effort(effort);
 
                 let profile = self.active_profile.as_deref();
-                let mut edits = ConfigEditsBuilder::new(&self.config.codex_home)
+                let edits = ConfigEditsBuilder::new(&self.config.codex_home)
                     .with_profile(profile)
                     .set_model(Some(model.as_str()), effort);
-                if provider_id.is_some() {
-                    edits = edits.set_model_provider(provider_id.as_deref());
-                }
                 match edits.apply().await {
                     Ok(()) => {
                         let mut message = format!("Model changed to {model}");
                         if let Some(label) = Self::reasoning_label_for(&model, effort) {
                             message.push(' ');
                             message.push_str(label);
-                        }
-                        if let Some(provider_id) = provider_id.as_deref() {
-                            message.push_str(" via ");
-                            message.push_str(provider_id);
-                        }
-                        if let Some(profile_id) = switchover_profile.as_deref() {
-                            message.push_str(" (api profile: ");
-                            message.push_str(profile_id);
-                            message.push(')');
                         }
                         self.chat_widget.add_info_message(message, None);
                     }

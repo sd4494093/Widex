@@ -41,7 +41,6 @@ pub enum WireApi {
     #[default]
     Responses,
     Chat,
-    Gemini,
 }
 
 impl fmt::Display for WireApi {
@@ -49,7 +48,6 @@ impl fmt::Display for WireApi {
         let value = match self {
             Self::Responses => "responses",
             Self::Chat => "chat",
-            Self::Gemini => "gemini",
         };
         f.write_str(value)
     }
@@ -64,11 +62,7 @@ impl<'de> Deserialize<'de> for WireApi {
         match value.as_str() {
             "responses" => Ok(Self::Responses),
             "chat" => Err(serde::de::Error::custom(CHAT_WIRE_API_REMOVED_ERROR)),
-            "gemini" => Ok(Self::Gemini),
-            _ => Err(serde::de::Error::unknown_variant(
-                &value,
-                &["responses", "gemini"],
-            )),
+            _ => Err(serde::de::Error::unknown_variant(&value, &["responses"])),
         }
     }
 }
@@ -157,12 +151,6 @@ impl ModelProviderInfo {
     }
 
     pub fn to_api_provider(&self, auth_mode: Option<AuthMode>) -> CodexResult<ApiProvider> {
-        if self.wire_api == WireApi::Gemini {
-            return Err(CodexErr::UnsupportedOperation(
-                "Gemini wire API is not supported by codex-api transports".to_string(),
-            ));
-        }
-
         let default_base_url = if matches!(auth_mode, Some(AuthMode::Chatgpt)) {
             "https://chatgpt.com/backend-api/codex"
         } else {

@@ -16,6 +16,10 @@
 - `widex-custom/docs/LLMs_intergration/`、Gemini/Grok 相关历史文档、旧设计说明会继续保留。
 - 但多 LLM 集成当前属于“暂时移出主产品线”的历史能力，不再作为新的默认维护方向。
 - 后续若要重新接回这些能力，应基于保留下来的文档与实现记录重新评估，而不是默认要求每次 upstream 合并都继续扩大这部分分叉。
+- 当前 `widex` 运行主链路已不再默认接入：
+  - TUI 内的 api switchover 自动 provider/key 切换
+  - Gemini 的运行时 wire 分流
+  - 面向 Gemini/Grok 的主产品线维护承诺
 
 
 ## 1) 分支策略（上游跟随 + widex 定制）
@@ -47,8 +51,8 @@ git push origin widex
 
 原因：
 
-- widex 增加了 `wire_api = "gemini"` 等官方 npm CLI 不识别的配置扩展
-- 两者共用同一个 `CODEX_HOME` 会互相“读坏配置”
+- widex 与官方 npm `codex` 的运行配置、历史定制和独立工作目录需要隔离
+- 两者共用同一个 `CODEX_HOME` 容易互相污染配置与状态
 
 实现：
 
@@ -86,6 +90,9 @@ git push origin widex
 ## 3) API Switchover（YAML 驱动的 provider/key 快速切换）
 
 目录：`widex-custom/features/api-switchover/`
+
+> 当前状态：该能力保留为历史参考资料，**不再默认接入当前 widex 运行链路**。
+> `widex` 当前主线不再依赖 TUI 自动按 model 切 provider / 写入多套 key。
 
 用途：
 

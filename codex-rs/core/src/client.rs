@@ -424,11 +424,6 @@ impl ModelClient {
         if prompt.input.is_empty() {
             return Ok(Vec::new());
         }
-        if self.state.provider.wire_api == WireApi::Gemini {
-            return Err(CodexErr::UnsupportedOperation(
-                "Conversation compaction is not supported for Gemini providers".to_string(),
-            ));
-        }
         let client_setup = self.current_client_setup().await?;
         let transport = ReqwestTransport::new(build_reqwest_client());
         let request_telemetry = Self::build_request_telemetry(
@@ -1612,15 +1607,6 @@ impl ModelClientSession {
             WireApi::Chat => {
                 self.stream_chat_completions(prompt, model_info, session_telemetry)
                     .await
-            }
-            WireApi::Gemini => {
-                crate::gemini::stream_gemini(
-                    &self.client.state.provider,
-                    model_info,
-                    prompt,
-                    self.client.state.auth_manager.as_deref(),
-                )
-                .await
             }
         }
     }

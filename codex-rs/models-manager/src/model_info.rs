@@ -1,12 +1,9 @@
 use codex_protocol::config_types::ReasoningSummary;
-use codex_protocol::openai_models::ApplyPatchToolType;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelInstructionsVariables;
 use codex_protocol::openai_models::ModelMessages;
 use codex_protocol::openai_models::ModelVisibility;
-use codex_protocol::openai_models::ReasoningEffort;
-use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::openai_models::TruncationMode;
 use codex_protocol::openai_models::TruncationPolicyConfig;
 use codex_protocol::openai_models::WebSearchToolType;
@@ -22,7 +19,6 @@ const LOCAL_FRIENDLY_TEMPLATE: &str =
     "You optimize for team morale and being a supportive teammate as much as code quality.";
 const LOCAL_PRAGMATIC_TEMPLATE: &str = "You are a deeply pragmatic, effective software engineer.";
 const PERSONALITY_PLACEHOLDER: &str = "{{ personality }}";
-const GEMINI_INSTRUCTIONS: &str = include_str!("../../core/gemini_prompt.md");
 
 pub fn with_config_overrides(mut model: ModelInfo, config: &ModelsManagerConfig) -> ModelInfo {
     if let Some(supports_reasoning_summaries) = config.model_supports_reasoning_summaries
@@ -61,13 +57,6 @@ pub fn with_config_overrides(mut model: ModelInfo, config: &ModelsManagerConfig)
 }
 
 pub fn model_info_from_slug(slug: &str) -> ModelInfo {
-    if slug.starts_with("grok-") {
-        return custom_grok_model_info(slug);
-    }
-    if slug.starts_with("gemini-") {
-        return custom_gemini_model_info(slug);
-    }
-
     warn!("Unknown model {slug} is used. This will use fallback model metadata.");
     ModelInfo {
         slug: slug.to_string(),
@@ -117,80 +106,6 @@ fn local_personality_messages_for_slug(slug: &str) -> Option<ModelMessages> {
         }),
         _ => None,
     }
-}
-
-fn custom_grok_model_info(slug: &str) -> ModelInfo {
-    let mut model = model_info_from_slug_fallback(slug);
-    model.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
-    model.shell_type = ConfigShellToolType::ShellCommand;
-    model.supports_parallel_tool_calls = false;
-    model.context_window = Some(128_000);
-    model.used_fallback_model_metadata = false;
-    model
-}
-
-fn custom_gemini_model_info(slug: &str) -> ModelInfo {
-    let mut model = model_info_from_slug_fallback(slug);
-    model.base_instructions = GEMINI_INSTRUCTIONS.to_string();
-    model.default_reasoning_level = Some(ReasoningEffort::High);
-    model.supported_reasoning_levels = supported_reasoning_level_low_medium_high();
-    model.shell_type = ConfigShellToolType::ShellCommand;
-    model.supports_parallel_tool_calls = true;
-    model.context_window = Some(1_000_000);
-    model.used_fallback_model_metadata = false;
-    model
-}
-
-fn model_info_from_slug_fallback(slug: &str) -> ModelInfo {
-    ModelInfo {
-        slug: slug.to_string(),
-        display_name: slug.to_string(),
-        description: None,
-        default_reasoning_level: None,
-        supported_reasoning_levels: Vec::new(),
-        shell_type: ConfigShellToolType::Default,
-        visibility: ModelVisibility::None,
-        supported_in_api: true,
-        priority: 99,
-        additional_speed_tiers: Vec::new(),
-        availability_nux: None,
-        upgrade: None,
-        base_instructions: BASE_INSTRUCTIONS.to_string(),
-        model_messages: local_personality_messages_for_slug(slug),
-        supports_reasoning_summaries: false,
-        default_reasoning_summary: ReasoningSummary::Auto,
-        support_verbosity: false,
-        default_verbosity: None,
-        apply_patch_tool_type: None,
-        web_search_tool_type: WebSearchToolType::Text,
-        truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
-        supports_parallel_tool_calls: false,
-        supports_image_detail_original: false,
-        context_window: Some(272_000),
-        auto_compact_token_limit: None,
-        effective_context_window_percent: 95,
-        experimental_supported_tools: Vec::new(),
-        input_modalities: default_input_modalities(),
-        used_fallback_model_metadata: true,
-        supports_search_tool: false,
-    }
-}
-
-fn supported_reasoning_level_low_medium_high() -> Vec<ReasoningEffortPreset> {
-    vec![
-        ReasoningEffortPreset {
-            effort: ReasoningEffort::Low,
-            description: "Fast responses with lighter reasoning".to_string(),
-        },
-        ReasoningEffortPreset {
-            effort: ReasoningEffort::Medium,
-            description: "Balances speed and reasoning depth for everyday tasks".to_string(),
-        },
-        ReasoningEffortPreset {
-            effort: ReasoningEffort::High,
-            description: "Greater reasoning depth for complex problems".to_string(),
-        },
-    ]
 }
 
 #[cfg(test)]

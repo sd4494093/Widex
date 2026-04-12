@@ -2873,7 +2873,6 @@ dependencies = [
  "chrono",
  "clap",
  "codex-ansi-escape",
- "codex-api-switchover",
  "codex-app-server-client",
  "codex-app-server-protocol",
  "codex-arg0",

@@ -6,8 +6,7 @@ set -euo pipefail
 # - Official npm codex uses:   $HOME/.codex
 # - Widex codex uses:          $HOME/.widex-codex
 #
-# This prevents config/schema mismatches (e.g. wire_api = "gemini") from
-# breaking the npm CLI.
+# This prevents config/schema mismatches from breaking the npm CLI.
 
 SCRIPT_PATH="$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || true)"
 if [[ -z "${SCRIPT_PATH}" ]]; then
@@ -31,9 +30,6 @@ export CODEX_HOME="${WIDEX_CODEX_HOME:-${CODEX_HOME_DEFAULT}}"
 # Codex canonicalizes CODEX_HOME when set, which requires the directory to exist.
 # Create it up-front so a first-run `widex` doesn't fail.
 mkdir -p -- "${CODEX_HOME}"
-
-# Hint the TUI switchover integration where to find the YAML.
-export WIDEX_API_SWITCHER_CONFIG="${WIDEX_API_SWITCHER_CONFIG:-${CODEX_HOME}/api_switchover.yaml}"
 
 # Brand-aware command hinting: within Widex, user-facing examples should prefer `widex ...`.
 export WIDEX_CMD="${WIDEX_CMD:-widex}"

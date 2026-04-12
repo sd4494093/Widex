@@ -1,5 +1,9 @@
 # API Switchover (widex)
 
+Current status: this folder is kept as a historical reference for a previously integrated
+multi-provider switcher. The current `widex` mainline no longer wires this feature into the
+default TUI/runtime path.
+
 This folder contains a YAML-driven "API/provider switcher" for widex that can be used in two ways:
 
 1) Inside the TUI: selecting a model via `/model` will also (optionally) switch:

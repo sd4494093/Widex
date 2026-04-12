@@ -2515,19 +2515,8 @@ impl Session {
         updates: SessionSettingsUpdate,
     ) -> ConstraintResult<()> {
         let mut state = self.state.lock().await;
-
-        let old_model = state
-            .session_configuration
-            .collaboration_mode
-            .model()
-            .to_string();
         match state.session_configuration.apply(&updates) {
             Ok(updated) => {
-                if old_model.starts_with("gemini-")
-                    && !updated.collaboration_mode.model().starts_with("gemini-")
-                {
-                    state.history.replace_all_images("Image omitted");
-                }
                 let previous_cwd = state.session_configuration.cwd.clone();
                 let sandbox_policy_changed =
                     state.session_configuration.sandbox_policy != updated.sandbox_policy;
@@ -2570,18 +2559,8 @@ impl Session {
             session_source,
         ) = {
             let mut state = self.state.lock().await;
-            let old_model = state
-                .session_configuration
-                .collaboration_mode
-                .model()
-                .to_string();
             match state.session_configuration.clone().apply(&updates) {
                 Ok(next) => {
-                    if old_model.starts_with("gemini-")
-                        && !next.collaboration_mode.model().starts_with("gemini-")
-                    {
-                        state.history.replace_all_images("Image omitted");
-                    }
                     let previous_cwd = state.session_configuration.cwd.clone();
                     let sandbox_policy_changed =
                         state.session_configuration.sandbox_policy != next.sandbox_policy;

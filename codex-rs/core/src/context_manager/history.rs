@@ -221,45 +221,6 @@ impl ContextManager {
         }
     }
 
-    pub(crate) fn replace_all_images(&mut self, placeholder: &str) -> bool {
-        let mut replaced = false;
-        let placeholder = placeholder.to_string();
-
-        for item in &mut self.items {
-            match item {
-                ResponseItem::Message { content, .. } => {
-                    for content_item in content.iter_mut() {
-                        if matches!(content_item, ContentItem::InputImage { .. }) {
-                            *content_item = ContentItem::InputText {
-                                text: placeholder.clone(),
-                            };
-                            replaced = true;
-                        }
-                    }
-                }
-                ResponseItem::FunctionCallOutput { output, .. } => {
-                    let Some(content_items) = output.content_items_mut() else {
-                        continue;
-                    };
-                    for content_item in content_items.iter_mut() {
-                        if matches!(
-                            content_item,
-                            FunctionCallOutputContentItem::InputImage { .. }
-                        ) {
-                            *content_item = FunctionCallOutputContentItem::InputText {
-                                text: placeholder.clone(),
-                            };
-                            replaced = true;
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        replaced
-    }
-
     /// Drop the last `num_turns` instruction turns from this history.
     ///
     /// Instruction turns are history messages that should behave like a new prompt boundary:
