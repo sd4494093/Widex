@@ -15,6 +15,18 @@ pub(super) use crate::bottom_pane::LocalImageAttachment;
 pub(super) use crate::bottom_pane::MentionBinding;
 pub(super) use crate::chatwidget::realtime::RealtimeConversationPhase;
 pub(super) use crate::history_cell::UserHistoryCell;
+pub(super) use crate::legacy_core::config::Config;
+pub(super) use crate::legacy_core::config::ConfigBuilder;
+pub(super) use crate::legacy_core::config::Constrained;
+pub(super) use crate::legacy_core::config::ConstraintError;
+pub(super) use crate::legacy_core::config_loader::AppRequirementToml;
+pub(super) use crate::legacy_core::config_loader::AppsRequirementsToml;
+pub(super) use crate::legacy_core::config_loader::ConfigLayerStack;
+pub(super) use crate::legacy_core::config_loader::ConfigRequirements;
+pub(super) use crate::legacy_core::config_loader::ConfigRequirementsToml;
+pub(super) use crate::legacy_core::config_loader::RequirementSource;
+pub(super) use crate::legacy_core::plugins::OPENAI_CURATED_MARKETPLACE_NAME;
+pub(super) use crate::legacy_core::skills::model::SkillMetadata;
 pub(super) use crate::model_catalog::ModelCatalog;
 pub(super) use crate::test_backend::VT100Backend;
 pub(super) use crate::test_support::PathBufExt;
@@ -25,6 +37,7 @@ pub(super) use codex_app_server_protocol::AdditionalFileSystemPermissions as App
 pub(super) use codex_app_server_protocol::AdditionalNetworkPermissions as AppServerAdditionalNetworkPermissions;
 pub(super) use codex_app_server_protocol::AdditionalPermissionProfile as AppServerAdditionalPermissionProfile;
 pub(super) use codex_app_server_protocol::AppSummary;
+pub(super) use codex_app_server_protocol::AutoReviewDecisionSource as AppServerGuardianApprovalReviewDecisionSource;
 pub(super) use codex_app_server_protocol::CollabAgentState as AppServerCollabAgentState;
 pub(super) use codex_app_server_protocol::CollabAgentStatus as AppServerCollabAgentStatus;
 pub(super) use codex_app_server_protocol::CollabAgentTool as AppServerCollabAgentTool;
@@ -85,18 +98,6 @@ pub(super) use codex_config::types::ApprovalsReviewer;
 pub(super) use codex_config::types::Notifications;
 #[cfg(target_os = "windows")]
 pub(super) use codex_config::types::WindowsSandboxModeToml;
-pub(super) use codex_core::config::Config;
-pub(super) use codex_core::config::ConfigBuilder;
-pub(super) use codex_core::config::Constrained;
-pub(super) use codex_core::config::ConstraintError;
-pub(super) use codex_core::config_loader::AppRequirementToml;
-pub(super) use codex_core::config_loader::AppsRequirementsToml;
-pub(super) use codex_core::config_loader::ConfigLayerStack;
-pub(super) use codex_core::config_loader::ConfigRequirements;
-pub(super) use codex_core::config_loader::ConfigRequirementsToml;
-pub(super) use codex_core::config_loader::RequirementSource;
-pub(super) use codex_core::plugins::OPENAI_CURATED_MARKETPLACE_NAME;
-pub(super) use codex_core::skills::model::SkillMetadata;
 pub(super) use codex_features::FEATURES;
 pub(super) use codex_features::Feature;
 pub(super) use codex_git_utils::CommitLogEntry;
@@ -129,7 +130,6 @@ pub(super) use codex_protocol::parse_command::ParsedCommand;
 pub(super) use codex_protocol::plan_tool::PlanItemArg;
 pub(super) use codex_protocol::plan_tool::StepStatus;
 pub(super) use codex_protocol::plan_tool::UpdatePlanArgs;
-pub(super) use codex_protocol::protocol::AddCreditsNudgeEmailStatus;
 pub(super) use codex_protocol::protocol::AgentMessageDeltaEvent;
 pub(super) use codex_protocol::protocol::AgentMessageEvent;
 pub(super) use codex_protocol::protocol::AgentReasoningDeltaEvent;
@@ -152,6 +152,7 @@ pub(super) use codex_protocol::protocol::ExecPolicyAmendment;
 pub(super) use codex_protocol::protocol::ExitedReviewModeEvent;
 pub(super) use codex_protocol::protocol::FileChange;
 pub(super) use codex_protocol::protocol::GuardianAssessmentAction;
+pub(super) use codex_protocol::protocol::GuardianAssessmentDecisionSource;
 pub(super) use codex_protocol::protocol::GuardianAssessmentEvent;
 pub(super) use codex_protocol::protocol::GuardianAssessmentStatus;
 pub(super) use codex_protocol::protocol::GuardianCommandSource;
@@ -246,7 +247,6 @@ fn snapshot(percent: f64) -> RateLimitSnapshot {
         }),
         secondary: None,
         credits: None,
-        spend_control: None,
         plan_type: None,
     }
 }
@@ -1786,10 +1786,10 @@ async fn helpers_are_available_and_do_not_panic() {
     let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
     let tx = AppEventSender::new(tx_raw);
     let cfg = test_config().await;
-    let resolved_model = codex_core::test_support::get_model_offline(cfg.model.as_deref());
+    let resolved_model = crate::legacy_core::test_support::get_model_offline(cfg.model.as_deref());
     let session_telemetry = test_otel_manager(&cfg, resolved_model.as_str());
     let thread_manager = Arc::new(
-        codex_core::test_support::thread_manager_with_models_provider(
+        crate::legacy_core::test_support::thread_manager_with_models_provider(
             CodexAuth::from_api_key("test"),
             cfg.model_provider.clone(),
         ),
@@ -1806,8 +1806,6 @@ async fn helpers_are_available_and_do_not_panic() {
         feedback: codex_feedback::CodexFeedback::new(),
         is_first_run: true,
         status_account_display: None,
-        initial_workspace_role: None,
-        initial_is_workspace_owner: None,
         initial_plan_type: None,
         model: Some(resolved_model),
         startup_tooltip_override: None,
@@ -1821,7 +1819,7 @@ async fn helpers_are_available_and_do_not_panic() {
 }
 
 fn test_otel_manager(config: &Config, model: &str) -> SessionTelemetry {
-    let model_info = codex_core::test_support::construct_model_info_offline(model, config);
+    let model_info = crate::legacy_core::test_support::construct_model_info_offline(model, config);
     SessionTelemetry::new(
         ThreadId::new(),
         model,
@@ -1843,7 +1841,7 @@ fn test_model_catalog(config: &Config) -> Arc<ModelCatalog> {
             .enabled(Feature::DefaultModeRequestUserInput),
     };
     Arc::new(ModelCatalog::new(
-        codex_core::test_support::all_model_presets().clone(),
+        crate::legacy_core::test_support::all_model_presets().clone(),
         collaboration_modes_config,
     ))
 }
@@ -1860,9 +1858,9 @@ async fn make_chatwidget_manual(
     let app_event_tx = AppEventSender::new(tx_raw);
     let (op_tx, op_rx) = unbounded_channel::<Op>();
     let mut cfg = test_config().await;
-    let resolved_model = model_override
-        .map(str::to_owned)
-        .unwrap_or_else(|| codex_core::test_support::get_model_offline(cfg.model.as_deref()));
+    let resolved_model = model_override.map(str::to_owned).unwrap_or_else(|| {
+        crate::legacy_core::test_support::get_model_offline(cfg.model.as_deref())
+    });
     if let Some(model) = model_override {
         cfg.model = Some(model.to_string());
     }
@@ -1896,13 +1894,12 @@ async fn make_chatwidget_manual(
         codex_op_target: super::CodexOpTarget::Direct(op_tx),
         bottom_pane: bottom,
         active_cell: None,
+        active_hook_cell: None,
         active_cell_revision: 0,
         config: cfg,
         current_collaboration_mode,
         active_collaboration_mask,
         has_chatgpt_account: false,
-        workspace_role: None,
-        is_workspace_owner: None,
         model_catalog,
         session_telemetry,
         session_header: SessionHeader::new(resolved_model.clone()),
@@ -1913,8 +1910,6 @@ async fn make_chatwidget_manual(
         refreshing_status_outputs: Vec::new(),
         next_status_refresh_request_id: 0,
         plan_type: None,
-        notify_workspace_owner_in_flight: false,
-        pending_workspace_owner_notification_prompt: false,
         rate_limit_warnings: RateLimitWarningState::default(),
         rate_limit_switch_prompt: RateLimitSwitchPromptState::default(),
         adaptive_chunking: crate::streaming::chunking::AdaptiveChunkingPolicy::default(),
@@ -1959,6 +1954,7 @@ async fn make_chatwidget_manual(
         pending_status_indicator_restore: false,
         suppress_queue_autosend: false,
         thread_id: None,
+        last_turn_id: None,
         thread_name: None,
         forked_from: None,
         frame_requester: FrameRequester::test_dummy(),
@@ -2240,7 +2236,6 @@ async fn rate_limit_snapshot_keeps_prior_credits_when_missing_from_headers() {
             unlimited: false,
             balance: Some("17.5".to_string()),
         }),
-        spend_control: None,
         plan_type: None,
     }));
     let initial_balance = chat
@@ -2260,7 +2255,6 @@ async fn rate_limit_snapshot_keeps_prior_credits_when_missing_from_headers() {
         }),
         secondary: None,
         credits: None,
-        spend_control: None,
         plan_type: None,
     }));
 
@@ -2299,7 +2293,6 @@ async fn rate_limit_snapshot_updates_and_retains_plan_type() {
             resets_at: None,
         }),
         credits: None,
-        spend_control: None,
         plan_type: Some(PlanType::Plus),
     }));
     assert_eq!(chat.plan_type, Some(PlanType::Plus));
@@ -2318,7 +2311,6 @@ async fn rate_limit_snapshot_updates_and_retains_plan_type() {
             resets_at: Some(234),
         }),
         credits: None,
-        spend_control: None,
         plan_type: Some(PlanType::Pro),
     }));
     assert_eq!(chat.plan_type, Some(PlanType::Pro));
@@ -2337,7 +2329,6 @@ async fn rate_limit_snapshot_updates_and_retains_plan_type() {
             resets_at: Some(567),
         }),
         credits: None,
-        spend_control: None,
         plan_type: None,
     }));
     assert_eq!(chat.plan_type, Some(PlanType::Pro));
@@ -2361,7 +2352,6 @@ async fn rate_limit_snapshots_keep_separate_entries_per_limit_id() {
             unlimited: false,
             balance: Some("5.00".to_string()),
         }),
-        spend_control: None,
         plan_type: Some(PlanType::Pro),
     }));
 
@@ -2375,7 +2365,6 @@ async fn rate_limit_snapshots_keep_separate_entries_per_limit_id() {
         }),
         secondary: None,
         credits: None,
-        spend_control: None,
         plan_type: Some(PlanType::Pro),
     }));
 
@@ -2429,7 +2418,6 @@ async fn rate_limit_switch_prompt_skips_non_codex_limit() {
         }),
         secondary: None,
         credits: None,
-        spend_control: None,
         plan_type: None,
     }));
 
@@ -5551,10 +5539,10 @@ async fn collaboration_modes_defaults_to_code_on_startup() {
         .build()
         .await
         .expect("config");
-    let resolved_model = codex_core::test_support::get_model_offline(cfg.model.as_deref());
+    let resolved_model = crate::legacy_core::test_support::get_model_offline(cfg.model.as_deref());
     let session_telemetry = test_otel_manager(&cfg, resolved_model.as_str());
     let thread_manager = Arc::new(
-        codex_core::test_support::thread_manager_with_models_provider(
+        crate::legacy_core::test_support::thread_manager_with_models_provider(
             CodexAuth::from_api_key("test"),
             cfg.model_provider.clone(),
         ),
@@ -5571,8 +5559,6 @@ async fn collaboration_modes_defaults_to_code_on_startup() {
         feedback: codex_feedback::CodexFeedback::new(),
         is_first_run: true,
         status_account_display: None,
-        initial_workspace_role: None,
-        initial_is_workspace_owner: None,
         initial_plan_type: None,
         model: Some(resolved_model.clone()),
         startup_tooltip_override: None,
@@ -5604,10 +5590,10 @@ async fn experimental_mode_plan_is_ignored_on_startup() {
         .build()
         .await
         .expect("config");
-    let resolved_model = codex_core::test_support::get_model_offline(cfg.model.as_deref());
+    let resolved_model = crate::legacy_core::test_support::get_model_offline(cfg.model.as_deref());
     let session_telemetry = test_otel_manager(&cfg, resolved_model.as_str());
     let thread_manager = Arc::new(
-        codex_core::test_support::thread_manager_with_models_provider(
+        crate::legacy_core::test_support::thread_manager_with_models_provider(
             CodexAuth::from_api_key("test"),
             cfg.model_provider.clone(),
         ),
@@ -5624,8 +5610,6 @@ async fn experimental_mode_plan_is_ignored_on_startup() {
         feedback: codex_feedback::CodexFeedback::new(),
         is_first_run: true,
         status_account_display: None,
-        initial_workspace_role: None,
-        initial_is_workspace_owner: None,
         initial_plan_type: None,
         model: Some(resolved_model.clone()),
         startup_tooltip_override: None,

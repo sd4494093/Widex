@@ -1367,16 +1367,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codex-account"
-version = "0.111.0"
-dependencies = [
- "anyhow",
- "codex-backend-client",
- "codex-login",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "codex-analytics"
 version = "0.111.0"
 dependencies = [
@@ -1924,7 +1914,6 @@ dependencies = [
  "bytes",
  "chrono",
  "clap",
- "codex-account",
  "codex-analytics",
  "codex-api",
  "codex-app-server-protocol",
@@ -2140,6 +2129,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -2891,7 +2881,6 @@ dependencies = [
  "codex-cli",
  "codex-cloud-requirements",
  "codex-config",
- "codex-core",
  "codex-exec-server",
  "codex-features",
  "codex-feedback",
@@ -2977,6 +2966,7 @@ name = "codex-utils-absolute-path"
 version = "0.111.0"
 dependencies = [
  "dirs",
+ "dunce",
  "pretty_assertions",
  "schemars 0.8.22",
  "serde",

@@ -1,14 +1,7 @@
-use codex_core::ThreadManager;
-use codex_core::config::ConfigBuilder;
-use codex_exec_server::EnvironmentManager;
-use codex_features::Feature;
-use codex_login::AuthManager;
-use codex_login::CodexAuth;
-use codex_models_manager::collaboration_mode_presets::CollaborationModesConfig;
-use codex_protocol::protocol::SessionSource;
-use pretty_assertions::assert_eq;
 use std::collections::HashMap;
+use std::path::Path;
 use std::time::Duration;
+
 use tokio::select;
 use tokio::time::timeout;
 
@@ -16,25 +9,24 @@ use tokio::time::timeout;
 #[tokio::test]
 #[ignore = "TODO(mbolin): flaky"]
 async fn malformed_rules_should_not_panic() -> anyhow::Result<()> {
-    // Spawning interactive UIs under PTY is flaky on Windows due to PTY limitations.
+    // run_codex_cli() does not work on Windows due to PTY limitations.
     if cfg!(windows) {
         return Ok(());
     }
 
     let tmp = tempfile::tempdir()?;
-    let codex_home = tmp.path().to_path_buf();
-
-    // Execpolicy rules are expected to be loaded from a directory, so a regular file should yield
-    // a user-facing error (not a panic).
+    let codex_home = tmp.path();
     std::fs::write(
         codex_home.join("rules"),
         "rules should be a directory not a file",
     )?;
 
-    // Force a local provider so the test doesn't need OpenAI auth.
+    // TODO(mbolin): Figure out why using a temp dir as the cwd causes this test
+    // to hang.
     let cwd = std::env::current_dir()?;
     let config_contents = format!(
         r#"
+# Pick a local provider so the CLI doesn't prompt for OpenAI auth in this test.
 model_provider = "ollama"
 
 [projects]
@@ -44,38 +36,34 @@ model_provider = "ollama"
     );
     std::fs::write(codex_home.join("config.toml"), config_contents)?;
 
-    let config = ConfigBuilder::default()
-        .codex_home(codex_home.clone())
-        .fallback_cwd(Some(cwd.clone()))
-        .build()
-        .await?;
-
-    let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
-    let auth_manager = AuthManager::from_auth_for_testing_with_home(auth, codex_home.clone());
-    let manager = ThreadManager::new(
-        &config,
-        auth_manager,
-        SessionSource::Cli,
-        CollaborationModesConfig {
-            default_mode_request_user_input: config
-                .features
-                .enabled(Feature::DefaultModeRequestUserInput),
-        },
-        std::sync::Arc::new(EnvironmentManager::new(/*exec_server_url*/ None)),
+    let CodexCliOutput { exit_code, output } = run_codex_cli(codex_home, cwd).await?;
+    assert_ne!(0, exit_code, "Codex CLI should exit nonzero.");
+    assert!(
+        output.contains("ERROR: Failed to initialize codex:"),
+        "expected startup error in output, got: {output}"
     );
+    assert!(
+        output.contains("failed to read rules files"),
+        "expected rules read error in output, got: {output}"
+    );
+    Ok(())
+}
 
-    let err = manager
-        .start_thread(config)
-        .await
-        .err()
-        .expect("expected rules load error");
-    let msg = err.to_string();
-    assert_eq!(msg.contains("failed to load rules"), true);
-    assert_eq!(msg.contains("failed to read rules files"), true);
+struct CodexCliOutput {
+    exit_code: i32,
+    output: String,
+}
 
+async fn run_codex_cli(
+    codex_home: impl AsRef<Path>,
+    cwd: impl AsRef<Path>,
+) -> anyhow::Result<CodexCliOutput> {
     let codex_cli = codex_utils_cargo_bin::cargo_bin("codex")?;
     let mut env = HashMap::new();
-    env.insert("CODEX_HOME".to_string(), codex_home.display().to_string());
+    env.insert(
+        "CODEX_HOME".to_string(),
+        codex_home.as_ref().display().to_string(),
+    );
 
     let args = vec!["-c".to_string(), "analytics.enabled=false".to_string()];
     let spawned = codex_utils_pty::spawn_pty_process(
@@ -127,14 +115,12 @@ model_provider = "ollama"
             anyhow::bail!("timed out waiting for codex CLI to exit");
         }
     };
-    // Drain any output that raced with the exit notification.
     while let Ok(chunk) = output_rx.try_recv() {
         output.extend_from_slice(&chunk);
     }
 
-    let output = String::from_utf8_lossy(&output);
-    assert_ne!(exit_code, 0);
-    assert!(output.contains("failed to load rules"));
-    assert!(output.contains("failed to read rules files"));
-    Ok(())
+    Ok(CodexCliOutput {
+        exit_code,
+        output: String::from_utf8_lossy(&output).into_owned(),
+    })
 }

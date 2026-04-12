@@ -3,7 +3,6 @@ use crate::shell::Shell;
 use crate::shell::ShellType;
 use crate::test_support::construct_model_info_offline;
 use crate::tools::ToolRouter;
-use crate::tools::registry::tool_handler_key;
 use crate::tools::router::ToolRouterParams;
 use codex_app_server_protocol::AppInfo;
 use codex_features::Feature;
@@ -24,6 +23,7 @@ use codex_tools::ResponsesApiTool;
 use codex_tools::ShellCommandBackendConfig;
 use codex_tools::TOOL_SEARCH_TOOL_NAME;
 use codex_tools::TOOL_SUGGEST_TOOL_NAME;
+use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use codex_tools::ToolsConfig;
 use codex_tools::ToolsConfigParams;
@@ -661,8 +661,11 @@ fn spawn_agent_description_omits_usage_hint_when_disabled() {
         r#"(?sx)
             ^\s*
             No\ picker-visible\ models\ are\ currently\ loaded\.
-            \s+Spawn\ a\ sub-agent\ for\ a\ well-scoped\ task\.
-            \s+Returns\ the\ canonical\ task\ name\ for\ the\ spawned\ agent,\ plus\ the\ user-facing\ nickname\ when\ available\.
+            \s+Spawns\ an\ agent\ to\ work\ on\ the\ specified\ task\.\ If\ your\ current\ task\ is\ `/root/task1`\ and\ you\ spawn_agent\ with\ task_name\ "task_3"\ the\ agent\ will\ have\ canonical\ task\ name\ `/root/task1/task_3`\.
+            \s+You\ are\ then\ able\ to\ refer\ to\ this\ agent\ as\ `task_3`\ or\ `/root/task1/task_3`\ interchangeably\.\ However\ an\ agent\ `/root/task2/task_3`\ would\ only\ be\ able\ to\ communicate\ with\ this\ agent\ via\ its\ canonical\ name\ `/root/task1/task_3`\.
+            \s+The\ spawned\ agent\ will\ have\ the\ same\ tools\ as\ you\ and\ the\ ability\ to\ spawn\ its\ own\ subagents\.
+            \s+It\ will\ be\ able\ to\ send\ you\ and\ other\ running\ agents\ messages,\ and\ its\ final\ answer\ will\ be\ provided\ to\ you\ when\ it\ finishes\.
+            \s+The\ new\ agent's\ canonical\ task\ name\ will\ be\ provided\ to\ it\ along\ with\ the\ message\.
             \s*$
         "#,
         &description,
@@ -680,8 +683,11 @@ fn spawn_agent_description_uses_configured_usage_hint_text() {
         r#"(?sx)
             ^\s*
             No\ picker-visible\ models\ are\ currently\ loaded\.
-            \s+Spawn\ a\ sub-agent\ for\ a\ well-scoped\ task\.
-            \s+Returns\ the\ canonical\ task\ name\ for\ the\ spawned\ agent,\ plus\ the\ user-facing\ nickname\ when\ available\.
+            \s+Spawns\ an\ agent\ to\ work\ on\ the\ specified\ task\.\ If\ your\ current\ task\ is\ `/root/task1`\ and\ you\ spawn_agent\ with\ task_name\ "task_3"\ the\ agent\ will\ have\ canonical\ task\ name\ `/root/task1/task_3`\.
+            \s+You\ are\ then\ able\ to\ refer\ to\ this\ agent\ as\ `task_3`\ or\ `/root/task1/task_3`\ interchangeably\.\ However\ an\ agent\ `/root/task2/task_3`\ would\ only\ be\ able\ to\ communicate\ with\ this\ agent\ via\ its\ canonical\ name\ `/root/task1/task_3`\.
+            \s+The\ spawned\ agent\ will\ have\ the\ same\ tools\ as\ you\ and\ the\ ability\ to\ spawn\ its\ own\ subagents\.
+            \s+It\ will\ be\ able\ to\ send\ you\ and\ other\ running\ agents\ messages,\ and\ its\ final\ answer\ will\ be\ provided\ to\ you\ when\ it\ finishes\.
+            \s+The\ new\ agent's\ canonical\ task\ name\ will\ be\ provided\ to\ it\ along\ with\ the\ message\.
             \s+Custom\ delegation\ guidance\ only\.
             \s*$
         "#,
@@ -897,12 +903,12 @@ fn search_tool_registers_namespaced_mcp_tool_aliases() {
     )
     .build();
 
-    let app_alias = tool_handler_key("_create_event", Some("mcp__codex_apps__calendar"));
-    let mcp_alias = tool_handler_key("echo", Some("mcp__rmcp__"));
+    let app_alias = ToolName::namespaced("mcp__codex_apps__calendar", "_create_event");
+    let mcp_alias = ToolName::namespaced("mcp__rmcp__", "echo");
 
-    assert!(registry.has_handler(TOOL_SEARCH_TOOL_NAME, /*namespace*/ None));
-    assert!(registry.has_handler(app_alias.as_str(), /*namespace*/ None));
-    assert!(registry.has_handler(mcp_alias.as_str(), /*namespace*/ None));
+    assert!(registry.has_handler(&ToolName::plain(TOOL_SEARCH_TOOL_NAME)));
+    assert!(registry.has_handler(&app_alias));
+    assert!(registry.has_handler(&mcp_alias));
 }
 
 #[test]
