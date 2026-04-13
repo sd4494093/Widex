@@ -276,12 +276,78 @@ git fetch upstream && git fetch origin
 ```bash
 cd codex-rs
 just fmt
-cargo check -p codex-core
-cargo test -p codex-core --lib
+cargo test -p codex-model-provider-info -p codex-models-manager
 cargo test -p codex-tui
+cargo test -p codex-core
 ```
 
 如果某一步被系统依赖卡住，**要在提交说明里明确写出来**，不要默默跳过。
+
+### 6.4.1 Widex / Ralph 最小封板烟测
+
+上面 Rust 测试通过后，再做下面这组最小可运行验证：
+
+```bash
+widex --version
+widex --help
+widex ralph-widex --help
+```
+
+如果要补做一个**不依赖真实模型调用**的 Ralph 本地烟测，可在临时目录执行：
+
+```bash
+tmpdir="$(mktemp -d)"
+cd "$tmpdir"
+widex ralph-widex init
+widex ralph-widex status
+```
+
+通过标准：
+
+- `widex --version` 正常返回版本号
+- `widex --help` 正常输出，且仍可见 `ralph-widex`
+- `widex ralph-widex --help` 正常输出 `init/run/start/stop/status/monitor`
+- `widex ralph-widex init` 能正确生成 `.ralph/` 模板目录
+- `widex ralph-widex status` 至少能正常读取/提示 `.ralph/` 状态，而不是命令直接报错退出
+
+说明：
+
+- 这组烟测的目标是确认 **Widex 启动链路** 和 **Ralph 自定义入口** 没被上游合并打断。
+- 它**不等价于**跑一轮真实 `ralph-widex run`；后者依赖实际模型、认证、网络和任务上下文，属于更高成本的业务验收。
+
+### 6.4.2 生产环境金标准收口定义
+
+一次 upstream 跟随完成后，只有同时满足下面几点，才算真正收口：
+
+- 工作区干净：`git status --short --branch`
+- 对上游不落后：`git rev-list --left-right --count upstream/main...widex`
+- 已推到团队主分支：`git rev-list --left-right --count origin/widex...widex`
+- `widex` 可直接启动：`widex --version` / `widex --help`
+- `ralph-widex` 入口仍然可用：`widex ralph-widex --help`
+
+建议固定用下面这组命令做最终封板：
+
+```bash
+git status --short --branch
+git rev-list --left-right --count upstream/main...widex
+git rev-list --left-right --count origin/widex...widex
+widex --version
+widex --help | sed -n '1,40p'
+widex ralph-widex --help | sed -n '1,80p'
+```
+
+### 6.4.3 以后如何把跟随 upstream 的周期压短
+
+后续要有意识把流程压缩成“只保 Ralph，其它尽量回到 upstream”：
+
+- 新定制优先放在 `widex-custom/`，不要轻易继续扩张 `codex-rs/core/` 和 `codex-rs/tui/` 的长期分叉面。
+- 不要把 Gemini / Grok / api switchover 这类历史多 LLM 能力重新接回默认运行时主链路，除非有明确的新需求单独立项。
+- 每次 upstream 合并，只优先保三件事：
+  - `widex` 启动链路正常
+  - `ralph-widex` TUI / CLI 入口正常
+  - `.ralph/` 状态、监控、恢复链路不回退
+- 合并完成后尽快做“小提交 + 小推送”，不要把额外实验性改动混进同一轮 upstream 跟随里。
+- 如果某个 Widex 定制不是为了 Ralph，也不是为了启动链路稳定性，就要优先考虑删除、回退到 upstream，或者移到文档/模板层保存，而不是继续挂在主产品线。
 
 ### 6.5 不要遗漏本地已有改动
 
