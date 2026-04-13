@@ -31,6 +31,74 @@ export CODEX_HOME="${WIDEX_CODEX_HOME:-${CODEX_HOME_DEFAULT}}"
 # Create it up-front so a first-run `widex` doesn't fail.
 mkdir -p -- "${CODEX_HOME}"
 
+#
+# Keep old Widex-only provider definitions from breaking startup after we returned the
+# mainline product path to upstream `responses` only.
+#
+# Historical user configs may still contain blocks like:
+#   [model_providers.gemini-vectorengine]
+#   wire_api = "gemini"
+#
+# Those legacy values should not prevent unrelated GPT/OpenAI sessions from resuming.
+#
+migrate_legacy_widex_config() {
+  local config_path tmp_path backup_path
+  config_path="${CODEX_HOME}/config.toml"
+
+  if [[ ! -f "${config_path}" ]]; then
+    return 0
+  fi
+
+  tmp_path="$(mktemp "${CODEX_HOME}/config.toml.migrate.XXXXXX")"
+
+  awk '
+    function is_legacy_provider(id) {
+      return id ~ /^gemini([.-]|$)/ || id ~ /^grok-/
+    }
+
+    /^\[model_providers\./ {
+      in_provider = 1
+      provider_id = $0
+      sub(/^\[model_providers\./, "", provider_id)
+      sub(/\]$/, "", provider_id)
+      sub(/^"/, "", provider_id)
+      sub(/"$/, "", provider_id)
+      sub(/\..*$/, "", provider_id)
+      print
+      next
+    }
+
+    /^\[/ {
+      in_provider = 0
+      provider_id = ""
+      print
+      next
+    }
+
+    {
+      line = $0
+      if (in_provider && is_legacy_provider(provider_id)) {
+        sub(/wire_api[[:space:]]*=[[:space:]]*"gemini"/, "wire_api = \"responses\"", line)
+        sub(/wire_api[[:space:]]*=[[:space:]]*"chat"/, "wire_api = \"responses\"", line)
+      }
+      print line
+    }
+  ' "${config_path}" > "${tmp_path}"
+
+  if cmp -s "${config_path}" "${tmp_path}"; then
+    rm -f -- "${tmp_path}"
+    return 0
+  fi
+
+  backup_path="${config_path}.pre-mainline-wire-api.bak"
+  cp -f -- "${config_path}" "${backup_path}"
+  mv -f -- "${tmp_path}" "${config_path}"
+  echo "widex: migrated legacy gemini/grok provider wire_api values in ${config_path}" >&2
+  echo "widex: backup saved to ${backup_path}" >&2
+}
+
+migrate_legacy_widex_config
+
 # Brand-aware command hinting: within Widex, user-facing examples should prefer `widex ...`.
 export WIDEX_CMD="${WIDEX_CMD:-widex}"
 

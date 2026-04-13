@@ -367,6 +367,12 @@ widex ralph-widex --help | sed -n '1,80p'
   - 先保证**本地** `main` 是干净的 `upstream/main`，再合入 `widex`；冲突只会集中在 `widex` 侧。
 - 合入后编译失败：
   - 多半是上游新增字段 / 协议变更导致（例如 struct 新字段、enum 新变体），按报错逐个补齐即可。
+- 老用户升级后 `widex resume` / `widex` 启动时提示
+  `unknown variant 'gemini', expected 'responses'`：
+  - 这是旧 `~/.widex-codex/config.toml` 里遗留的历史 Widex provider 配置（例如 `wire_api = "gemini"` / `wire_api = "chat"`）导致。
+  - 当前 wrapper 会在启动前自动把历史 `gemini*` / `grok-*` provider 的 `wire_api` 迁移成 `responses`，并在同目录生成
+    `config.toml.pre-mainline-wire-api.bak` 备份。
+  - 如果仍想彻底清理，直接手工删除这些历史 provider 块即可；当前主线不再默认维护它们。
 - `origin/main` 要不要同步到最新上游：
   - **默认不要。** 除非你们明确决定把 fork 的 `main` 也维护成 upstream 镜像。
 - 只想更新 `widex`：
