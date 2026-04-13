@@ -18,9 +18,6 @@ use crate::tui::FrameRequester;
 use crate::tui::Tui;
 use crate::tui::TuiEvent;
 
-const MIN_ANIMATION_HEIGHT: u16 = 20;
-const MIN_ANIMATION_WIDTH: u16 = 60;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StartupSplashOutcome {
     Continue,
@@ -30,6 +27,22 @@ pub(crate) enum StartupSplashOutcome {
 pub(crate) struct StartupSplashWidget {
     animation: AsciiAnimation,
     animations_enabled: bool,
+}
+
+fn frame_dimensions(frame: &str) -> (u16, u16) {
+    let frame_height = frame.lines().count() as u16;
+    let frame_width = frame
+        .lines()
+        .map(|line| line.chars().count() as u16)
+        .max()
+        .unwrap_or(0);
+    (frame_width, frame_height)
+}
+
+fn should_show_animation(area: Rect, animations_enabled: bool, frame: &str) -> bool {
+    let (frame_width, frame_height) = frame_dimensions(frame);
+    let required_height = frame_height.saturating_add(3);
+    animations_enabled && area.height >= required_height && area.width >= frame_width
 }
 
 impl StartupSplashWidget {
@@ -48,13 +61,11 @@ impl WidgetRef for &StartupSplashWidget {
             self.animation.schedule_next_frame();
         }
 
-        // Skip the animation entirely when the viewport is too small so we don't clip frames.
-        let show_animation =
-            area.height >= MIN_ANIMATION_HEIGHT && area.width >= MIN_ANIMATION_WIDTH;
+        let frame = self.animation.current_frame();
+        let show_animation = should_show_animation(area, self.animations_enabled, frame);
 
         let mut lines: Vec<Line> = Vec::new();
         if show_animation {
-            let frame = self.animation.current_frame();
             lines.extend(frame.lines().map(Into::into));
             lines.push("".into());
         }
@@ -116,4 +127,31 @@ pub(crate) async fn run_startup_splash(
     }
 
     Ok(StartupSplashOutcome::Continue)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+    use ratatui::layout::Rect;
+
+    #[test]
+    fn startup_splash_shows_animation_when_frame_fits() {
+        let widget = StartupSplashWidget::new(FrameRequester::test_dummy(), true);
+        let frame = widget.animation.current_frame();
+        let (frame_width, frame_height) = frame_dimensions(frame);
+        let area = Rect::new(0, 0, frame_width, frame_height + 3);
+
+        assert_eq!(should_show_animation(area, true, frame), true);
+    }
+
+    #[test]
+    fn startup_splash_skips_animation_when_frame_does_not_fit() {
+        let widget = StartupSplashWidget::new(FrameRequester::test_dummy(), true);
+        let frame = widget.animation.current_frame();
+        let (frame_width, frame_height) = frame_dimensions(frame);
+        let area = Rect::new(0, 0, frame_width, frame_height + 2);
+
+        assert_eq!(should_show_animation(area, true, frame), false);
+    }
 }
