@@ -218,6 +218,26 @@ requires_openai_auth = true
 base_url = "https://api.wellau.com/v1"
 ```
 
+注意这里必须是：
+
+```toml
+base_url = "https://api.wellau.com/v1"
+```
+
+不是：
+
+```toml
+base_url = "https://wellau.com/v1"
+```
+
+实测结果是：
+
+- `https://api.wellau.com/v1/models` 返回正常 JSON 模型列表
+- `https://wellau.com/v1/models` 返回站点 HTML
+- `https://wellau.com/v1/responses` 返回 `405 Not Allowed`
+
+所以后续不要再把 Widex 默认 API 根地址改成 `https://wellau.com/v1`。
+
 所以后续维护原则是：
 
 - wrapper 不只负责初始化新 config
