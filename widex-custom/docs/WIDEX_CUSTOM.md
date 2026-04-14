@@ -343,6 +343,58 @@ widex 当前落地：
 
 widex 的 TUI 会显示 Widex 标识，并在启动时显示动画 splash（可随配置关闭动画）。
 
+### 6.1 Widex 默认登录入口（WillAU）
+
+当前 Widex 主线的默认登录入口已经收敛为 WillAU：
+
+- 启动页会先根据 `${CODEX_HOME}` / 环境变量里是否已有可用 Widex Key 做分流：
+  - 如果已有可用 key：显示 `Press any key to continue`
+  - 如果没有 key：启动页直接提供两个动作
+  - `Input Widex Key (WillAU API Key)`
+  - `Quit`
+- 选择 `Input Widex Key (WillAU API Key)` 后，会直接进入 key 输入框，不再先经过额外的 Widex 登录菜单页。
+- Widex wrapper 会在启动早期确保 `${CODEX_HOME}/config.toml` 具备 Widex 默认配置。
+  - 如果 `config.toml` 不存在：直接初始化为 Widex 默认模板
+  - 如果 `config.toml` 已存在：仅补齐缺失的 Widex 根设置 / `custom` provider / `[features]` 表，不覆盖用户已显式写入的值
+- 录入 `sk-...` 后，key 输入流程只会写本机私有 `${CODEX_HOME}/auth.json`：
+  - 写入 `OPENAI_API_KEY`
+  - 不再在登录动作里额外改写 `config.toml`
+- Widex 默认 `config.toml` 模板如下：
+
+```toml
+model_provider = "custom"
+model = "gpt-5.4"
+model_reasoning_effort = "high"
+disable_response_storage = true
+personality = "pragmatic"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://api.wellau.com/v1"
+
+[features]
+apps = false
+child_agents_md = true
+codex_git_commit = true
+js_repl = true
+memories = true
+multi_agent = true
+prevent_idle_sleep = true
+responses_websockets = true
+responses_websockets_v2 = true
+skill_env_var_dependency_prompt = true
+sqlite = true
+undo = true
+```
+
+- 如果已经有可用 key，Widex 不会重复要求登录；后续直接沿用当前本机配置继续启动。
+- 规范化说明：
+  - `memory` 在当前 upstream 特性名里对应 `memories`
+  - `JS_repl` 在当前 upstream 特性名里对应 `js_repl`
+  - `agent_worktrees`、`freeze_sandbox_debug` 不是当前仓库可识别的 feature key，因此不会写入默认配置
+
 注意：UI 的 snapshot 测试使用 `insta`，UI 改动需要同步更新快照。
 
 

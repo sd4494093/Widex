@@ -31,6 +31,205 @@ export CODEX_HOME="${WIDEX_CODEX_HOME:-${CODEX_HOME_DEFAULT}}"
 # Create it up-front so a first-run `widex` doesn't fail.
 mkdir -p -- "${CODEX_HOME}"
 
+widex_default_root_settings() {
+  cat <<'EOF'
+model_provider = "custom"
+model = "gpt-5.4"
+model_reasoning_effort = "high"
+disable_response_storage = true
+personality = "pragmatic"
+EOF
+}
+
+widex_default_custom_provider_block() {
+  cat <<'EOF'
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://api.wellau.com/v1"
+EOF
+}
+
+widex_default_features_block() {
+  cat <<'EOF'
+[features]
+apps = false
+child_agents_md = true
+codex_git_commit = true
+js_repl = true
+memories = true
+multi_agent = true
+prevent_idle_sleep = true
+responses_websockets = true
+responses_websockets_v2 = true
+skill_env_var_dependency_prompt = true
+sqlite = true
+undo = true
+EOF
+}
+
+widex_default_config_toml() {
+  widex_default_root_settings
+  printf '\n'
+  widex_default_custom_provider_block
+  printf '\n'
+  widex_default_features_block
+}
+
+ensure_toml_table_defaults() {
+  local config_path section_header defaults_text tmp_path
+  config_path="$1"
+  section_header="$2"
+  defaults_text="$3"
+
+  tmp_path="$(mktemp "${CODEX_HOME}/config.toml.table.XXXXXX")"
+
+  awk \
+    -v section_header="${section_header}" \
+    -v defaults_text="${defaults_text}" '
+    function trim(value) {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      return value
+    }
+
+    function parse_key(line, parts, key) {
+      split(line, parts, "=")
+      if (length(parts) == 0) {
+        return ""
+      }
+      key = trim(parts[1])
+      return key
+    }
+
+    function flush_missing_defaults(    i, line, key) {
+      if (!in_target_section || flushed_defaults) {
+        return
+      }
+      for (i = 1; i <= defaults_count; i++) {
+        line = defaults_lines[i]
+        key = parse_key(line)
+        if (!(key in seen_keys)) {
+          print line
+          changed = 1
+        }
+      }
+      flushed_defaults = 1
+    }
+
+    BEGIN {
+      defaults_count = split(defaults_text, raw_defaults, "\n")
+      normalized_count = 0
+      for (i = 1; i <= defaults_count; i++) {
+        if (raw_defaults[i] == "") {
+          continue
+        }
+        normalized_count++
+        defaults_lines[normalized_count] = raw_defaults[i]
+      }
+      defaults_count = normalized_count
+    }
+
+    /^\[/ {
+      flush_missing_defaults()
+      in_target_section = ($0 == section_header)
+      if (in_target_section) {
+        flushed_defaults = 0
+      }
+      print
+      next
+    }
+
+    {
+      if (in_target_section && $0 !~ /^[[:space:]]*#/ && $0 ~ /=/) {
+        seen_keys[parse_key($0)] = 1
+      }
+      print
+    }
+
+    END {
+      flush_missing_defaults()
+      if (!changed) {
+        exit 3
+      }
+    }
+  ' "${config_path}" > "${tmp_path}" || {
+    local status=$?
+    if [[ ${status} -eq 3 ]]; then
+      rm -f -- "${tmp_path}"
+      return 0
+    fi
+    rm -f -- "${tmp_path}"
+    return "${status}"
+  }
+
+  mv -f -- "${tmp_path}" "${config_path}"
+}
+
+ensure_widex_default_config() {
+  local config_path tmp_path
+  config_path="${CODEX_HOME}/config.toml"
+
+  if [[ ! -f "${config_path}" ]]; then
+    widex_default_config_toml > "${config_path}"
+    echo "widex: initialized ${config_path} with Widex defaults" >&2
+    return 0
+  fi
+
+  local -a missing_root_settings=()
+
+  if ! grep -Eq '^[[:space:]]*model_provider[[:space:]]*=' "${config_path}"; then
+    missing_root_settings+=('model_provider = "custom"')
+  fi
+  if ! grep -Eq '^[[:space:]]*model[[:space:]]*=' "${config_path}"; then
+    missing_root_settings+=('model = "gpt-5.4"')
+  fi
+  if ! grep -Eq '^[[:space:]]*model_reasoning_effort[[:space:]]*=' "${config_path}"; then
+    missing_root_settings+=('model_reasoning_effort = "high"')
+  fi
+  if ! grep -Eq '^[[:space:]]*disable_response_storage[[:space:]]*=' "${config_path}"; then
+    missing_root_settings+=('disable_response_storage = true')
+  fi
+  if ! grep -Eq '^[[:space:]]*personality[[:space:]]*=' "${config_path}"; then
+    missing_root_settings+=('personality = "pragmatic"')
+  fi
+
+  if (( ${#missing_root_settings[@]} > 0 )); then
+    tmp_path="$(mktemp "${CODEX_HOME}/config.toml.root.XXXXXX")"
+    for setting in "${missing_root_settings[@]}"; do
+      printf '%s\n' "${setting}" >> "${tmp_path}"
+    done
+    printf '\n' >> "${tmp_path}"
+    cat -- "${config_path}" >> "${tmp_path}"
+    mv -f -- "${tmp_path}" "${config_path}"
+    echo "widex: added missing Widex root defaults to ${config_path}" >&2
+  fi
+
+  if ! grep -Eq '^[[:space:]]*\[model_providers\.custom\][[:space:]]*$' "${config_path}"; then
+    printf '\n' >> "${config_path}"
+    widex_default_custom_provider_block >> "${config_path}"
+    printf '\n' >> "${config_path}"
+    echo "widex: added missing [model_providers.custom] to ${config_path}" >&2
+  else
+    ensure_toml_table_defaults \
+      "${config_path}" \
+      "[model_providers.custom]" \
+      "$(widex_default_custom_provider_block | sed '1d')"
+  fi
+
+  if ! grep -Eq '^[[:space:]]*\[features\][[:space:]]*$' "${config_path}"; then
+    printf '\n' >> "${config_path}"
+    widex_default_features_block >> "${config_path}"
+    printf '\n' >> "${config_path}"
+    echo "widex: added missing [features] defaults to ${config_path}" >&2
+  else
+    ensure_toml_table_defaults \
+      "${config_path}" \
+      "[features]" \
+      "$(widex_default_features_block | sed '1d')"
+  fi
+}
+
 #
 # Keep old Widex-only provider definitions from breaking startup after we returned the
 # mainline product path to upstream `responses` only.
@@ -98,6 +297,7 @@ migrate_legacy_widex_config() {
 }
 
 migrate_legacy_widex_config
+ensure_widex_default_config
 
 # Brand-aware command hinting: within Widex, user-facing examples should prefer `widex ...`.
 export WIDEX_CMD="${WIDEX_CMD:-widex}"

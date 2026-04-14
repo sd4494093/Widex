@@ -185,24 +185,41 @@ impl KeyboardHandler for AuthModeWidget {
             return;
         }
 
-        // Widex UX: collapse login options. 'e' edits key; 'y' accepts and continues.
-        if self.is_widex_mode() && key_event.kind == KeyEventKind::Press {
-            match key_event.code {
-                KeyCode::Char('e') => {
-                    self.start_api_key_entry();
-                    return;
-                }
-                KeyCode::Char('y') => {
-                    // If we're not authenticated yet, route to API key entry.
-                    if matches!(self.login_status, LoginStatus::NotAuthenticated) {
+        let is_pick_mode = self
+            .sign_in_state
+            .read()
+            .is_ok_and(|state| matches!(&*state, SignInState::PickMode));
+        if self.is_widex_mode() && is_pick_mode && key_event.kind == KeyEventKind::Press {
+            if matches!(self.login_status, LoginStatus::NotAuthenticated) {
+                match key_event.code {
+                    KeyCode::Enter | KeyCode::Char('1') | KeyCode::Char('e') => {
                         self.start_api_key_entry();
-                    } else {
+                        return;
+                    }
+                    KeyCode::Char('2') => {
+                        self.quit_requested.set(true);
+                        self.request_frame.schedule_frame();
+                        return;
+                    }
+                    _ => {}
+                }
+            } else {
+                match key_event.code {
+                    KeyCode::Char('e') => {
+                        self.start_api_key_entry();
+                        return;
+                    }
+                    KeyCode::Char('2') => {
+                        self.quit_requested.set(true);
+                        self.request_frame.schedule_frame();
+                        return;
+                    }
+                    _ => {
                         *self.sign_in_state.write().unwrap() = SignInState::ApiKeyConfigured;
                         self.request_frame.schedule_frame();
+                        return;
                     }
-                    return;
                 }
-                _ => {}
             }
         }
 
@@ -260,11 +277,16 @@ pub(crate) struct AuthModeWidget {
     pub animations_enabled: bool,
     pub animations_suppressed: Cell<bool>,
     pub is_widex_mode: bool,
+    pub quit_requested: Cell<bool>,
 }
 
 impl AuthModeWidget {
     fn is_widex_mode(&self) -> bool {
         self.is_widex_mode
+    }
+
+    pub(crate) fn take_quit_requested(&self) -> bool {
+        self.quit_requested.replace(false)
     }
 
     pub(crate) fn set_animations_suppressed(&self, suppressed: bool) {
@@ -408,25 +430,35 @@ impl AuthModeWidget {
 
     fn render_pick_mode(&self, area: Rect, buf: &mut Buffer) {
         if self.is_widex_mode() {
-            let mut lines: Vec<Line> = vec![
-                Line::from(vec![
-                    "  ".into(),
-                    "Widex requires an OpenAI-compatible API key for usage-based billing.".into(),
-                ]),
-                "".into(),
-                Line::from(vec![
-                    "  ".into(),
-                    "Press Enter or ".into(),
-                    "e".cyan(),
-                    " to enter/edit your API key.".into(),
-                ]),
-                Line::from(vec![
-                    "  ".into(),
-                    "Press ".into(),
-                    "y".cyan(),
-                    " to agree and continue (if already configured).".into(),
-                ]),
-            ];
+            let mut lines: Vec<Line> = if matches!(self.login_status, LoginStatus::NotAuthenticated)
+            {
+                vec![
+                    Line::from(vec![
+                        "  ".into(),
+                        "Widex uses your Widex Key (WillAU API) as the default upstream.".into(),
+                    ]),
+                    "".into(),
+                    Line::from(vec![
+                        "  ".into(),
+                        "1. ".cyan(),
+                        "Input Widex Key (WillAU API Key)".into(),
+                    ]),
+                    "     Writes OPENAI_API_KEY to auth.json.".into(),
+                    "".into(),
+                    Line::from(vec!["  ".into(), "2. ".cyan(), "Quit".into()]),
+                    "     Press q or 2 to exit Widex.".into(),
+                    "".into(),
+                    "  Press Enter to input your Widex Key.".dim().into(),
+                ]
+            } else {
+                vec![
+                    "  Widex Key already loaded.".into(),
+                    "".into(),
+                    "  Press any key to continue into Widex.".dim().into(),
+                    "  Press e to replace the current Widex Key.".dim().into(),
+                    "  Press q or 2 to quit.".dim().into(),
+                ]
+            };
             let error = self.error.read().unwrap();
             if let Some(err) = error.as_ref() {
                 lines.push("".into());
@@ -648,15 +680,27 @@ impl AuthModeWidget {
         ])
         .areas(area);
 
-        let mut intro_lines: Vec<Line> = vec![
-            Line::from(vec![
-                "> ".into(),
-                "Use your own OpenAI API key for usage-based billing".bold(),
-            ]),
-            "".into(),
-            "  Paste or type your API key below. It will be stored locally in auth.json.".into(),
-            "".into(),
-        ];
+        let mut intro_lines: Vec<Line> = if self.is_widex_mode() {
+            vec![
+                Line::from(vec!["> ".into(), "Input Widex Key (WillAU API Key)".bold()]),
+                "".into(),
+                "  Paste or type your Widex Key below.".into(),
+                "  Widex will store OPENAI_API_KEY in auth.json.".into(),
+                "  The default WillAU provider is preconfigured in config.toml.".into(),
+                "".into(),
+            ]
+        } else {
+            vec![
+                Line::from(vec![
+                    "> ".into(),
+                    "Use your own OpenAI API key for usage-based billing".bold(),
+                ]),
+                "".into(),
+                "  Paste or type your API key below. It will be stored locally in auth.json."
+                    .into(),
+                "".into(),
+            ]
+        };
         if state.prepopulated_from_env {
             intro_lines.push("  Detected OPENAI_API_KEY environment variable.".into());
             intro_lines.push(
@@ -671,7 +715,11 @@ impl AuthModeWidget {
             .render(intro_area, buf);
 
         let content_line: Line = if state.value.is_empty() {
-            vec!["Paste or type your API key".dim()].into()
+            if self.is_widex_mode() {
+                vec!["Paste or type your Widex Key".dim()].into()
+            } else {
+                vec!["Paste or type your API key".dim()].into()
+            }
         } else {
             Line::from(state.value.clone())
         };
@@ -679,7 +727,11 @@ impl AuthModeWidget {
             .wrap(Wrap { trim: false })
             .block(
                 Block::default()
-                    .title("API key")
+                    .title(if self.is_widex_mode() {
+                        "Widex Key (WillAU API)"
+                    } else {
+                        "API key"
+                    })
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(Color::Cyan)),
@@ -1082,7 +1134,16 @@ mod tests {
             animations_enabled: true,
             animations_suppressed: std::cell::Cell::new(false),
             is_widex_mode: false,
+            quit_requested: std::cell::Cell::new(false),
         };
+        (widget, codex_home)
+    }
+
+    async fn widget_widex() -> (AuthModeWidget, TempDir) {
+        let (mut widget, codex_home) = widget_forced_chatgpt().await;
+        widget.forced_login_method = None;
+        widget.highlighted_mode = SignInOption::ApiKey;
+        widget.is_widex_mode = true;
         (widget, codex_home)
     }
 
@@ -1189,6 +1250,65 @@ mod tests {
         );
         assert_eq!(widget.is_chatgpt_login_allowed(), false);
         assert_eq!(widget.is_api_login_allowed(), true);
+    }
+
+    #[test]
+    fn widex_pick_mode_renders_key_and_quit_choices() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (widget, _tmp) = runtime.block_on(widget_widex());
+        let area = Rect::new(0, 0, 80, 12);
+        let mut buf = Buffer::empty(area);
+
+        widget.render_pick_mode(area, &mut buf);
+
+        let rendered = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("Input Widex Key (WillAU API Key)"));
+        assert!(rendered.contains("Quit"));
+        assert!(rendered.contains("auth.json"));
+    }
+
+    #[tokio::test]
+    async fn widex_save_api_key_writes_auth_json_only() {
+        use std::time::Duration;
+
+        let (mut widget, tmp) = widget_widex().await;
+
+        widget.save_api_key("sk-test".to_string());
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if matches!(
+                    &*widget.sign_in_state.read().unwrap(),
+                    SignInState::ApiKeyConfigured
+                ) {
+                    break;
+                }
+                let error = widget.error_message();
+                assert_eq!(error, None, "save_api_key should not fail");
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("widex api key save should complete");
+
+        let auth: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(tmp.path().join("auth.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            auth,
+            serde_json::json!({
+                "OPENAI_API_KEY": "sk-test",
+                "auth_mode": "apikey"
+            })
+        );
+        assert!(!tmp.path().join("config.toml").exists());
     }
 
     /// Collects all buffer cell symbols that contain the OSC 8 open sequence

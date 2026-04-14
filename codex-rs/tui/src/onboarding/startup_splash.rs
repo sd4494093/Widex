@@ -21,12 +21,20 @@ use crate::tui::TuiEvent;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StartupSplashOutcome {
     Continue,
+    EnterApiKey,
     Exit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StartupSplashMode {
+    ContinuePrompt,
+    WidexAuthPrompt,
 }
 
 pub(crate) struct StartupSplashWidget {
     animation: AsciiAnimation,
     animations_enabled: bool,
+    mode: StartupSplashMode,
 }
 
 fn frame_dimensions(frame: &str) -> (u16, u16) {
@@ -46,10 +54,15 @@ fn should_show_animation(area: Rect, animations_enabled: bool, frame: &str) -> b
 }
 
 impl StartupSplashWidget {
-    pub(crate) fn new(request_frame: FrameRequester, animations_enabled: bool) -> Self {
+    pub(crate) fn new(
+        request_frame: FrameRequester,
+        animations_enabled: bool,
+        mode: StartupSplashMode,
+    ) -> Self {
         Self {
             animation: AsciiAnimation::new(request_frame),
             animations_enabled,
+            mode,
         }
     }
 }
@@ -76,12 +89,28 @@ impl WidgetRef for &StartupSplashWidget {
             "Widex".bold(),
             ", the intelligent coding engine".into(),
         ]));
-        lines.push(Line::from(vec![
-            "  ".into(),
-            "Press any key to continue".dim(),
-            " ".into(),
-            "(Ctrl+C to quit)".dim(),
-        ]));
+        match self.mode {
+            StartupSplashMode::ContinuePrompt => {
+                lines.push(Line::from(vec![
+                    "  ".into(),
+                    "Press any key to continue".dim(),
+                    " ".into(),
+                    "(Ctrl+C to quit)".dim(),
+                ]));
+            }
+            StartupSplashMode::WidexAuthPrompt => {
+                lines.push("".into());
+                lines.push(Line::from(vec![
+                    "  ".into(),
+                    "1. ".cyan(),
+                    "Input Widex Key (WillAU API Key)".into(),
+                ]));
+                lines.push("     Press Enter, 1, or e to continue.".dim().into());
+                lines.push("".into());
+                lines.push(Line::from(vec!["  ".into(), "2. ".cyan(), "Quit".into()]));
+                lines.push("     Press 2, q, or Ctrl+C to exit.".dim().into());
+            }
+        }
 
         Paragraph::new(lines)
             .wrap(Wrap { trim: false })
@@ -92,10 +121,11 @@ impl WidgetRef for &StartupSplashWidget {
 pub(crate) async fn run_startup_splash(
     tui: &mut Tui,
     animations_enabled: bool,
+    mode: StartupSplashMode,
 ) -> Result<StartupSplashOutcome> {
     use tokio_stream::StreamExt;
 
-    let widget = StartupSplashWidget::new(tui.frame_requester(), animations_enabled);
+    let widget = StartupSplashWidget::new(tui.frame_requester(), animations_enabled, mode);
 
     tui.draw(u16::MAX, |frame| {
         frame.render_widget_ref(&widget, frame.area());
@@ -115,9 +145,23 @@ pub(crate) async fn run_startup_splash(
                 {
                     return Ok(StartupSplashOutcome::Exit);
                 }
-                return Ok(StartupSplashOutcome::Continue);
+                match mode {
+                    StartupSplashMode::ContinuePrompt => return Ok(StartupSplashOutcome::Continue),
+                    StartupSplashMode::WidexAuthPrompt => match key_event.code {
+                        KeyCode::Enter | KeyCode::Char('1') | KeyCode::Char('e') => {
+                            return Ok(StartupSplashOutcome::EnterApiKey);
+                        }
+                        KeyCode::Char('2') | KeyCode::Char('q') => {
+                            return Ok(StartupSplashOutcome::Exit);
+                        }
+                        _ => continue,
+                    },
+                }
             }
-            TuiEvent::Paste(_) => return Ok(StartupSplashOutcome::Continue),
+            TuiEvent::Paste(_) => match mode {
+                StartupSplashMode::ContinuePrompt => return Ok(StartupSplashOutcome::Continue),
+                StartupSplashMode::WidexAuthPrompt => continue,
+            },
             TuiEvent::Draw => {
                 let _ = tui.draw(u16::MAX, |frame| {
                     frame.render_widget_ref(&widget, frame.area());
@@ -137,7 +181,11 @@ mod tests {
 
     #[test]
     fn startup_splash_shows_animation_when_frame_fits() {
-        let widget = StartupSplashWidget::new(FrameRequester::test_dummy(), true);
+        let widget = StartupSplashWidget::new(
+            FrameRequester::test_dummy(),
+            true,
+            StartupSplashMode::ContinuePrompt,
+        );
         let frame = widget.animation.current_frame();
         let (frame_width, frame_height) = frame_dimensions(frame);
         let area = Rect::new(0, 0, frame_width, frame_height + 3);
@@ -147,11 +195,63 @@ mod tests {
 
     #[test]
     fn startup_splash_skips_animation_when_frame_does_not_fit() {
-        let widget = StartupSplashWidget::new(FrameRequester::test_dummy(), true);
+        let widget = StartupSplashWidget::new(
+            FrameRequester::test_dummy(),
+            true,
+            StartupSplashMode::ContinuePrompt,
+        );
         let frame = widget.animation.current_frame();
         let (frame_width, frame_height) = frame_dimensions(frame);
         let area = Rect::new(0, 0, frame_width, frame_height + 2);
 
         assert_eq!(should_show_animation(area, true, frame), false);
+    }
+
+    #[test]
+    fn continue_prompt_renders_continue_copy() {
+        let widget = StartupSplashWidget::new(
+            FrameRequester::test_dummy(),
+            false,
+            StartupSplashMode::ContinuePrompt,
+        );
+        let area = Rect::new(0, 0, 80, 8);
+        let mut buf = Buffer::empty(area);
+
+        (&widget).render_ref(area, &mut buf);
+
+        let rendered = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("Press any key to continue"));
+        assert!(rendered.contains("(Ctrl+C to quit)"));
+    }
+
+    #[test]
+    fn widex_auth_prompt_renders_key_and_quit_choices() {
+        let widget = StartupSplashWidget::new(
+            FrameRequester::test_dummy(),
+            false,
+            StartupSplashMode::WidexAuthPrompt,
+        );
+        let area = Rect::new(0, 0, 80, 12);
+        let mut buf = Buffer::empty(area);
+
+        (&widget).render_ref(area, &mut buf);
+
+        let rendered = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("Input Widex Key (WillAU API Key)"));
+        assert!(rendered.contains("Quit"));
     }
 }

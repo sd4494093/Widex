@@ -66,6 +66,8 @@ pub(crate) struct OnboardingScreen {
 pub(crate) struct OnboardingScreenArgs {
     pub show_trust_screen: bool,
     pub show_login_screen: bool,
+    pub start_with_api_key_entry: bool,
+    pub hide_welcome_step: bool,
     pub login_status: LoginStatus,
     pub app_server_request_handle: Option<AppServerRequestHandle>,
     pub config: Config,
@@ -81,6 +83,8 @@ impl OnboardingScreen {
         let OnboardingScreenArgs {
             show_trust_screen,
             show_login_screen,
+            start_with_api_key_entry,
+            hide_welcome_step,
             login_status,
             app_server_request_handle,
             config,
@@ -89,11 +93,13 @@ impl OnboardingScreen {
         let codex_home = config.codex_home.clone();
         let forced_login_method = config.forced_login_method;
         let mut steps: Vec<Step> = Vec::new();
-        steps.push(Step::Welcome(WelcomeWidget::new(
-            !matches!(login_status, LoginStatus::NotAuthenticated),
-            tui.frame_requester(),
-            config.animations,
-        )));
+        if !hide_welcome_step {
+            steps.push(Step::Welcome(WelcomeWidget::new(
+                !matches!(login_status, LoginStatus::NotAuthenticated),
+                tui.frame_requester(),
+                config.animations,
+            )));
+        }
         if show_login_screen {
             let highlighted_mode = match forced_login_method {
                 Some(ForcedLoginMethod::Api) => SignInOption::ApiKey,
@@ -103,12 +109,14 @@ impl OnboardingScreen {
                 .file_name()
                 .is_some_and(|name| name == ".widex-codex");
             if let Some(app_server_request_handle) = app_server_request_handle {
-                let sign_in_state =
-                    if is_widex_mode && login_status == LoginStatus::NotAuthenticated {
-                        SignInState::ApiKeyEntry(Default::default())
-                    } else {
-                        SignInState::PickMode
-                    };
+                let sign_in_state = if start_with_api_key_entry
+                    && is_widex_mode
+                    && login_status == LoginStatus::NotAuthenticated
+                {
+                    SignInState::ApiKeyEntry(Default::default())
+                } else {
+                    SignInState::PickMode
+                };
                 steps.push(Step::Auth(AuthModeWidget {
                     request_frame: tui.frame_requester(),
                     highlighted_mode,
@@ -120,6 +128,7 @@ impl OnboardingScreen {
                     animations_enabled: config.animations,
                     animations_suppressed: std::cell::Cell::new(false),
                     is_widex_mode,
+                    quit_requested: std::cell::Cell::new(false),
                 }));
             } else {
                 tracing::warn!("skipping onboarding login step without app-server request handle");
@@ -309,6 +318,15 @@ impl KeyboardHandler for OnboardingScreen {
             }
             if let Some(active_step) = self.current_steps_mut().into_iter().last() {
                 active_step.handle_key_event(key_event);
+            }
+            if self.steps.iter().any(|step| {
+                if let Step::Auth(widget) = step {
+                    return widget.take_quit_requested();
+                }
+                false
+            }) {
+                self.should_exit = true;
+                self.is_done = true;
             }
             if self.steps.iter().any(|step| {
                 if let Step::TrustDirectory(widget) = step {

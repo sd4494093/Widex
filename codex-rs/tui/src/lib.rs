@@ -228,11 +228,14 @@ pub(crate) mod test_support;
 
 use crate::onboarding::onboarding_screen::OnboardingScreenArgs;
 use crate::onboarding::onboarding_screen::run_onboarding_app;
+use crate::onboarding::startup_splash::StartupSplashMode;
 use crate::onboarding::startup_splash::StartupSplashOutcome;
 use crate::onboarding::startup_splash::run_startup_splash;
 use crate::tui::Tui;
 pub use cli::Cli;
 use codex_arg0::Arg0DispatchPaths;
+use codex_login::load_auth_dot_json;
+use codex_login::read_openai_api_key_from_env;
 pub use markdown_render::render_markdown_text;
 pub use public_widgets::composer_input::ComposerAction;
 pub use public_widgets::composer_input::ComposerInput;
@@ -1058,21 +1061,24 @@ async fn run_ratatui_app(
     // Initialize high-fidelity session event logging if enabled.
     session_log::maybe_init(&initial_config);
 
-    match run_startup_splash(&mut tui, initial_config.animations).await? {
-        StartupSplashOutcome::Continue => {}
-        StartupSplashOutcome::Exit => {
-            restore();
-            session_log::log_session_end();
-            let _ = tui.terminal.clear();
-            return Ok(AppExitInfo {
-                token_usage: codex_protocol::protocol::TokenUsage::default(),
-                thread_id: None,
-                thread_name: None,
-                update_action: None,
-                exit_reason: ExitReason::UserRequested,
-            });
-        }
-    }
+    let startup_splash_mode = startup_splash_mode(&initial_config);
+    let start_with_api_key_entry =
+        match run_startup_splash(&mut tui, initial_config.animations, startup_splash_mode).await? {
+            StartupSplashOutcome::Continue => false,
+            StartupSplashOutcome::EnterApiKey => true,
+            StartupSplashOutcome::Exit => {
+                restore();
+                session_log::log_session_end();
+                let _ = tui.terminal.clear();
+                return Ok(AppExitInfo {
+                    token_usage: codex_protocol::protocol::TokenUsage::default(),
+                    thread_id: None,
+                    thread_name: None,
+                    update_action: None,
+                    exit_reason: ExitReason::UserRequested,
+                });
+            }
+        };
 
     let mut app_server = Some(
         match start_app_server(
@@ -1115,6 +1121,8 @@ async fn run_ratatui_app(
         let onboarding_result = run_onboarding_app(
             OnboardingScreenArgs {
                 show_login_screen,
+                start_with_api_key_entry,
+                hide_welcome_step: start_with_api_key_entry && is_widex_codex_home(&initial_config),
                 show_trust_screen: should_show_trust_screen_flag,
                 login_status,
                 app_server_request_handle: app_server
@@ -1735,6 +1743,42 @@ fn should_show_onboarding(
     should_show_login_screen(login_status, config)
 }
 
+fn is_widex_codex_home(config: &Config) -> bool {
+    config
+        .codex_home
+        .file_name()
+        .is_some_and(|name| name == ".widex-codex")
+}
+
+fn widex_api_key_present(config: &Config) -> bool {
+    if read_openai_api_key_from_env().is_some() {
+        return true;
+    }
+
+    match load_auth_dot_json(&config.codex_home, config.cli_auth_credentials_store_mode) {
+        Ok(Some(auth)) => auth
+            .openai_api_key
+            .as_deref()
+            .is_some_and(|api_key| !api_key.trim().is_empty()),
+        Ok(None) => false,
+        Err(err) => {
+            tracing::warn!("failed to read auth state for startup splash: {err}");
+            false
+        }
+    }
+}
+
+fn startup_splash_mode(config: &Config) -> StartupSplashMode {
+    if is_widex_codex_home(config)
+        && config.model_provider.requires_openai_auth
+        && !widex_api_key_present(config)
+    {
+        StartupSplashMode::WidexAuthPrompt
+    } else {
+        StartupSplashMode::ContinuePrompt
+    }
+}
+
 fn should_show_login_screen(login_status: LoginStatus, config: &Config) -> bool {
     // Only show the login screen for providers that actually require OpenAI auth
     // (OpenAI or equivalents). For OSS/other providers, skip login entirely.
@@ -1750,6 +1794,7 @@ mod tests {
     use super::*;
     use crate::legacy_core::config::ConfigBuilder;
     use crate::legacy_core::config::ConfigOverrides;
+    use crate::onboarding::startup_splash::StartupSplashMode;
     use codex_app_server_protocol::ClientRequest;
     use codex_app_server_protocol::RequestId;
     use codex_app_server_protocol::ThreadStartParams;
@@ -1770,6 +1815,15 @@ mod tests {
     async fn build_config(temp_dir: &TempDir) -> std::io::Result<Config> {
         ConfigBuilder::default()
             .codex_home(temp_dir.path().to_path_buf())
+            .build()
+            .await
+    }
+
+    async fn build_widex_config(temp_dir: &TempDir) -> std::io::Result<Config> {
+        let codex_home = temp_dir.path().join(".widex-codex");
+        std::fs::create_dir_all(&codex_home)?;
+        ConfigBuilder::default()
+            .codex_home(codex_home)
             .build()
             .await
     }
@@ -1876,6 +1930,34 @@ mod tests {
             err.to_string()
                 .contains("remote auth tokens require `wss://` or loopback `ws://` URLs")
         );
+    }
+
+    #[tokio::test]
+    async fn widex_startup_splash_prompts_for_key_without_auth_json() -> std::io::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let config = build_widex_config(&temp_dir).await?;
+
+        assert_eq!(
+            startup_splash_mode(&config),
+            StartupSplashMode::WidexAuthPrompt
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn widex_startup_splash_continues_with_auth_json_key() -> std::io::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let config = build_widex_config(&temp_dir).await?;
+        std::fs::write(
+            config.codex_home.join("auth.json"),
+            r#"{"OPENAI_API_KEY":"sk-test","auth_mode":"apikey"}"#,
+        )?;
+
+        assert_eq!(
+            startup_splash_mode(&config),
+            StartupSplashMode::ContinuePrompt
+        );
+        Ok(())
     }
 
     #[tokio::test]

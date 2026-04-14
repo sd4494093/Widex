@@ -166,6 +166,30 @@ cd codex-rs
 cargo build -p codex-cli --bin codex --profile widex-release
 ```
 
+### 4.1 重要经验：不要用旧的 `widex-release` 二进制做验收
+
+`widex-custom/bin/widex` 默认直接执行：
+
+```bash
+codex-rs/target/widex-release/codex
+```
+
+如果这个二进制已经存在，wrapper **不会因为源码变了就自动重编**。所以每次改了
+`codex-rs/tui/`、`codex-rs/cli/`、启动页 / onboarding / 登录链路之后，正式验收前要先执行：
+
+```bash
+cd codex-rs
+cargo build -p codex-cli --bin codex --profile widex-release
+```
+
+否则非常容易出现：
+
+- `cargo test -p codex-tui` 已经通过
+- 源码看起来也对
+- 但 `widex` 实际跑出来还是旧行为
+
+后续把这一步当成 Widex 启动链路验收前的固定动作。
+
 ## 5) 2026-03-06 这次更新的实际记录
 
 本次升级是一次真实的“Widex 跟随上游”案例，遇到并确认了下面这些点：
@@ -341,6 +365,7 @@ widex ralph-widex --help | sed -n '1,80p'
 后续要有意识把流程压缩成“只保 Ralph，其它尽量回到 upstream”：
 
 - 新定制优先放在 `widex-custom/`，不要轻易继续扩张 `codex-rs/core/` 和 `codex-rs/tui/` 的长期分叉面。
+- Widex 默认 provider / 默认 feature 的产品化收口，优先放在 `widex-custom/bin/widex` 这类启动层做；不要再把这类“默认配置注入”绑死在 TUI onboarding 提交流程里。
 - 不要把 Gemini / Grok / api switchover 这类历史多 LLM 能力重新接回默认运行时主链路，除非有明确的新需求单独立项。
 - 每次 upstream 合并，只优先保三件事：
   - `widex` 启动链路正常
