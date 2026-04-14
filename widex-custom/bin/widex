@@ -38,6 +38,7 @@ model = "gpt-5.4"
 model_reasoning_effort = "high"
 disable_response_storage = true
 personality = "pragmatic"
+cli_auth_credentials_store = "file"
 EOF
 }
 
@@ -193,6 +194,9 @@ ensure_widex_default_config() {
   if ! grep -Eq '^[[:space:]]*personality[[:space:]]*=' "${config_path}"; then
     missing_root_settings+=('personality = "pragmatic"')
   fi
+  if ! grep -Eq '^[[:space:]]*cli_auth_credentials_store[[:space:]]*=' "${config_path}"; then
+    missing_root_settings+=('cli_auth_credentials_store = "file"')
+  fi
 
   if (( ${#missing_root_settings[@]} > 0 )); then
     tmp_path="$(mktemp "${CODEX_HOME}/config.toml.root.XXXXXX")"
@@ -228,6 +232,74 @@ ensure_widex_default_config() {
       "[features]" \
       "$(widex_default_features_block | sed '1d')"
   fi
+}
+
+migrate_widex_root_settings() {
+  local config_path tmp_path backup_path
+  config_path="${CODEX_HOME}/config.toml"
+
+  if [[ ! -f "${config_path}" ]]; then
+    return 0
+  fi
+
+  tmp_path="$(mktemp "${CODEX_HOME}/config.toml.root-migrate.XXXXXX")"
+
+  awk '
+    BEGIN {
+      managed_keys[1] = "model_provider"
+      managed_keys[2] = "model"
+      managed_keys[3] = "model_reasoning_effort"
+      managed_keys[4] = "disable_response_storage"
+      managed_keys[5] = "personality"
+      managed_keys[6] = "cli_auth_credentials_store"
+      print "model_provider = \"custom\""
+      print "model = \"gpt-5.4\""
+      print "model_reasoning_effort = \"high\""
+      print "disable_response_storage = true"
+      print "personality = \"pragmatic\""
+      print "cli_auth_credentials_store = \"file\""
+    }
+
+    /^\[/ {
+      in_table = 1
+      if (!printed_separator) {
+        print ""
+        printed_separator = 1
+      }
+      print
+      next
+    }
+
+    {
+      if (!in_table) {
+        for (i = 1; i <= 6; i++) {
+          key = managed_keys[i]
+          if ($0 ~ "^[[:space:]]*" key "[[:space:]]*=") {
+            next
+          }
+        }
+        if (!printed_separator) {
+          if ($0 ~ /^[[:space:]]*$/) {
+            next
+          }
+          print ""
+          printed_separator = 1
+        }
+      }
+      print
+    }
+  ' "${config_path}" > "${tmp_path}"
+
+  if cmp -s "${config_path}" "${tmp_path}"; then
+    rm -f -- "${tmp_path}"
+    return 0
+  fi
+
+  backup_path="${config_path}.pre-willau-defaults.bak"
+  cp -f -- "${config_path}" "${backup_path}"
+  mv -f -- "${tmp_path}" "${config_path}"
+  echo "widex: normalized root Widex defaults in ${config_path}" >&2
+  echo "widex: backup saved to ${backup_path}" >&2
 }
 
 #
@@ -296,6 +368,7 @@ migrate_legacy_widex_config() {
   echo "widex: backup saved to ${backup_path}" >&2
 }
 
+migrate_widex_root_settings
 migrate_legacy_widex_config
 ensure_widex_default_config
 

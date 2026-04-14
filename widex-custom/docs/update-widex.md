@@ -190,6 +190,70 @@ cargo build -p codex-cli --bin codex --profile widex-release
 
 后续把这一步当成 Widex 启动链路验收前的固定动作。
 
+### 4.2 重要经验：真实 `~/.widex-codex/config.toml` 也要自动迁到 Widex 标准主配置
+
+不要只满足“新用户首次生成 config 正确”。
+
+真实生产环境里，很多用户的 `~/.widex-codex/config.toml` 可能已经被旧的 API switcher、
+ppchat 配置、Gemini/Grok 试验配置等污染过。如果 wrapper 只是“补缺省”，那么用户机器上仍可能继续跑旧的：
+
+- `model_provider = "gpt-ppchat"`
+- 非 `file` 的 CLI auth store
+- 非 WillAU 的主 provider
+
+当前 Widex 标准已经改成：
+
+```toml
+model_provider = "custom"
+model = "gpt-5.4"
+model_reasoning_effort = "high"
+disable_response_storage = true
+personality = "pragmatic"
+cli_auth_credentials_store = "file"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://api.wellau.com/v1"
+```
+
+所以后续维护原则是：
+
+- wrapper 不只负责初始化新 config
+- 也必须把已有 `~/.widex-codex/config.toml` 迁移回上述 Widex 标准主配置
+- 迁移时保留 `.bak` 备份
+- 迁移逻辑必须是**幂等**的，不能每次执行 `widex` 都重复改写 config
+
+## 4.3 生产 smoke 的判定顺序
+
+后续每次追 `upstream` 或修改启动/鉴权链路时，按下面顺序验收：
+
+```bash
+widex --version
+widex --help
+widex ralph-widex --help
+```
+
+然后检查真实 `~/.widex-codex/`：
+
+- `config.toml` 是否已经回到 Widex/WillAU 标准主配置
+- `auth.json` 是否存在 `OPENAI_API_KEY`
+
+然后再做真实在线 smoke，例如：
+
+```bash
+widex exec --color never --sandbox read-only -c mcp.enabled=false -c mcp.auto_attach_all=false "Respond with exactly PONG and nothing else."
+```
+
+### 4.3.1 如何区分问题归因
+
+- 如果返回 `401 INVALID_API_KEY`
+  说明是 `auth.json` 里的当前 key 无效，先修 key，不要误判成 Widex 代码问题。
+- 如果返回 `429 Too Many Requests`
+  说明鉴权已通，但当前 key/租户额度或限流有问题。这是服务侧/账号侧问题，不是 Widex 启动链路、wrapper、TUI onboarding 的代码问题。
+- 只有在 key 有效、额度正常的前提下，`widex exec` 仍失败，才继续查 Widex 代码或 upstream 兼容性。
+
 ## 5) 2026-03-06 这次更新的实际记录
 
 本次升级是一次真实的“Widex 跟随上游”案例，遇到并确认了下面这些点：
