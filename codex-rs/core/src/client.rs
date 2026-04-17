@@ -32,7 +32,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
 use codex_api::ApiError;
-use codex_api::ChatClient as ApiChatClient;
+use codex_api::AuthProvider;
 use codex_api::CompactClient as ApiCompactClient;
 use codex_api::CompactionInput as ApiCompactionInput;
 use codex_api::Compression;
@@ -59,41 +59,24 @@ use codex_api::build_conversation_headers;
 use codex_api::create_text_param_for_request;
 use codex_api::response_create_client_metadata;
 use codex_app_server_protocol::AuthMode;
-use codex_login::AuthEnvTelemetry;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_login::RefreshTokenError;
 use codex_login::UnauthorizedRecovery;
-use codex_login::api_bridge::auth_provider_from_auth;
-use codex_login::auth_env_telemetry::collect_auth_env_telemetry;
 use codex_login::default_client::build_reqwest_client;
-use codex_login::provider_auth::auth_manager_for_provider;
 use codex_otel::SessionTelemetry;
 use codex_otel::current_span_w3c_trace_context;
 
-use codex_feedback::FeedbackRequestTags;
-use codex_feedback::emit_feedback_request_tags_with_auth_env;
-#[cfg(test)]
-use codex_model_provider_info::DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS;
-use codex_model_provider_info::ModelProviderInfo;
-use codex_model_provider_info::WireApi;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::Verbosity as VerbosityConfig;
-use codex_protocol::error::CodexErr;
-use codex_protocol::error::Result;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::W3cTraceContext;
-use codex_response_debug_context::extract_response_debug_context;
-use codex_response_debug_context::extract_response_debug_context_from_api_error;
-use codex_response_debug_context::telemetry_api_error_message;
-use codex_response_debug_context::telemetry_transport_error_message;
-use codex_tools::ToolSpec;
 use codex_tools::create_tools_json_for_responses_api;
 use eventsource_stream::Event;
 use eventsource_stream::EventStreamError;
@@ -101,7 +84,6 @@ use futures::StreamExt;
 use http::HeaderMap as ApiHeaderMap;
 use http::HeaderValue;
 use http::StatusCode as HttpStatusCode;
-use http::header::AUTHORIZATION;
 use reqwest::StatusCode;
 use std::time::Duration;
 use std::time::Instant;
@@ -121,6 +103,22 @@ use crate::flags::CODEX_RS_SSE_FIXTURE;
 use crate::util::emit_feedback_auth_recovery_tags;
 use codex_api::CoreAuthProvider;
 use codex_api::map_api_error;
+use codex_feedback::FeedbackRequestTags;
+use codex_feedback::emit_feedback_request_tags_with_auth_env;
+use codex_login::api_bridge::auth_provider_from_auth;
+use codex_login::auth_env_telemetry::AuthEnvTelemetry;
+use codex_login::auth_env_telemetry::collect_auth_env_telemetry;
+use codex_login::provider_auth::auth_manager_for_provider;
+#[cfg(test)]
+use codex_model_provider_info::DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS;
+use codex_model_provider_info::ModelProviderInfo;
+use codex_model_provider_info::WireApi;
+use codex_protocol::error::CodexErr;
+use codex_protocol::error::Result;
+use codex_response_debug_context::extract_response_debug_context;
+use codex_response_debug_context::extract_response_debug_context_from_api_error;
+use codex_response_debug_context::telemetry_api_error_message;
+use codex_response_debug_context::telemetry_transport_error_message;
 
 pub const OPENAI_BETA_HEADER: &str = "OpenAI-Beta";
 pub const X_CODEX_INSTALLATION_ID_HEADER: &str = "x-codex-installation-id";
@@ -131,7 +129,6 @@ pub const X_CODEX_WINDOW_ID_HEADER: &str = "x-codex-window-id";
 pub const X_OPENAI_SUBAGENT_HEADER: &str = "x-openai-subagent";
 pub const X_RESPONSESAPI_INCLUDE_TIMING_METRICS_HEADER: &str =
     "x-responsesapi-include-timing-metrics";
-const CHAT_COMPLETIONS_ENDPOINT: &str = "chat/completions";
 const RESPONSES_WEBSOCKETS_V2_BETA_HEADER_VALUE: &str = "responses_websockets=2026-02-06";
 const RESPONSES_ENDPOINT: &str = "/responses";
 const RESPONSES_COMPACT_ENDPOINT: &str = "/responses/compact";
@@ -280,16 +277,7 @@ pub(crate) struct RealtimeWebrtcCallStart {
 /// `api.openai.com` sideband path.
 fn sideband_websocket_auth_headers(api_auth: &CoreAuthProvider) -> ApiHeaderMap {
     let mut headers = ApiHeaderMap::new();
-    if let Some(token) = api_auth.token.as_ref()
-        && let Ok(value) = HeaderValue::from_str(&format!("Bearer {token}"))
-    {
-        headers.insert(AUTHORIZATION, value);
-    }
-    if let Some(account_id) = api_auth.account_id.as_ref()
-        && let Ok(value) = HeaderValue::from_str(account_id)
-    {
-        headers.insert("ChatGPT-Account-ID", value);
-    }
+    api_auth.add_auth_headers(&mut headers);
     headers
 }
 
@@ -1125,129 +1113,6 @@ impl ModelClientSession {
         }
     }
 
-    /// Streams a turn via the OpenAI Chat Completions API.
-    ///
-    /// This path is only used when the provider is configured with
-    /// `WireApi::Chat`; it does not support `output_schema` today.
-    async fn stream_chat_completions(
-        &self,
-        prompt: &Prompt,
-        model_info: &ModelInfo,
-        session_telemetry: &SessionTelemetry,
-    ) -> Result<ResponseStream> {
-        if prompt.output_schema.is_some() {
-            return Err(CodexErr::UnsupportedOperation(
-                "output_schema is not supported for Chat Completions API".to_string(),
-            ));
-        }
-
-        let auth_manager = self.client.state.auth_manager.clone();
-        let instructions = prompt.base_instructions.text.clone();
-        let provider_base_url = self
-            .client
-            .state
-            .provider
-            .base_url
-            .clone()
-            .unwrap_or_default();
-        let tools_json = create_tools_json_for_openai_chat_completions_api(&prompt.tools)?;
-        let api_input = prompt.get_formatted_input();
-        let conversation_id = self.client.state.conversation_id.to_string();
-        let session_source = self.client.state.session_source.clone();
-        // For the VectorEngine Grok proxy, the `grok-4.1` model doesn't reliably return
-        // `tool_calls` even when tools are provided. Use a known-working upstream model only when
-        // tools are present so the selected model can still remain `grok-4.1` in the UI.
-        let mut model_slug = if provider_base_url.contains("vectorengine.ai")
-            && model_info.slug == "grok-4.1"
-            && !prompt.tools.is_empty()
-        {
-            "grok-4-fast-reasoning".to_string()
-        } else {
-            model_info.slug.clone()
-        };
-        let mut attempted_fallback = false;
-        let mut pending_retry = PendingUnauthorizedRetry::default();
-
-        let mut auth_recovery = auth_manager
-            .as_ref()
-            .map(AuthManager::unauthorized_recovery);
-        loop {
-            let auth = match auth_manager.as_ref() {
-                Some(manager) => manager.auth().await,
-                None => None,
-            };
-            let api_provider = self
-                .client
-                .state
-                .provider
-                .to_api_provider(auth.as_ref().map(CodexAuth::auth_mode))?;
-            let api_auth = auth_provider_from_auth(auth.clone(), &self.client.state.provider)?;
-            let transport = ReqwestTransport::new(build_reqwest_client());
-            let request_auth_context = AuthRequestTelemetryContext::new(
-                auth.as_ref().map(CodexAuth::auth_mode),
-                &api_auth,
-                pending_retry,
-            );
-            let (request_telemetry, sse_telemetry) = Self::build_streaming_telemetry(
-                session_telemetry,
-                request_auth_context,
-                RequestRouteTelemetry::for_endpoint(CHAT_COMPLETIONS_ENDPOINT),
-                self.client.state.auth_env_telemetry.clone(),
-            );
-            let client = ApiChatClient::new(transport, api_provider, api_auth)
-                .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
-
-            let stream_result = client
-                .stream_prompt(
-                    &model_slug,
-                    &instructions,
-                    &api_input,
-                    &tools_json,
-                    Some(conversation_id.clone()),
-                    Some(session_source.clone()),
-                )
-                .await;
-
-            match stream_result {
-                Ok(stream) => {
-                    let (stream, _last_response_rx) =
-                        map_response_stream(stream, session_telemetry.clone());
-                    return Ok(stream);
-                }
-                Err(ApiError::Transport(
-                    unauthorized_transport @ TransportError::Http { status, .. },
-                )) if status == StatusCode::UNAUTHORIZED => {
-                    pending_retry = PendingUnauthorizedRetry::from_recovery(
-                        handle_unauthorized(
-                            unauthorized_transport,
-                            &mut auth_recovery,
-                            session_telemetry,
-                        )
-                        .await?,
-                    );
-                    continue;
-                }
-                Err(err @ ApiError::Transport(TransportError::Http { status, .. }))
-                    if status == StatusCode::TOO_MANY_REQUESTS =>
-                {
-                    if !attempted_fallback
-                        && let Some(fallback) = grok_fallback_model(&model_slug, status)
-                    {
-                        attempted_fallback = true;
-                        warn!(
-                            from_model = model_slug,
-                            fallback_model = fallback,
-                            "Retrying Chat Completions with fallback model after HTTP 429"
-                        );
-                        model_slug = fallback.to_string();
-                        continue;
-                    }
-                    return Err(map_api_error(err));
-                }
-                Err(err) => return Err(map_api_error(err)),
-            }
-        }
-    }
     /// Streams a turn via the OpenAI Responses API.
     ///
     /// Handles SSE fixtures, reasoning summaries, verbosity, and the
@@ -1604,10 +1469,6 @@ impl ModelClientSession {
                 )
                 .await
             }
-            WireApi::Chat => {
-                self.stream_chat_completions(prompt, model_info, session_telemetry)
-                    .await
-            }
         }
     }
 
@@ -1667,39 +1528,6 @@ fn build_responses_headers(
         headers.insert(X_CODEX_TURN_METADATA_HEADER, header_value.clone());
     }
     headers
-}
-
-fn create_tools_json_for_openai_chat_completions_api(
-    tools: &[ToolSpec],
-) -> Result<Vec<serde_json::Value>> {
-    let responses_api_tools_json = create_tools_json_for_responses_api(tools)?;
-    let tools_json = responses_api_tools_json
-        .into_iter()
-        .filter_map(|tool| {
-            if tool.get("type") != Some(&serde_json::Value::String("function".to_string())) {
-                return None;
-            }
-
-            let map = tool.as_object()?;
-            let name = map.get("name")?.as_str()?.to_string();
-            let description = map
-                .get("description")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let parameters = map.get("parameters")?.clone();
-
-            Some(serde_json::json!({
-                "type": "function",
-                "function": {
-                    "name": name,
-                    "description": description,
-                    "parameters": parameters,
-                }
-            }))
-        })
-        .collect();
-    Ok(tools_json)
 }
 
 fn subagent_header_value(session_source: &SessionSource) -> Option<String> {
@@ -2143,58 +1971,6 @@ impl WebsocketTelemetry for ApiTelemetry {
     ) {
         self.session_telemetry
             .record_websocket_event(result, duration);
-    }
-}
-
-fn grok_fallback_model(model: &str, status: StatusCode) -> Option<&'static str> {
-    if status != StatusCode::TOO_MANY_REQUESTS {
-        return None;
-    }
-
-    // Prefer staying on the same Grok family, but switch to a less loaded sibling when
-    // VectorEngine returns transient 429s.
-    match model {
-        "grok-4-fast-reasoning" => Some("grok-4-fast-non-reasoning"),
-        "grok-4.1" => Some("grok-4-fast-reasoning"),
-        _ => None,
-    }
-}
-
-#[cfg(test)]
-mod grok_fallback_tests {
-    use super::*;
-    use pretty_assertions::assert_eq;
-
-    #[test]
-    fn falls_back_from_grok_4_1_on_429() {
-        assert_eq!(
-            grok_fallback_model("grok-4.1", StatusCode::TOO_MANY_REQUESTS),
-            Some("grok-4-fast-reasoning")
-        );
-    }
-
-    #[test]
-    fn does_not_fall_back_for_other_models() {
-        assert_eq!(
-            grok_fallback_model("grok-4-1-fast-reasoning", StatusCode::TOO_MANY_REQUESTS),
-            None
-        );
-    }
-
-    #[test]
-    fn falls_back_between_grok_4_fast_tool_call_models_on_429() {
-        assert_eq!(
-            grok_fallback_model("grok-4-fast-reasoning", StatusCode::TOO_MANY_REQUESTS),
-            Some("grok-4-fast-non-reasoning")
-        );
-    }
-
-    #[test]
-    fn does_not_fall_back_for_other_status_codes() {
-        assert_eq!(
-            grok_fallback_model("grok-4.1", StatusCode::BAD_REQUEST),
-            None
-        );
     }
 }
 

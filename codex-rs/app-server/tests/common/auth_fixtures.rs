@@ -165,6 +165,7 @@ pub fn write_chatgpt_auth(
         widex_saved_api_keys: Default::default(),
         tokens: Some(tokens),
         last_refresh,
+        agent_identity: None,
     };
 
     save_auth(codex_home, &auth, cli_auth_credentials_store_mode).context("write auth.json")

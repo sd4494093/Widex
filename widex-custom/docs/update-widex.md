@@ -4,7 +4,7 @@
 
 后续 Widex 维护策略统一按下面执行：
 
-- 第一优先级：持续跟随 `upstream/main`，尽量缩小与上游的长期漂移。
+- 第一优先级：持续跟随 upstream 的稳定 release tag（例如 `rust-v0.122.0`），不要默认追 `upstream/main`。
 - 第二优先级：保持 `ralph-widex` 主线能力稳定，包括：
   - TUI `/ralph-widex ...`
   - CLI `widex ralph-widex ...`
@@ -17,7 +17,7 @@
 
 本仓库有两条主线分支：
 
-- `main`：本地集成分支，用来在本机对齐 `upstream/main`，方便后续合并到 `widex`
+- `main`：本地集成分支，用来在本机对齐 upstream 稳定 release tag，方便后续合并到 `widex`
 - `widex`：你们日常开发 / 运行 / 发布分支（包含 Widex 的定制）
 
 ## 先说结论
@@ -39,7 +39,7 @@
 
 如果将来你们明确想把 fork 的 `main` 也维护成上游镜像，再单独执行 `push origin main` 即可；但这不应作为默认流程。
 
-目标：上游更新频繁时，用最少命令把**本地** `main` 同步到 `upstream/main`，再把 `main` 合入 `widex`，最后只推 `origin/widex`。
+目标：上游更新频繁时，用最少命令把**本地** `main` 同步到 upstream 稳定 release tag，再把 `main` 合入 `widex`，最后只推 `origin/widex`。
 
 ## 0) 前置检查
 
@@ -71,15 +71,18 @@ git status --porcelain=v1
 
 若有本地未提交变更，请先提交或 stash。
 
-## 1) 先把本地 main 对齐到 upstream/main
+## 1) 先把本地 main 对齐到 upstream 稳定 release tag
 
 ```bash
 git fetch upstream
 git fetch origin
 
 git checkout main
-# 理想情况：main 只做 fast-forward
-git merge --ff-only upstream/main
+# 先确认最新稳定 release tag
+git tag -l 'rust-v0.*' | sort -V | tail
+
+# 例：追到 rust-v0.122.0
+git merge --ff-only rust-v0.122.0
 ```
 
 如果本地没有 `main`，可从 `origin/main` 建一个本地分支：
@@ -290,7 +293,7 @@ widex exec --color never --sandbox read-only -c mcp.enabled=false -c mcp.auto_at
 
 这也再次说明：
 
-> 你们当前最合理的默认流程，是把 `main` 当作本地“上游对齐分支”，而不是团队发布分支。
+> 你们当前最合理的默认流程，是把 `main` 当作本地“上游 release 对齐分支”，而不是团队发布分支。
 
 ### 5.2 本次遇到的典型问题
 
@@ -384,12 +387,15 @@ git fetch upstream && git fetch origin
 ```bash
 cd codex-rs
 just fmt
-cargo test -p codex-model-provider-info -p codex-models-manager
+cargo test -p codex-model-provider-info
 cargo test -p codex-tui
-cargo test -p codex-core
+env -i PATH="$PATH" HOME="$HOME" USER="$USER" SHELL="$SHELL" TERM="${TERM:-xterm-256color}" LANG="C.UTF-8" LC_ALL="C.UTF-8" CARGO_HOME="$HOME/.cargo" RUSTUP_HOME="$HOME/.rustup" TMPDIR="${TMPDIR:-/tmp}" cargo test -p codex-core
 ```
 
-如果某一步被系统依赖卡住，**要在提交说明里明确写出来**，不要默默跳过。
+说明：
+
+- `codex-core` 的 package 级测试建议放在**隔离环境**里执行，否则当前 agent 进程注入的开发者说明、skills、environment context 可能污染请求/事件断言，制造大量假失败。
+- 如果某一步被系统依赖卡住，**要在提交说明里明确写出来**，不要默默跳过。
 
 ### 6.4.1 Widex / Ralph 最小封板烟测
 
@@ -428,20 +434,26 @@ widex ralph-widex status
 一次 upstream 跟随完成后，只有同时满足下面几点，才算真正收口：
 
 - 工作区干净：`git status --short --branch`
-- 对上游不落后：`git rev-list --left-right --count upstream/main...widex`
+- 对目标 release tag 不落后：`git describe --tags --exact-match` 或明确记录当前 merge 基线
 - 已推到团队主分支：`git rev-list --left-right --count origin/widex...widex`
 - `widex` 可直接启动：`widex --version` / `widex --help`
 - `ralph-widex` 入口仍然可用：`widex ralph-widex --help`
+- `widex-custom/bin/widex` 能在空 `WIDEX_CODEX_HOME` 下生成 WellAU 标准配置，且不自动写入 `auth.json`
+- `codex-core` package 级测试在隔离环境下通过，或剩余失败已确认是上游基线问题并单独建档
 
 建议固定用下面这组命令做最终封板：
 
 ```bash
 git status --short --branch
-git rev-list --left-right --count upstream/main...widex
+git describe --tags --always
 git rev-list --left-right --count origin/widex...widex
 widex --version
 widex --help | sed -n '1,40p'
 widex ralph-widex --help | sed -n '1,80p'
+tmp_home="$(mktemp -d)"
+WIDEX_CODEX_HOME="$tmp_home" widex --help >/dev/null 2>&1 || true
+sed -n '1,80p' "$tmp_home/config.toml"
+test ! -f "$tmp_home/auth.json"
 ```
 
 ### 6.4.3 以后如何把跟随 upstream 的周期压短
@@ -455,6 +467,7 @@ widex ralph-widex --help | sed -n '1,80p'
   - `widex` 启动链路正常
   - `ralph-widex` TUI / CLI 入口正常
   - `.ralph/` 状态、监控、恢复链路不回退
+- 发版验证尽量固定在“隔离环境命令 + Widex wrapper smoke + Ralph smoke”三段式，不要直接继承当前 agent 会话环境做最终判定。
 - 合并完成后尽快做“小提交 + 小推送”，不要把额外实验性改动混进同一轮 upstream 跟随里。
 - 如果某个 Widex 定制不是为了 Ralph，也不是为了启动链路稳定性，就要优先考虑删除、回退到 upstream，或者移到文档/模板层保存，而不是继续挂在主产品线。
 

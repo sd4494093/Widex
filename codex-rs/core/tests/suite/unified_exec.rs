@@ -39,6 +39,8 @@ use serde_json::Value;
 use serde_json::json;
 use tokio::time::Duration;
 
+const UNIFIED_EXEC_LAGGED_OUTPUT_TIMEOUT: Duration = Duration::from_secs(30);
+
 fn extract_output_text(item: &Value) -> Option<&str> {
     item.get("output").and_then(|value| match value {
         Value::String(text) => Some(text.as_str()),
@@ -191,7 +193,11 @@ async fn create_workspace_directory(
 ) -> Result<std::path::PathBuf> {
     let abs_path = test.config.cwd.join(rel_path.as_ref());
     test.fs()
-        .create_directory(&abs_path, CreateDirectoryOptions { recursive: true })
+        .create_directory(
+            &abs_path,
+            CreateDirectoryOptions { recursive: true },
+            /*sandbox*/ None,
+        )
         .await?;
     Ok(abs_path.into_path_buf())
 }
@@ -380,7 +386,7 @@ async fn unified_exec_emits_exec_command_begin_event() -> Result<()> {
 
     assert_command(&begin_event.command, "-lc", "/bin/echo hello unified exec");
 
-    assert_eq!(begin_event.cwd, cwd);
+    assert_eq!(begin_event.cwd.as_path(), cwd.as_path());
 
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
@@ -445,7 +451,8 @@ async fn unified_exec_resolves_relative_workdir() -> Result<()> {
     .await;
 
     assert_eq!(
-        begin_event.cwd, workdir,
+        begin_event.cwd.as_path(),
+        workdir.as_path(),
         "exec_command cwd should resolve relative workdir against turn cwd",
     );
 
@@ -507,7 +514,8 @@ async fn unified_exec_respects_workdir_override() -> Result<()> {
     .await;
 
     assert_eq!(
-        begin_event.cwd, workdir,
+        begin_event.cwd.as_path(),
+        workdir.as_path(),
         "exec_command cwd should reflect the requested workdir override"
     );
 
@@ -530,15 +538,13 @@ async fn unified_exec_emits_exec_command_end_event() -> Result<()> {
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex()
-        .with_exclusive_test_harness_permit()
-        .with_config(|config| {
-            config.use_experimental_unified_exec_tool = true;
-            config
-                .features
-                .enable(Feature::UnifiedExec)
-                .expect("test config should allow feature update");
-        });
+    let mut builder = test_codex().with_config(|config| {
+        config.use_experimental_unified_exec_tool = true;
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
+    });
     let test = builder.build_remote_aware(&server).await?;
 
     let call_id = "uexec-end-event";
@@ -605,15 +611,13 @@ async fn unified_exec_emits_output_delta_for_exec_command() -> Result<()> {
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex()
-        .with_exclusive_test_harness_permit()
-        .with_config(|config| {
-            config.use_experimental_unified_exec_tool = true;
-            config
-                .features
-                .enable(Feature::UnifiedExec)
-                .expect("test config should allow feature update");
-        });
+    let mut builder = test_codex().with_config(|config| {
+        config.use_experimental_unified_exec_tool = true;
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
+    });
     let test = builder.build_remote_aware(&server).await?;
 
     let call_id = "uexec-delta-1";
@@ -843,20 +847,18 @@ async fn unified_exec_terminal_interaction_captures_delayed_output() -> Result<(
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex()
-        .with_exclusive_test_harness_permit()
-        .with_config(|config| {
-            config.use_experimental_unified_exec_tool = true;
-            config
-                .features
-                .enable(Feature::UnifiedExec)
-                .expect("test config should allow feature update");
-        });
+    let mut builder = test_codex().with_config(|config| {
+        config.use_experimental_unified_exec_tool = true;
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
+    });
     let test = builder.build_remote_aware(&server).await?;
 
     let open_call_id = "uexec-delayed-open";
     let open_args = json!({
-        "cmd": "sleep 1 && echo MARKER1 && sleep 9 && echo MARKER2",
+        "cmd": "sleep 3 && echo MARKER1 && sleep 3 && echo MARKER2",
         "yield_time_ms": 10,
         "tty": true,
     });
@@ -874,14 +876,14 @@ async fn unified_exec_terminal_interaction_captures_delayed_output() -> Result<(
     let second_poll_args = json!({
         "chars": "x",
         "session_id": 1000,
-        "yield_time_ms": 7000,
+        "yield_time_ms": 4000,
     });
 
     let third_poll_call_id = "uexec-delayed-poll-3";
     let third_poll_args = json!({
         "chars": "x",
         "session_id": 1000,
-        "yield_time_ms": 10000,
+        "yield_time_ms": 6000,
     });
 
     let responses = vec![
@@ -1139,14 +1141,12 @@ async fn exec_command_reports_chunk_and_exit_metadata() -> Result<()> {
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex()
-        .with_exclusive_test_harness_permit()
-        .with_config(|config| {
-            config
-                .features
-                .enable(Feature::UnifiedExec)
-                .expect("test config should allow feature update");
-        });
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
+    });
     let test = builder.build_remote_aware(&server).await?;
 
     let call_id = "uexec-metadata";
@@ -1234,14 +1234,12 @@ async fn unified_exec_defaults_to_pipe() -> Result<()> {
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex()
-        .with_exclusive_test_harness_permit()
-        .with_config(|config| {
-            config
-                .features
-                .enable(Feature::UnifiedExec)
-                .expect("test config should allow feature update");
-        });
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
+    });
     let test = builder.build_remote_aware(&server).await?;
 
     let call_id = "uexec-default-pipe";
@@ -2059,11 +2057,12 @@ PY
         SandboxPolicy::DangerFullAccess,
     )
     .await?;
-    // This is a worst case scenario for the truncate logic.
+    // This is a worst case scenario for the truncate logic, and CI can spend a
+    // while draining the lagged tail before the follow-up tool call completes.
     wait_for_event_with_timeout(
         &test.codex,
         |event| matches!(event, EventMsg::TurnComplete(_)),
-        Duration::from_secs(10),
+        UNIFIED_EXEC_LAGGED_OUTPUT_TIMEOUT,
     )
     .await;
 
@@ -2105,19 +2104,17 @@ async fn unified_exec_timeout_and_followup_poll() -> Result<()> {
 
     let server = start_mock_server().await;
 
-    let mut builder = test_codex()
-        .with_exclusive_test_harness_permit()
-        .with_config(|config| {
-            config
-                .features
-                .enable(Feature::UnifiedExec)
-                .expect("test config should allow feature update");
-        });
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
+    });
     let test = builder.build_remote_aware(&server).await?;
 
     let first_call_id = "uexec-timeout";
     let first_args = serde_json::json!({
-        "cmd": "sleep 2; echo ready",
+        "cmd": "sleep 0.5; echo ready",
         "yield_time_ms": 10,
     });
 
@@ -2125,7 +2122,7 @@ async fn unified_exec_timeout_and_followup_poll() -> Result<()> {
     let second_args = serde_json::json!({
         "chars": "",
         "session_id": 1000,
-        "yield_time_ms": 3000,
+        "yield_time_ms": 800,
     });
 
     let responses = vec![

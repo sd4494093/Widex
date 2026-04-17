@@ -783,6 +783,7 @@ pub(crate) async fn persist_tokens_async(
             widex_saved_api_keys: Default::default(),
             tokens: Some(tokens),
             last_refresh: Some(Utc::now()),
+            agent_identity: None,
         };
         save_auth(&codex_home, &auth, auth_credentials_store_mode)
     })

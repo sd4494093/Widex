@@ -110,6 +110,7 @@ mod tests {
                 account_id: Some("workspace-1".to_string()),
             }),
             last_refresh: Some(Utc::now()),
+            agent_identity: None,
         };
         save_auth(codex_home, &auth, AuthCredentialsStoreMode::File)
             .expect("chatgpt auth should save");
@@ -158,6 +159,7 @@ mod tests {
                 widex_saved_api_keys: Default::default(),
                 tokens: None,
                 last_refresh: None,
+                agent_identity: None,
             },
             AuthCredentialsStoreMode::File,
         )

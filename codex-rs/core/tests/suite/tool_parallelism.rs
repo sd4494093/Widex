@@ -5,7 +5,6 @@ use std::fs;
 use std::time::Duration;
 use std::time::Instant;
 
-use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
@@ -47,7 +46,7 @@ async fn run_turn(test: &TestCodex, prompt: &str) -> anyhow::Result<()> {
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: Some(ReasoningSummary::Auto),
+            summary: None,
             service_tier: None,
             collaboration_mode: None,
             personality: None,
@@ -67,18 +66,14 @@ async fn run_turn_and_measure(test: &TestCodex, prompt: &str) -> anyhow::Result<
 
 #[allow(clippy::expect_used)]
 async fn build_codex_with_test_tool(server: &wiremock::MockServer) -> anyhow::Result<TestCodex> {
-    let mut builder = test_codex()
-        .with_model("test-gpt-5.1-codex")
-        .with_exclusive_test_harness_permit();
+    let mut builder = test_codex().with_model("test-gpt-5.1-codex");
     builder.build(server).await
 }
 
 fn assert_parallel_duration(actual: Duration) {
-    // Measure the whole turn, not just tool execution. Slow machines can spend a couple of
-    // extra seconds in model-roundtrip, startup work, and shared test-harness queueing even when
-    // the tools overlap correctly.
+    // Allow headroom for slow CI scheduling; barrier synchronization already enforces overlap.
     assert!(
-        actual < Duration::from_millis(8_000),
+        actual < Duration::from_millis(1_600),
         "expected parallel execution to finish quickly, got {actual:?}"
     );
 }
@@ -101,9 +96,7 @@ async fn read_file_tools_run_in_parallel() -> anyhow::Result<()> {
     .to_string();
 
     let parallel_args = json!({
-        // Use a longer sleep to reduce flakiness on slower/loaded machines while still
-        // clearly distinguishing parallel (~1500ms) from serial (~3000ms) execution.
-        "sleep_after_ms": 1500,
+        "sleep_after_ms": 300,
         "barrier": {
             "id": "parallel-test-sync",
             "participants": 2,
@@ -152,13 +145,11 @@ async fn shell_tools_run_in_parallel() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
-    let mut builder = test_codex()
-        .with_model("gpt-5.1")
-        .with_exclusive_test_harness_permit();
+    let mut builder = test_codex().with_model("gpt-5.1");
     let test = builder.build(&server).await?;
 
     let shell_args = json!({
-        "command": "sleep 0.3",
+        "command": "sleep 0.25",
         // Avoid user-specific shell startup cost (e.g. zsh profile scripts) in timing assertions.
         "login": false,
         "timeout_ms": 1_000,
@@ -166,16 +157,6 @@ async fn shell_tools_run_in_parallel() -> anyhow::Result<()> {
     let args_one = serde_json::to_string(&shell_args)?;
     let args_two = serde_json::to_string(&shell_args)?;
 
-    let warmup_response = sse(vec![
-        json!({"type": "response.created", "response": {"id": "resp-warm-1"}}),
-        ev_function_call("warm-call-1", "shell_command", &args_one),
-        ev_function_call("warm-call-2", "shell_command", &args_two),
-        ev_completed("resp-warm-1"),
-    ]);
-    let warmup_completion = sse(vec![
-        ev_assistant_message("warm-msg-1", "warmup done"),
-        ev_completed("resp-warm-2"),
-    ]);
     let first_response = sse(vec![
         json!({"type": "response.created", "response": {"id": "resp-1"}}),
         ev_function_call("call-1", "shell_command", &args_one),
@@ -186,18 +167,7 @@ async fn shell_tools_run_in_parallel() -> anyhow::Result<()> {
         ev_assistant_message("msg-1", "done"),
         ev_completed("resp-2"),
     ]);
-    mount_sse_sequence(
-        &server,
-        vec![
-            warmup_response,
-            warmup_completion,
-            first_response,
-            second_response,
-        ],
-    )
-    .await;
-
-    run_turn(&test, "warm up shell_command parallelism").await?;
+    mount_sse_sequence(&server, vec![first_response, second_response]).await;
 
     let duration = run_turn_and_measure(&test, "run shell_command twice").await?;
     assert_parallel_duration(duration);
@@ -217,29 +187,12 @@ async fn mixed_parallel_tools_run_in_parallel() -> anyhow::Result<()> {
     })
     .to_string();
     let shell_args = serde_json::to_string(&json!({
-        "command": "sleep 0.3",
+        "command": "sleep 0.25",
+        // Avoid user-specific shell startup cost in timing assertions.
+        "login": false,
         "timeout_ms": 1_000,
     }))?;
 
-    let warmup_sync_args = json!({
-        "sleep_after_ms": 10
-    })
-    .to_string();
-    let warmup_shell_args = serde_json::to_string(&json!({
-        "command": "sleep 0.01",
-        "timeout_ms": 1_000,
-    }))?;
-
-    let warmup_response = sse(vec![
-        json!({"type": "response.created", "response": {"id": "resp-warm-1"}}),
-        ev_function_call("warm-call-1", "test_sync_tool", &warmup_sync_args),
-        ev_function_call("warm-call-2", "shell_command", &warmup_shell_args),
-        ev_completed("resp-warm-1"),
-    ]);
-    let warmup_completion = sse(vec![
-        ev_assistant_message("warm-msg-1", "warmup done"),
-        ev_completed("resp-warm-2"),
-    ]);
     let first_response = sse(vec![
         json!({"type": "response.created", "response": {"id": "resp-1"}}),
         ev_function_call("call-1", "test_sync_tool", &sync_args),
@@ -250,18 +203,7 @@ async fn mixed_parallel_tools_run_in_parallel() -> anyhow::Result<()> {
         ev_assistant_message("msg-1", "done"),
         ev_completed("resp-2"),
     ]);
-    mount_sse_sequence(
-        &server,
-        vec![
-            warmup_response,
-            warmup_completion,
-            first_response,
-            second_response,
-        ],
-    )
-    .await;
-
-    run_turn(&test, "warm up mixed parallel tools").await?;
+    mount_sse_sequence(&server, vec![first_response, second_response]).await;
 
     let duration = run_turn_and_measure(&test, "mix tools").await?;
     assert_parallel_duration(duration);
@@ -402,9 +344,7 @@ async fn shell_tools_start_before_response_completed_when_stream_delayed() -> an
     ])
     .await;
 
-    let mut builder = test_codex()
-        .with_model("gpt-5.1")
-        .with_exclusive_test_harness_permit();
+    let mut builder = test_codex().with_model("gpt-5.1");
     let test = builder
         .build_with_streaming_server(&streaming_server)
         .await?;
@@ -423,7 +363,7 @@ async fn shell_tools_start_before_response_completed_when_stream_delayed() -> an
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
-            summary: Some(ReasoningSummary::Auto),
+            summary: None,
             service_tier: None,
             collaboration_mode: None,
             personality: None,

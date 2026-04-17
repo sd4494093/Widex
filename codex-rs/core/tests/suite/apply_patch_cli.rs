@@ -10,6 +10,7 @@ use core_test_support::test_codex::ApplyPatchModelOutput;
 use pretty_assertions::assert_eq;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use codex_features::Feature;
 use codex_protocol::protocol::AskForApproval;
@@ -34,7 +35,9 @@ use core_test_support::test_codex::TestCodexBuilder;
 use core_test_support::test_codex::TestCodexHarness;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
+use core_test_support::wait_for_event_with_timeout;
 use serde_json::json;
+use serial_test::serial;
 use test_case::test_case;
 use wiremock::Mock;
 use wiremock::Respond;
@@ -92,6 +95,7 @@ fn apply_patch_responses(
 
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial(apply_patch_cli)]
 async fn apply_patch_cli_uses_codex_self_exe_with_linux_sandbox_helper_alias() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -139,6 +143,7 @@ async fn apply_patch_cli_uses_codex_self_exe_with_linux_sandbox_helper_alias() -
 #[test_case(ApplyPatchModelOutput::Function)]
 #[test_case(ApplyPatchModelOutput::Shell)]
 #[test_case(ApplyPatchModelOutput::ShellViaHeredoc)]
+#[serial(apply_patch_cli)]
 async fn apply_patch_cli_multiple_operations_integration(
     output_type: ApplyPatchModelOutput,
 ) -> Result<()> {
@@ -185,6 +190,7 @@ D delete.txt
 #[test_case(ApplyPatchModelOutput::Shell)]
 #[test_case(ApplyPatchModelOutput::ShellViaHeredoc)]
 #[test_case(ApplyPatchModelOutput::ShellCommandViaHeredoc)]
+#[serial(apply_patch_cli)]
 async fn apply_patch_cli_multiple_chunks(model_output: ApplyPatchModelOutput) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -213,6 +219,7 @@ async fn apply_patch_cli_multiple_chunks(model_output: ApplyPatchModelOutput) ->
 #[test_case(ApplyPatchModelOutput::Shell)]
 #[test_case(ApplyPatchModelOutput::ShellViaHeredoc)]
 #[test_case(ApplyPatchModelOutput::ShellCommandViaHeredoc)]
+#[serial(apply_patch_cli)]
 async fn apply_patch_cli_moves_file_to_new_directory(
     model_output: ApplyPatchModelOutput,
 ) -> Result<()> {
@@ -242,6 +249,7 @@ async fn apply_patch_cli_moves_file_to_new_directory(
 #[test_case(ApplyPatchModelOutput::Shell)]
 #[test_case(ApplyPatchModelOutput::ShellViaHeredoc)]
 #[test_case(ApplyPatchModelOutput::ShellCommandViaHeredoc)]
+#[serial(apply_patch_cli)]
 async fn apply_patch_cli_updates_file_appends_trailing_newline(
     model_output: ApplyPatchModelOutput,
 ) -> Result<()> {
@@ -271,6 +279,7 @@ async fn apply_patch_cli_updates_file_appends_trailing_newline(
 #[test_case(ApplyPatchModelOutput::Shell)]
 #[test_case(ApplyPatchModelOutput::ShellViaHeredoc)]
 #[test_case(ApplyPatchModelOutput::ShellCommandViaHeredoc)]
+#[serial(apply_patch_cli)]
 async fn apply_patch_cli_insert_only_hunk_modifies_file(
     model_output: ApplyPatchModelOutput,
 ) -> Result<()> {
@@ -301,6 +310,7 @@ async fn apply_patch_cli_insert_only_hunk_modifies_file(
 #[test_case(ApplyPatchModelOutput::Shell)]
 #[test_case(ApplyPatchModelOutput::ShellViaHeredoc)]
 #[test_case(ApplyPatchModelOutput::ShellCommandViaHeredoc)]
+#[serial(apply_patch_cli)]
 async fn apply_patch_cli_move_overwrites_existing_destination(
     model_output: ApplyPatchModelOutput,
 ) -> Result<()> {
@@ -333,6 +343,7 @@ async fn apply_patch_cli_move_overwrites_existing_destination(
 #[test_case(ApplyPatchModelOutput::Shell)]
 #[test_case(ApplyPatchModelOutput::ShellViaHeredoc)]
 #[test_case(ApplyPatchModelOutput::ShellCommandViaHeredoc)]
+#[serial(apply_patch_cli)]
 async fn apply_patch_cli_move_without_content_change_has_no_turn_diff(
     model_output: ApplyPatchModelOutput,
 ) -> Result<()> {
@@ -396,6 +407,7 @@ async fn apply_patch_cli_move_without_content_change_has_no_turn_diff(
 #[test_case(ApplyPatchModelOutput::Shell)]
 #[test_case(ApplyPatchModelOutput::ShellViaHeredoc)]
 #[test_case(ApplyPatchModelOutput::ShellCommandViaHeredoc)]
+#[serial(apply_patch_cli)]
 async fn apply_patch_cli_add_overwrites_existing_file(
     model_output: ApplyPatchModelOutput,
 ) -> Result<()> {
@@ -424,6 +436,7 @@ async fn apply_patch_cli_add_overwrites_existing_file(
 #[test_case(ApplyPatchModelOutput::Shell)]
 #[test_case(ApplyPatchModelOutput::ShellViaHeredoc)]
 #[test_case(ApplyPatchModelOutput::ShellCommandViaHeredoc)]
+#[serial(apply_patch_cli)]
 async fn apply_patch_cli_rejects_invalid_hunk_header(
     model_output: ApplyPatchModelOutput,
 ) -> Result<()> {
@@ -456,6 +469,7 @@ async fn apply_patch_cli_rejects_invalid_hunk_header(
 #[test_case(ApplyPatchModelOutput::Shell)]
 #[test_case(ApplyPatchModelOutput::ShellViaHeredoc)]
 #[test_case(ApplyPatchModelOutput::ShellCommandViaHeredoc)]
+#[serial(apply_patch_cli)]
 async fn apply_patch_cli_reports_missing_context(
     model_output: ApplyPatchModelOutput,
 ) -> Result<()> {
@@ -492,6 +506,7 @@ async fn apply_patch_cli_reports_missing_context(
 #[test_case(ApplyPatchModelOutput::Shell)]
 #[test_case(ApplyPatchModelOutput::ShellViaHeredoc)]
 #[test_case(ApplyPatchModelOutput::ShellCommandViaHeredoc)]
+#[serial(apply_patch_cli)]
 async fn apply_patch_cli_reports_missing_target_file(
     model_output: ApplyPatchModelOutput,
 ) -> Result<()> {
@@ -528,6 +543,7 @@ async fn apply_patch_cli_reports_missing_target_file(
 #[test_case(ApplyPatchModelOutput::Shell)]
 #[test_case(ApplyPatchModelOutput::ShellViaHeredoc)]
 #[test_case(ApplyPatchModelOutput::ShellCommandViaHeredoc)]
+#[serial(apply_patch_cli)]
 async fn apply_patch_cli_delete_missing_file_reports_error(
     model_output: ApplyPatchModelOutput,
 ) -> Result<()> {
@@ -565,6 +581,7 @@ async fn apply_patch_cli_delete_missing_file_reports_error(
 #[test_case(ApplyPatchModelOutput::Shell)]
 #[test_case(ApplyPatchModelOutput::ShellViaHeredoc)]
 #[test_case(ApplyPatchModelOutput::ShellCommandViaHeredoc)]
+#[serial(apply_patch_cli)]
 async fn apply_patch_cli_rejects_empty_patch(model_output: ApplyPatchModelOutput) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -590,6 +607,7 @@ async fn apply_patch_cli_rejects_empty_patch(model_output: ApplyPatchModelOutput
 #[test_case(ApplyPatchModelOutput::Shell)]
 #[test_case(ApplyPatchModelOutput::ShellViaHeredoc)]
 #[test_case(ApplyPatchModelOutput::ShellCommandViaHeredoc)]
+#[serial(apply_patch_cli)]
 async fn apply_patch_cli_delete_directory_reports_verification_error(
     model_output: ApplyPatchModelOutput,
 ) -> Result<()> {
@@ -617,6 +635,7 @@ async fn apply_patch_cli_delete_directory_reports_verification_error(
 #[test_case(ApplyPatchModelOutput::Shell)]
 #[test_case(ApplyPatchModelOutput::ShellViaHeredoc)]
 #[test_case(ApplyPatchModelOutput::ShellCommandViaHeredoc)]
+#[serial(apply_patch_cli)]
 async fn apply_patch_cli_rejects_path_traversal_outside_workspace(
     model_output: ApplyPatchModelOutput,
 ) -> Result<()> {
@@ -671,6 +690,7 @@ async fn apply_patch_cli_rejects_path_traversal_outside_workspace(
 #[test_case(ApplyPatchModelOutput::Shell)]
 #[test_case(ApplyPatchModelOutput::ShellViaHeredoc)]
 #[test_case(ApplyPatchModelOutput::ShellCommandViaHeredoc)]
+#[serial(apply_patch_cli)]
 async fn apply_patch_cli_rejects_move_path_traversal_outside_workspace(
     model_output: ApplyPatchModelOutput,
 ) -> Result<()> {
@@ -725,6 +745,7 @@ async fn apply_patch_cli_rejects_move_path_traversal_outside_workspace(
 #[test_case(ApplyPatchModelOutput::Shell)]
 #[test_case(ApplyPatchModelOutput::ShellViaHeredoc)]
 #[test_case(ApplyPatchModelOutput::ShellCommandViaHeredoc)]
+#[serial(apply_patch_cli)]
 async fn apply_patch_cli_verification_failure_has_no_side_effects(
     model_output: ApplyPatchModelOutput,
 ) -> Result<()> {
@@ -756,6 +777,7 @@ async fn apply_patch_cli_verification_failure_has_no_side_effects(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial(apply_patch_cli)]
 async fn apply_patch_shell_command_heredoc_with_cd_updates_relative_workdir() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -791,6 +813,7 @@ async fn apply_patch_shell_command_heredoc_with_cd_updates_relative_workdir() ->
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial(apply_patch_cli)]
 async fn apply_patch_cli_can_use_shell_command_output_as_patch_input() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_remote!(
@@ -934,6 +957,7 @@ async fn apply_patch_cli_can_use_shell_command_output_as_patch_input() -> Result
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial(apply_patch_cli)]
 async fn apply_patch_shell_command_heredoc_with_cd_emits_turn_diff() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_remote!(
@@ -950,7 +974,7 @@ async fn apply_patch_shell_command_heredoc_with_cd_emits_turn_diff() -> Result<(
 
     let script = "cd sub && apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: in_sub.txt\n@@\n-before\n+after\n*** End Patch\nEOF\n";
     let call_id = "shell-heredoc-cd";
-    let args = json!({ "command": script, "timeout_ms": 5_000 });
+    let args = json!({ "command": script, "timeout_ms": 30_000 });
     let bodies = vec![
         sse(vec![
             ev_response_created("resp-1"),
@@ -1019,6 +1043,7 @@ async fn apply_patch_shell_command_heredoc_with_cd_emits_turn_diff() -> Result<(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial(apply_patch_cli)]
 async fn apply_patch_shell_command_failure_propagates_error_and_skips_diff() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_remote!(
@@ -1101,6 +1126,7 @@ async fn apply_patch_shell_command_failure_propagates_error_and_skips_diff() -> 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[test_case(ApplyPatchModelOutput::ShellViaHeredoc)]
 #[test_case(ApplyPatchModelOutput::ShellCommandViaHeredoc)]
+#[serial(apply_patch_cli)]
 async fn apply_patch_function_accepts_lenient_heredoc_wrapped_patch(
     model_output: ApplyPatchModelOutput,
 ) -> Result<()> {
@@ -1126,6 +1152,7 @@ async fn apply_patch_function_accepts_lenient_heredoc_wrapped_patch(
 #[test_case(ApplyPatchModelOutput::Shell)]
 #[test_case(ApplyPatchModelOutput::ShellViaHeredoc)]
 #[test_case(ApplyPatchModelOutput::ShellCommandViaHeredoc)]
+#[serial(apply_patch_cli)]
 async fn apply_patch_cli_end_of_file_anchor(model_output: ApplyPatchModelOutput) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -1148,6 +1175,7 @@ async fn apply_patch_cli_end_of_file_anchor(model_output: ApplyPatchModelOutput)
 #[test_case(ApplyPatchModelOutput::Shell)]
 #[test_case(ApplyPatchModelOutput::ShellViaHeredoc)]
 #[test_case(ApplyPatchModelOutput::ShellCommandViaHeredoc)]
+#[serial(apply_patch_cli)]
 async fn apply_patch_cli_missing_second_chunk_context_rejected(
     model_output: ApplyPatchModelOutput,
 ) -> Result<()> {
@@ -1185,6 +1213,7 @@ async fn apply_patch_cli_missing_second_chunk_context_rejected(
 #[test_case(ApplyPatchModelOutput::Shell)]
 #[test_case(ApplyPatchModelOutput::ShellViaHeredoc)]
 #[test_case(ApplyPatchModelOutput::ShellCommandViaHeredoc)]
+#[serial(apply_patch_cli)]
 async fn apply_patch_emits_turn_diff_event_with_unified_diff(
     model_output: ApplyPatchModelOutput,
 ) -> Result<()> {
@@ -1249,6 +1278,7 @@ async fn apply_patch_emits_turn_diff_event_with_unified_diff(
 #[test_case(ApplyPatchModelOutput::Shell)]
 #[test_case(ApplyPatchModelOutput::ShellViaHeredoc)]
 #[test_case(ApplyPatchModelOutput::ShellCommandViaHeredoc)]
+#[serial(apply_patch_cli)]
 async fn apply_patch_turn_diff_for_rename_with_content_change(
     model_output: ApplyPatchModelOutput,
 ) -> Result<()> {
@@ -1314,6 +1344,7 @@ async fn apply_patch_turn_diff_for_rename_with_content_change(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial(apply_patch_cli)]
 async fn apply_patch_aggregates_diff_across_multiple_tool_calls() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_remote!(
@@ -1387,6 +1418,7 @@ async fn apply_patch_aggregates_diff_across_multiple_tool_calls() -> Result<()> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial(apply_patch_cli)]
 async fn apply_patch_aggregates_diff_preserves_success_after_failure() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_remote!(
@@ -1444,14 +1476,18 @@ async fn apply_patch_aggregates_diff_preserves_success_after_failure() -> Result
         .await?;
 
     let mut last_diff: Option<String> = None;
-    wait_for_event(&codex, |event| match event {
-        EventMsg::TurnDiff(ev) => {
-            last_diff = Some(ev.unified_diff.clone());
-            false
-        }
-        EventMsg::TurnComplete(_) => true,
-        _ => false,
-    })
+    wait_for_event_with_timeout(
+        &codex,
+        |event| match event {
+            EventMsg::TurnDiff(ev) => {
+                last_diff = Some(ev.unified_diff.clone());
+                false
+            }
+            EventMsg::TurnComplete(_) => true,
+            _ => false,
+        },
+        Duration::from_secs(30),
+    )
     .await;
 
     let diff = last_diff.expect("expected TurnDiff after failed patch");
@@ -1484,6 +1520,7 @@ async fn apply_patch_aggregates_diff_preserves_success_after_failure() -> Result
 #[test_case(ApplyPatchModelOutput::Shell)]
 #[test_case(ApplyPatchModelOutput::ShellViaHeredoc)]
 #[test_case(ApplyPatchModelOutput::ShellCommandViaHeredoc)]
+#[serial(apply_patch_cli)]
 async fn apply_patch_change_context_disambiguates_target(
     model_output: ApplyPatchModelOutput,
 ) -> Result<()> {
