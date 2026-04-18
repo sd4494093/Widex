@@ -1133,16 +1133,23 @@ async fn run_ratatui_app(
     } else {
         LoginStatus::NotAuthenticated
     };
-    let should_show_onboarding =
-        should_show_onboarding(login_status, &initial_config, should_show_trust_screen_flag);
+    let force_widex_api_key_entry =
+        start_with_api_key_entry && is_widex_codex_home(&initial_config);
+    let should_show_onboarding = should_show_onboarding(
+        login_status,
+        &initial_config,
+        should_show_trust_screen_flag,
+        force_widex_api_key_entry,
+    );
 
     let config = if should_show_onboarding {
-        let show_login_screen = should_show_login_screen(login_status, &initial_config);
+        let show_login_screen =
+            force_widex_api_key_entry || should_show_login_screen(login_status, &initial_config);
         let onboarding_result = run_onboarding_app(
             OnboardingScreenArgs {
                 show_login_screen,
                 start_with_api_key_entry,
-                hide_welcome_step: start_with_api_key_entry && is_widex_codex_home(&initial_config),
+                hide_welcome_step: force_widex_api_key_entry,
                 show_trust_screen: should_show_trust_screen_flag,
                 login_status,
                 app_server_request_handle: app_server
@@ -1756,8 +1763,9 @@ fn should_show_onboarding(
     login_status: LoginStatus,
     config: &Config,
     show_trust_screen: bool,
+    force_show_login_screen: bool,
 ) -> bool {
-    if show_trust_screen {
+    if show_trust_screen || force_show_login_screen {
         return true;
     }
 
@@ -1790,11 +1798,12 @@ fn widex_api_key_present(config: &Config) -> bool {
 }
 
 fn startup_splash_mode(config: &Config) -> StartupSplashMode {
-    if is_widex_codex_home(config)
-        && config.model_provider.requires_openai_auth
-        && !widex_api_key_present(config)
-    {
-        StartupSplashMode::WidexAuthPrompt
+    if is_widex_codex_home(config) && config.model_provider.requires_openai_auth {
+        if widex_api_key_present(config) {
+            StartupSplashMode::WidexKeyLoadedPrompt
+        } else {
+            StartupSplashMode::WidexAuthPrompt
+        }
     } else {
         StartupSplashMode::ContinuePrompt
     }
@@ -1977,9 +1986,26 @@ mod tests {
 
         assert_eq!(
             startup_splash_mode(&config),
-            StartupSplashMode::ContinuePrompt
+            StartupSplashMode::WidexKeyLoadedPrompt
         );
         Ok(())
+    }
+
+    #[test]
+    fn should_show_onboarding_when_widex_api_key_entry_is_forced() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let config = runtime.block_on(build_widex_config(&temp_dir)).unwrap();
+
+        assert_eq!(
+            should_show_onboarding(
+                LoginStatus::AuthMode(AppServerAuthMode::ApiKey),
+                &config,
+                /*show_trust_screen*/ false,
+                /*force_show_login_screen*/ true,
+            ),
+            true
+        );
     }
 
     #[tokio::test]

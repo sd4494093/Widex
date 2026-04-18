@@ -28,6 +28,7 @@ pub(crate) enum StartupSplashOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StartupSplashMode {
     ContinuePrompt,
+    WidexKeyLoadedPrompt,
     WidexAuthPrompt,
 }
 
@@ -98,6 +99,17 @@ impl WidgetRef for &StartupSplashWidget {
                     "(Ctrl+C to quit)".dim(),
                 ]));
             }
+            StartupSplashMode::WidexKeyLoadedPrompt => {
+                lines.push("".into());
+                lines.push("  Detected an existing Widex Key.".into());
+                lines.push(Line::from(vec![
+                    "  ".into(),
+                    "Press any key to continue".dim(),
+                    " ".into(),
+                    "(Ctrl+C to quit)".dim(),
+                ]));
+                lines.push("  Press e to replace the current Widex Key.".dim().into());
+            }
             StartupSplashMode::WidexAuthPrompt => {
                 lines.push("".into());
                 lines.push(Line::from(vec![
@@ -147,6 +159,10 @@ pub(crate) async fn run_startup_splash(
                 }
                 match mode {
                     StartupSplashMode::ContinuePrompt => return Ok(StartupSplashOutcome::Continue),
+                    StartupSplashMode::WidexKeyLoadedPrompt => match key_event.code {
+                        KeyCode::Char('e') => return Ok(StartupSplashOutcome::EnterApiKey),
+                        _ => return Ok(StartupSplashOutcome::Continue),
+                    },
                     StartupSplashMode::WidexAuthPrompt => match key_event.code {
                         KeyCode::Enter | KeyCode::Char('1') | KeyCode::Char('e') => {
                             return Ok(StartupSplashOutcome::EnterApiKey);
@@ -159,7 +175,9 @@ pub(crate) async fn run_startup_splash(
                 }
             }
             TuiEvent::Paste(_) => match mode {
-                StartupSplashMode::ContinuePrompt => return Ok(StartupSplashOutcome::Continue),
+                StartupSplashMode::ContinuePrompt | StartupSplashMode::WidexKeyLoadedPrompt => {
+                    return Ok(StartupSplashOutcome::Continue);
+                }
                 StartupSplashMode::WidexAuthPrompt => continue,
             },
             TuiEvent::Draw => {
@@ -253,5 +271,30 @@ mod tests {
             .join("\n");
         assert!(rendered.contains("Input Widex Key (WillAU API Key)"));
         assert!(rendered.contains("Quit"));
+    }
+
+    #[test]
+    fn widex_key_loaded_prompt_renders_continue_and_replace_copy() {
+        let widget = StartupSplashWidget::new(
+            FrameRequester::test_dummy(),
+            false,
+            StartupSplashMode::WidexKeyLoadedPrompt,
+        );
+        let area = Rect::new(0, 0, 80, 10);
+        let mut buf = Buffer::empty(area);
+
+        (&widget).render_ref(area, &mut buf);
+
+        let rendered = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("Detected an existing Widex Key."));
+        assert!(rendered.contains("Press any key to continue"));
+        assert!(rendered.contains("Press e to replace the current Widex Key."));
     }
 }
