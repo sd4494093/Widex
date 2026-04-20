@@ -161,8 +161,8 @@ pub struct RunArgs {
     /// This is useful when you want the ralph loop to run with a different provider/model or
     /// networking settings without editing `${CODEX_HOME}/config.toml`.
     ///
-    /// Example:
-    /// `widex ralph-widex run --exec-config 'model=\"gpt-5.2\"' --exec-config 'model_providers.openai.base_url=\"...\"'`
+    /// Example override sequence for the Ralph loop:
+    /// `--exec-config 'model=\"gpt-5.2\"' --exec-config 'model_providers.openai.base_url=\"...\"'`
     #[arg(long = "exec-config")]
     pub exec_config_overrides: Vec<String>,
 
@@ -349,7 +349,7 @@ async fn start_background(
         let _ = tokio::fs::remove_file(&paths.pid_file).await;
     }
 
-    // Spawn: `widex ralph-widex run ...`
+    // Spawn the Ralph worker entrypoint.
     //
     // Prefer routing through the wrapper (via $CODEX_CMD) so:
     // - `--help` / usage strings show `widex` (argv[0]) instead of `codex`

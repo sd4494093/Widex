@@ -7479,11 +7479,7 @@ Usage:\n\
                     [--completion-phrase TEXT]... [--completion-mode MODE]\n\
                     [--completion-regex PATTERN]...\n\
   /ralph-widex stop\n\
-  /ralph-widex status\n\
-\n\
-Advanced (CLI passthrough):\n\
-  /ralph-widex daemon <args...>\n\
-    (runs: widex ralph-widex <args...>)"
+  /ralph-widex status"
                     .to_string(),
                 None,
             );
@@ -7512,7 +7508,11 @@ Advanced (CLI passthrough):\n\
             }
             "stop" => self.stop_ralph_tui("stopped by user"),
             "status" => self.print_ralph_tui_status(),
-            "daemon" => self.run_ralph_widex(rest.to_vec()),
+            "daemon" => {
+                self.add_error_message(
+                    "Unsupported Ralph subcommand. Use `/ralph-widex start`.".to_string(),
+                );
+            }
             "start" | "run" => {
                 let cfg = parse_ralph_tui_args(rest);
                 self.start_ralph_tui(cfg);
@@ -7609,8 +7609,8 @@ Advanced (CLI passthrough):\n\
         };
         self.ralph_tui = Some(state);
 
-        // Best-effort: write a status file compatible with `widex ralph-widex monitor`, so
-        // monitoring works even when running the TUI loop.
+        // Best-effort: write the Ralph status file so TUI status reporting stays consistent while
+        // the loop is running.
         if let Some(state) = self.ralph_tui.as_ref() {
             let status_path = ralph_dir.join("status.json");
             let log_path = ralph_dir.join("logs").join("ralph.log");

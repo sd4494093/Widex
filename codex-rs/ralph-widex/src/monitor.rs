@@ -333,7 +333,7 @@ pub(crate) async fn print_status_once(
     } else {
         println!();
         println!("Status file not found: {}", paths.status_file.display());
-        println!("Run: widex ralph-widex init (or /ralph-widex init in TUI)");
+        println!("Run: /ralph-widex init");
     }
 
     if let Some(pid) = pid {

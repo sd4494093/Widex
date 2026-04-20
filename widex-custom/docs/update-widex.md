@@ -6,9 +6,8 @@
 
 - 第一优先级：持续跟随 upstream 的稳定 release tag（例如 `rust-v0.122.0`），不要默认追 `upstream/main`。
 - 第二优先级：保持 `ralph-widex` 主线能力稳定，包括：
-  - TUI `/ralph-widex ...`
-  - CLI `widex ralph-widex ...`
-  - `.ralph/` 状态/监控/恢复链路
+  - TUI `/ralph-widex init/start/stop/status`
+  - `.ralph/` 状态/进度/恢复链路
 - 多 LLM 集成（例如 Gemini / Grok / 其它非上游默认 provider）目前**不再作为 Widex 主产品线持续演进目标**。
 - 当前 `widex` 主线已经按这个原则继续收口：
   - 仓库内文档继续保留
@@ -255,7 +254,8 @@ base_url = "https://wellau.com/v1"
 ```bash
 widex --version
 widex --help
-widex ralph-widex --help
+# 然后启动 Widex，在 TUI 输入框里执行：
+# /ralph-widex --help
 ```
 
 然后检查真实 `~/.widex-codex/`：
@@ -404,30 +404,29 @@ env -i PATH="$PATH" HOME="$HOME" USER="$USER" SHELL="$SHELL" TERM="${TERM:-xterm
 ```bash
 widex --version
 widex --help
-widex ralph-widex --help
+/ralph-widex --help
 ```
 
 如果要补做一个**不依赖真实模型调用**的 Ralph 本地烟测，可在临时目录执行：
 
-```bash
-tmpdir="$(mktemp -d)"
-cd "$tmpdir"
-widex ralph-widex init
-widex ralph-widex status
+```text
+1. 启动 Widex 并切到目标项目目录
+2. 在 TUI 输入框执行 `/ralph-widex init`
+3. 再执行 `/ralph-widex status`
 ```
 
 通过标准：
 
 - `widex --version` 正常返回版本号
 - `widex --help` 正常输出，且仍可见 `ralph-widex`
-- `widex ralph-widex --help` 正常输出 `init/run/start/stop/status/monitor`
-- `widex ralph-widex init` 能正确生成 `.ralph/` 模板目录
-- `widex ralph-widex status` 至少能正常读取/提示 `.ralph/` 状态，而不是命令直接报错退出
+- TUI 内 `/ralph-widex --help` 正常输出 `init/start/stop/status`
+- TUI 内 `/ralph-widex init` 能正确生成 `.ralph/` 模板目录
+- TUI 内 `/ralph-widex status` 至少能正常读取/提示 `.ralph/` 状态，而不是命令直接报错退出
 
 说明：
 
 - 这组烟测的目标是确认 **Widex 启动链路** 和 **Ralph 自定义入口** 没被上游合并打断。
-- 它**不等价于**跑一轮真实 `ralph-widex run`；后者依赖实际模型、认证、网络和任务上下文，属于更高成本的业务验收。
+- 它**不等价于**真正跑一轮 `/ralph-widex start`；后者依赖实际模型、认证、网络和任务上下文，属于更高成本的业务验收。
 
 ### 6.4.2 生产环境金标准收口定义
 
@@ -437,7 +436,7 @@ widex ralph-widex status
 - 对目标 release tag 不落后：`git describe --tags --exact-match` 或明确记录当前 merge 基线
 - 已推到团队主分支：`git rev-list --left-right --count origin/widex...widex`
 - `widex` 可直接启动：`widex --version` / `widex --help`
-- `ralph-widex` 入口仍然可用：`widex ralph-widex --help`
+- `ralph-widex` 入口仍然可用：TUI 内 `/ralph-widex --help`
 - `widex-custom/bin/widex` 能在空 `WIDEX_CODEX_HOME` 下生成 WellAU 标准配置，且不自动写入 `auth.json`
 - `codex-core` package 级测试在隔离环境下通过，或剩余失败已确认是上游基线问题并单独建档
 
@@ -449,11 +448,19 @@ git describe --tags --always
 git rev-list --left-right --count origin/widex...widex
 widex --version
 widex --help | sed -n '1,40p'
-widex ralph-widex --help | sed -n '1,80p'
 tmp_home="$(mktemp -d)"
 WIDEX_CODEX_HOME="$tmp_home" widex --help >/dev/null 2>&1 || true
 sed -n '1,80p' "$tmp_home/config.toml"
 test ! -f "$tmp_home/auth.json"
+```
+
+然后再人工做一轮 TUI 验收：
+
+```text
+1. 启动 Widex
+2. 输入 /ralph-widex --help
+3. 输入 /ralph-widex init
+4. 输入 /ralph-widex status
 ```
 
 ### 6.4.3 以后如何把跟随 upstream 的周期压短
@@ -465,7 +472,7 @@ test ! -f "$tmp_home/auth.json"
 - 不要把 Gemini / Grok / api switchover 这类历史多 LLM 能力重新接回默认运行时主链路，除非有明确的新需求单独立项。
 - 每次 upstream 合并，只优先保三件事：
   - `widex` 启动链路正常
-  - `ralph-widex` TUI / CLI 入口正常
+  - `ralph-widex` TUI 入口正常
   - `.ralph/` 状态、监控、恢复链路不回退
 - 发版验证尽量固定在“隔离环境命令 + Widex wrapper smoke + Ralph smoke”三段式，不要直接继承当前 agent 会话环境做最终判定。
 - 合并完成后尽快做“小提交 + 小推送”，不要把额外实验性改动混进同一轮 upstream 跟随里。

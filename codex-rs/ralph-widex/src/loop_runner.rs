@@ -12,7 +12,6 @@ use crate::response_analysis::Analysis;
 use crate::response_analysis::AnalysisFile;
 use crate::response_analysis::ExitSignalsFile;
 use crate::response_analysis::analyze_last_message;
-use crate::widex_cmd_hint;
 use anyhow::Context;
 use chrono::Datelike;
 use chrono::Local;
@@ -150,8 +149,7 @@ pub(crate) async fn init_in_place(cwd: &Path, no_overwrite: bool) -> anyhow::Res
 
     println!("Initialized {RALPH_DIR}/ in {}", cwd.display());
     println!(
-        "Next: edit {RALPH_DIR}/PROMPT.md and {RALPH_DIR}/@fix_plan.md then run: {} ralph-widex run",
-        widex_cmd_hint()
+        "Next: edit {RALPH_DIR}/PROMPT.md and {RALPH_DIR}/@fix_plan.md then run: /ralph-widex start"
     );
     println!("Progress: {RALPH_DIR}/@fix_progress.md is updated after every loop.");
 
@@ -369,9 +367,8 @@ pub(crate) async fn run_loop(cwd: &Path, opts: RunOptions) -> anyhow::Result<()>
     tokio::spawn(listen_for_shutdown(shutdown.clone()));
 
     if !tokio::fs::try_exists(&opts.prompt_path).await? {
-        let cmd = widex_cmd_hint();
         anyhow::bail!(
-            "Prompt file not found: {} (run `{cmd} ralph-widex init` first)",
+            "Prompt file not found: {} (run `/ralph-widex init` first)",
             opts.prompt_path.display(),
         );
     }
