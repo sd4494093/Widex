@@ -10,10 +10,41 @@ pub(crate) fn escape_command(command: &[String]) -> String {
 }
 
 pub(crate) fn strip_bash_lc_and_escape(command: &[String]) -> String {
-    if let Some((_, script)) = extract_shell_command(command) {
-        return script.to_string();
+    let display = if let Some((_, script)) = extract_shell_command(command) {
+        script.to_string()
+    } else {
+        escape_command(command)
+    };
+    canonicalize_tui_command_display(display)
+}
+
+fn canonicalize_tui_command_display(display: String) -> String {
+    let Some(parts) = shlex::split(&display) else {
+        return display;
+    };
+    let Some((program, rest)) = parts.split_first() else {
+        return display;
+    };
+    let Some((subcommand, args)) = rest.split_first() else {
+        return display;
+    };
+    if subcommand != "ralph-widex" {
+        return display;
     }
-    escape_command(command)
+
+    let Some(file_name) = Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+    else {
+        return display;
+    };
+    if !matches!(file_name, "widex" | "codex") {
+        return display;
+    }
+
+    let mut normalized = vec!["/ralph-widex".to_string()];
+    normalized.extend(args.iter().cloned());
+    escape_command(&normalized)
 }
 
 pub(crate) fn split_command_string(command: &str) -> Vec<String> {
@@ -82,6 +113,32 @@ mod tests {
         let args = vec!["/bin/bash".into(), "-lc".into(), "echo hello".into()];
         let cmdline = strip_bash_lc_and_escape(&args);
         assert_eq!(cmdline, "echo hello");
+    }
+
+    #[test]
+    fn strip_bash_lc_and_escape_normalizes_ralph_widex_commands() {
+        let args = vec!["bash".into(), "-lc".into(), "widex ralph-widex init".into()];
+        let cmdline = strip_bash_lc_and_escape(&args);
+        assert_eq!(cmdline, "/ralph-widex init");
+
+        let args = vec![
+            "codex".into(),
+            "ralph-widex".into(),
+            "start".into(),
+            "--loops".into(),
+            "5".into(),
+        ];
+        let cmdline = strip_bash_lc_and_escape(&args);
+        assert_eq!(cmdline, "/ralph-widex start --loops 5");
+
+        let args = vec![
+            "/home/will/.local/bin/widex".into(),
+            "ralph-widex".into(),
+            "init".into(),
+            "--overwrite".into(),
+        ];
+        let cmdline = strip_bash_lc_and_escape(&args);
+        assert_eq!(cmdline, "/ralph-widex init --overwrite");
     }
 
     #[test]
