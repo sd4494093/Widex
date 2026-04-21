@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Unified entry point for the Codex CLI.
+// Unified entry point for the Widex CLI.
 
 import { spawn } from "node:child_process";
 import { existsSync } from "fs";
@@ -13,12 +13,12 @@ const __dirname = path.dirname(__filename);
 const require = createRequire(import.meta.url);
 
 const PLATFORM_PACKAGE_BY_TARGET = {
-  "x86_64-unknown-linux-musl": "@openai/codex-linux-x64",
-  "aarch64-unknown-linux-musl": "@openai/codex-linux-arm64",
-  "x86_64-apple-darwin": "@openai/codex-darwin-x64",
-  "aarch64-apple-darwin": "@openai/codex-darwin-arm64",
-  "x86_64-pc-windows-msvc": "@openai/codex-win32-x64",
-  "aarch64-pc-windows-msvc": "@openai/codex-win32-arm64",
+  "x86_64-unknown-linux-musl": "@wellau/widex-linux-x64",
+  "aarch64-unknown-linux-musl": "@wellau/widex-linux-arm64",
+  "x86_64-apple-darwin": "@wellau/widex-darwin-x64",
+  "aarch64-apple-darwin": "@wellau/widex-darwin-arm64",
+  "x86_64-pc-windows-msvc": "@wellau/widex-win32-x64",
+  "aarch64-pc-windows-msvc": "@wellau/widex-win32-arm64",
 };
 
 const { platform, arch } = process;
@@ -95,10 +95,10 @@ try {
     const packageManager = detectPackageManager();
     const updateCommand =
       packageManager === "bun"
-        ? "bun install -g @openai/codex@latest"
-        : "npm install -g @openai/codex@latest";
+        ? "bun install -g @wellau/widex@latest"
+        : "npm install -g @wellau/widex@latest";
     throw new Error(
-      `Missing optional dependency ${platformPackage}. Reinstall Codex: ${updateCommand}`,
+      `Missing optional dependency ${platformPackage}. Reinstall Widex: ${updateCommand}`,
     );
   }
 }
@@ -107,10 +107,10 @@ if (!vendorRoot) {
   const packageManager = detectPackageManager();
   const updateCommand =
     packageManager === "bun"
-      ? "bun install -g @openai/codex@latest"
-      : "npm install -g @openai/codex@latest";
+      ? "bun install -g @wellau/widex@latest"
+      : "npm install -g @wellau/widex@latest";
   throw new Error(
-    `Missing optional dependency ${platformPackage}. Reinstall Codex: ${updateCommand}`,
+    `Missing optional dependency ${platformPackage}. Reinstall Widex: ${updateCommand}`,
   );
 }
 
@@ -134,7 +134,7 @@ function getUpdatedPath(newDirs) {
 }
 
 /**
- * Use heuristics to detect the package manager that was used to install Codex
+ * Use heuristics to detect the package manager that was used to install Widex
  * in order to give the user a hint about how to update it.
  */
 function detectPackageManager() {

@@ -1,12 +1,12 @@
 # npm releases
 
 Use the staging helper in the repo root to generate npm tarballs for a release. For
-example, to stage the CLI, responses proxy, and SDK packages for version `0.6.0`:
+example, to stage the Widex CLI, responses proxy, and SDK packages for version `0.6.0`:
 
 ```bash
 ./scripts/stage_npm_packages.py \
   --release-version 0.6.0 \
-  --package codex \
+  --package widex \
   --package codex-responses-api-proxy \
   --package codex-sdk
 ```
@@ -14,9 +14,8 @@ example, to stage the CLI, responses proxy, and SDK packages for version `0.6.0`
 This downloads the native artifacts once, hydrates `vendor/` for each package, and writes
 tarballs to `dist/npm/`.
 
-When `--package codex` is provided, the staging helper builds the lightweight
-`@openai/codex` meta package plus all platform-native `@openai/codex` variants
-that are later published under platform-specific dist-tags.
+When `--package widex` is provided, the staging helper builds the lightweight
+`@wellau/widex` meta package plus all platform-native `@wellau/widex` variants.
 
 If you need to invoke `build_npm_package.py` directly, run
 `codex-cli/scripts/install_native_deps.py` first and pass `--vendor-src` pointing to the
