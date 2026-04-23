@@ -21,6 +21,7 @@ from urllib.request import urlopen
 SCRIPT_DIR = Path(__file__).resolve().parent
 CODEX_CLI_ROOT = SCRIPT_DIR.parent
 DEFAULT_WORKFLOW_URL = "https://github.com/openai/codex/actions/runs/17952349351"  # rust-v0.40.0
+DEFAULT_GITHUB_REPO = "openai/codex"
 VENDOR_DIR_NAME = "vendor"
 RG_MANIFEST = CODEX_CLI_ROOT / "bin" / "rg"
 BINARY_TARGETS = (
@@ -120,12 +121,19 @@ def _gha_group(title: str):
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Install native Codex binaries.")
+    parser = argparse.ArgumentParser(description="Install native CLI binaries.")
     parser.add_argument(
         "--workflow-url",
         help=(
             "GitHub Actions workflow URL that produced the artifacts. Defaults to a "
             "known good run when omitted."
+        ),
+    )
+    parser.add_argument(
+        "--repo",
+        help=(
+            "GitHub repository in OWNER/REPO format. When omitted, infer from --workflow-url, "
+            "the current git checkout, or fall back to openai/codex."
         ),
     )
     parser.add_argument(
@@ -170,12 +178,13 @@ def main() -> int:
         workflow_url = DEFAULT_WORKFLOW_URL
 
     workflow_id = workflow_url.rstrip("/").split("/")[-1]
-    print(f"Downloading native artifacts from workflow {workflow_id}...")
+    repo = resolve_github_repo(args.repo, workflow_url, codex_cli_root)
+    print(f"Downloading native artifacts from {repo} workflow {workflow_id}...")
 
-    with _gha_group(f"Download native artifacts from workflow {workflow_id}"):
+    with _gha_group(f"Download native artifacts from {repo} workflow {workflow_id}"):
         with tempfile.TemporaryDirectory(prefix="codex-native-artifacts-") as artifacts_dir_str:
             artifacts_dir = Path(artifacts_dir_str)
-            _download_artifacts(workflow_id, artifacts_dir)
+            _download_artifacts(repo, workflow_id, artifacts_dir)
             install_binary_components(
                 artifacts_dir,
                 vendor_dir,
@@ -259,7 +268,57 @@ def fetch_rg(
     return [results[target] for target in targets]
 
 
-def _download_artifacts(workflow_id: str, dest_dir: Path) -> None:
+def resolve_github_repo(repo_arg: str | None, workflow_url: str, root: Path) -> str:
+    if repo_arg:
+        return repo_arg
+
+    workflow_repo = parse_repo_from_workflow_url(workflow_url)
+    if workflow_repo:
+        return workflow_repo
+
+    checkout_repo = parse_repo_from_git_checkout(root)
+    if checkout_repo:
+        return checkout_repo
+
+    return DEFAULT_GITHUB_REPO
+
+
+def parse_repo_from_workflow_url(workflow_url: str) -> str | None:
+    parsed = urlparse(workflow_url)
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) < 4:
+        return None
+    if parts[2] != "actions" or parts[3] != "runs":
+        return None
+    return f"{parts[0]}/{parts[1]}"
+
+
+def parse_repo_from_git_checkout(root: Path) -> str | None:
+    try:
+        remote_url = subprocess.check_output(
+            ["git", "remote", "get-url", "origin"],
+            cwd=root,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+    if remote_url.startswith("git@") and ":" in remote_url:
+        remote_path = remote_url.split(":", 1)[1]
+    else:
+        parsed = urlparse(remote_url)
+        remote_path = parsed.path.lstrip("/")
+
+    if remote_path.endswith(".git"):
+        remote_path = remote_path[:-4]
+    parts = [part for part in remote_path.split("/") if part]
+    if len(parts) < 2:
+        return None
+    return f"{parts[-2]}/{parts[-1]}"
+
+
+def _download_artifacts(repo: str, workflow_id: str, dest_dir: Path) -> None:
     cmd = [
         "gh",
         "run",
@@ -267,7 +326,7 @@ def _download_artifacts(workflow_id: str, dest_dir: Path) -> None:
         "--dir",
         str(dest_dir),
         "--repo",
-        "openai/codex",
+        repo,
         workflow_id,
     ]
     subprocess.check_call(cmd)
