@@ -45,6 +45,7 @@ WIDEX_PLATFORM_PACKAGES: dict[str, dict[str, str]] = {
         "npm_name": "@wellau/widex-darwin-arm64",
         "npm_tag": "darwin-arm64",
         "target_triple": "aarch64-apple-darwin",
+        "source_target_triple": "x86_64-apple-darwin",
         "os": "darwin",
         "cpu": "arm64",
     },
@@ -81,7 +82,7 @@ PACKAGE_NATIVE_COMPONENTS: dict[str, list[str]] = {
 }
 
 PACKAGE_TARGET_FILTERS: dict[str, str] = {
-    package_name: package_config["target_triple"]
+    package_name: package_config.get("source_target_triple", package_config["target_triple"])
     for package_name, package_config in WIDEX_PLATFORM_PACKAGES.items()
 }
 
@@ -163,6 +164,14 @@ def main() -> int:
         vendor_src = args.vendor_src.resolve() if args.vendor_src else None
         native_components = PACKAGE_NATIVE_COMPONENTS.get(package, [])
         target_filter = PACKAGE_TARGET_FILTERS.get(package)
+        vendor_target_triple = None
+
+        if package in WIDEX_PLATFORM_PACKAGES:
+            platform_package = WIDEX_PLATFORM_PACKAGES[package]
+            source_target = platform_package.get("source_target_triple")
+            target_triple = platform_package.get("target_triple")
+            if source_target and target_triple and source_target != target_triple:
+                vendor_target_triple = target_triple
 
         if native_components:
             if vendor_src is None:
@@ -179,6 +188,13 @@ def main() -> int:
                 native_components,
                 target_filter={target_filter} if target_filter else None,
             )
+
+            if vendor_target_triple and target_filter:
+                source_vendor_dir = staging_dir / "vendor" / target_filter
+                target_vendor_dir = staging_dir / "vendor" / vendor_target_triple
+                if target_vendor_dir.exists():
+                    shutil.rmtree(target_vendor_dir)
+                source_vendor_dir.rename(target_vendor_dir)
 
         if release_version:
             staging_dir_str = str(staging_dir)
