@@ -24,7 +24,7 @@ jobs:
   build-windows-binaries:
     name: Build Windows binaries - ${{ matrix.label }} - ${{ matrix.target }} - ${{ matrix.bundle }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 120
     permissions:
       contents: read
     defaults:
@@ -115,7 +115,7 @@ jobs:
       - build-windows-binaries
     name: Build - ${{ matrix.label }} - ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 120
     permissions:
       contents: read
       id-token: write
