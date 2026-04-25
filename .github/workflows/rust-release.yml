@@ -351,6 +351,7 @@ jobs:
     secrets: inherit
 
   argument-comment-lint-release-assets:
+    if: ${{ false }}
     name: argument-comment-lint release assets
     needs: tag-check
     uses: ./.github/workflows/rust-release-argument-comment-lint.yml
@@ -358,6 +359,7 @@ jobs:
       publish: true
 
   zsh-release-assets:
+    if: ${{ false }}
     name: zsh release assets
     needs: tag-check
     uses: ./.github/workflows/rust-release-zsh.yml
@@ -366,8 +368,6 @@ jobs:
     needs:
       - build
       - build-windows
-      - argument-comment-lint-release-assets
-      - zsh-release-assets
     name: release
     runs-on: ubuntu-latest
     permissions:
