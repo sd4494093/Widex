@@ -281,11 +281,6 @@ jobs:
           cp target/${{ matrix.target }}/release/codex "$dest/codex-${{ matrix.target }}"
           cp target/${{ matrix.target }}/release/codex-responses-api-proxy "$dest/codex-responses-api-proxy-${{ matrix.target }}"
 
-          if [[ "${{ matrix.target }}" == *linux* ]]; then
-            cp target/${{ matrix.target }}/release/codex.sigstore "$dest/codex-${{ matrix.target }}.sigstore"
-            cp target/${{ matrix.target }}/release/codex-responses-api-proxy.sigstore "$dest/codex-responses-api-proxy-${{ matrix.target }}.sigstore"
-          fi
-
           if [[ "${{ matrix.target }}" == *apple-darwin ]]; then
             cp target/${{ matrix.target }}/release/codex-${{ matrix.target }}.dmg "$dest/codex-${{ matrix.target }}.dmg"
           fi
