@@ -13,6 +13,7 @@ const __dirname = path.dirname(__filename);
 const require = createRequire(import.meta.url);
 
 const PLATFORM_PACKAGE_BY_TARGET = {
+  "x86_64-unknown-linux-gnu": "@wellau/widex-linux-x64",
   "x86_64-unknown-linux-musl": "@wellau/widex-linux-x64",
   "aarch64-unknown-linux-musl": "@wellau/widex-linux-arm64",
   "x86_64-apple-darwin": "@wellau/widex-darwin-x64",
@@ -23,16 +24,19 @@ const PLATFORM_PACKAGE_BY_TARGET = {
 
 const { platform, arch } = process;
 
-let targetTriple = null;
+let targetTriples = [];
 switch (platform) {
   case "linux":
   case "android":
     switch (arch) {
       case "x64":
-        targetTriple = "x86_64-unknown-linux-musl";
+        targetTriples = [
+          "x86_64-unknown-linux-gnu",
+          "x86_64-unknown-linux-musl",
+        ];
         break;
       case "arm64":
-        targetTriple = "aarch64-unknown-linux-musl";
+        targetTriples = ["aarch64-unknown-linux-musl"];
         break;
       default:
         break;
@@ -41,10 +45,10 @@ switch (platform) {
   case "darwin":
     switch (arch) {
       case "x64":
-        targetTriple = "x86_64-apple-darwin";
+        targetTriples = ["x86_64-apple-darwin"];
         break;
       case "arm64":
-        targetTriple = "aarch64-apple-darwin";
+        targetTriples = ["aarch64-apple-darwin"];
         break;
       default:
         break;
@@ -53,10 +57,10 @@ switch (platform) {
   case "win32":
     switch (arch) {
       case "x64":
-        targetTriple = "x86_64-pc-windows-msvc";
+        targetTriples = ["x86_64-pc-windows-msvc"];
         break;
       case "arm64":
-        targetTriple = "aarch64-pc-windows-msvc";
+        targetTriples = ["aarch64-pc-windows-msvc"];
         break;
       default:
         break;
@@ -66,30 +70,30 @@ switch (platform) {
     break;
 }
 
-if (!targetTriple) {
+if (targetTriples.length === 0) {
   throw new Error(`Unsupported platform: ${platform} (${arch})`);
 }
 
-const platformPackage = PLATFORM_PACKAGE_BY_TARGET[targetTriple];
+const platformPackage = PLATFORM_PACKAGE_BY_TARGET[targetTriples[0]];
 if (!platformPackage) {
-  throw new Error(`Unsupported target triple: ${targetTriple}`);
+  throw new Error(`Unsupported target triple: ${targetTriples[0]}`);
 }
 
 const codexBinaryName = process.platform === "win32" ? "codex.exe" : "codex";
 const localVendorRoot = path.join(__dirname, "..", "vendor");
-const localBinaryPath = path.join(
-  localVendorRoot,
-  targetTriple,
-  "codex",
-  codexBinaryName,
-);
+
+function resolveTargetTriple(vendorRoot) {
+  return targetTriples.find((targetTriple) =>
+    existsSync(path.join(vendorRoot, targetTriple, "codex", codexBinaryName)),
+  );
+}
 
 let vendorRoot;
 try {
   const packageJsonPath = require.resolve(`${platformPackage}/package.json`);
   vendorRoot = path.join(path.dirname(packageJsonPath), "vendor");
 } catch {
-  if (existsSync(localBinaryPath)) {
+  if (resolveTargetTriple(localVendorRoot)) {
     vendorRoot = localVendorRoot;
   } else {
     const packageManager = detectPackageManager();
@@ -114,7 +118,14 @@ if (!vendorRoot) {
   );
 }
 
-const archRoot = path.join(vendorRoot, targetTriple);
+const resolvedTargetTriple = resolveTargetTriple(vendorRoot);
+if (!resolvedTargetTriple) {
+  throw new Error(
+    `Missing compatible binary for ${platform} (${arch}) in ${vendorRoot}`,
+  );
+}
+
+const archRoot = path.join(vendorRoot, resolvedTargetTriple);
 const binaryPath = path.join(archRoot, "codex", codexBinaryName);
 
 // Use an asynchronous spawn instead of spawnSync so that Node is able to

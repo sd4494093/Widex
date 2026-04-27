@@ -5,6 +5,7 @@ import argparse
 from contextlib import contextmanager
 import json
 import os
+import re
 import shutil
 import subprocess
 import tarfile
@@ -148,6 +149,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--target",
+        dest="targets",
+        action="append",
+        choices=BINARY_TARGETS,
+        help=(
+            "Limit installation to the specified target triple."
+            " May be repeated. Defaults to all supported targets."
+        ),
+    )
+    parser.add_argument(
         "root",
         nargs="?",
         type=Path,
@@ -172,6 +183,7 @@ def main() -> int:
         "codex-command-runner",
         "rg",
     ]
+    targets = args.targets or list(BINARY_TARGETS)
 
     workflow_url = (args.workflow_url or DEFAULT_WORKFLOW_URL).strip()
     if not workflow_url:
@@ -184,17 +196,18 @@ def main() -> int:
     with _gha_group(f"Download native artifacts from {repo} workflow {workflow_id}"):
         with tempfile.TemporaryDirectory(prefix="codex-native-artifacts-") as artifacts_dir_str:
             artifacts_dir = Path(artifacts_dir_str)
-            _download_artifacts(repo, workflow_id, artifacts_dir)
+            _download_artifacts(repo, workflow_id, artifacts_dir, targets)
             install_binary_components(
                 artifacts_dir,
                 vendor_dir,
                 [BINARY_COMPONENTS[name] for name in components if name in BINARY_COMPONENTS],
+                targets,
             )
 
     if "rg" in components:
         with _gha_group("Fetch ripgrep binaries"):
             print("Fetching ripgrep binaries...")
-            fetch_rg(vendor_dir, DEFAULT_RG_TARGETS, manifest_path=RG_MANIFEST)
+            fetch_rg(vendor_dir, targets, manifest_path=RG_MANIFEST)
 
     print(f"Installed native dependencies into {vendor_dir}")
     return 0
@@ -318,7 +331,12 @@ def parse_repo_from_git_checkout(root: Path) -> str | None:
     return f"{parts[-2]}/{parts[-1]}"
 
 
-def _download_artifacts(repo: str, workflow_id: str, dest_dir: Path) -> None:
+def _download_artifacts(
+    repo: str,
+    workflow_id: str,
+    dest_dir: Path,
+    requested_targets: Sequence[str],
+) -> None:
     cmd = [
         "gh",
         "run",
@@ -329,19 +347,187 @@ def _download_artifacts(repo: str, workflow_id: str, dest_dir: Path) -> None:
         repo,
         workflow_id,
     ]
-    subprocess.check_call(cmd)
+    if shutil.which("gh") is not None:
+        result = subprocess.run(
+            cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return
+        stderr = result.stderr.strip()
+        stdout = result.stdout.strip()
+        message = stderr or stdout or f"exit code {result.returncode}"
+        print(f"gh artifact download failed, falling back to public mirror: {message}")
+    else:
+        print("gh not found, falling back to public mirror download.")
+
+    _download_artifacts_via_public_mirror(repo, workflow_id, dest_dir, requested_targets)
+
+
+def _download_artifacts_via_public_mirror(
+    repo: str,
+    workflow_id: str,
+    dest_dir: Path,
+    requested_targets: Sequence[str],
+) -> None:
+    artifacts_url = (
+        f"https://api.github.com/repos/{repo}/actions/runs/{workflow_id}/artifacts?per_page=100"
+    )
+    try:
+        payload = _curl_json(artifacts_url)
+        artifacts = payload.get("artifacts", [])
+    except subprocess.CalledProcessError as exc:
+        print(f"GitHub artifacts API failed, parsing run page instead: {exc}")
+        artifacts = _artifact_listing_from_run_page(repo, workflow_id)
+    if not artifacts:
+        artifacts = _artifact_listing_from_run_page(repo, workflow_id)
+    if not artifacts:
+        raise RuntimeError(f"No artifacts found for workflow {workflow_id} in repo {repo}.")
+
+    requested_target_set = set(requested_targets)
+    selected_artifacts = [
+        artifact
+        for artifact in artifacts
+        if artifact.get("id") and artifact.get("name") in requested_target_set
+    ]
+
+    missing_targets = sorted(
+        requested_target_set - {artifact.get("name") for artifact in selected_artifacts}
+    )
+    if missing_targets:
+        missing_list = ", ".join(missing_targets)
+        raise RuntimeError(f"Missing required artifacts in public mirror listing: {missing_list}")
+
+    max_workers = min(len(selected_artifacts), 4)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                _download_and_extract_artifact,
+                repo,
+                workflow_id,
+                int(artifact["id"]),
+                str(artifact["name"]),
+                dest_dir,
+            ): str(artifact["name"])
+            for artifact in selected_artifacts
+        }
+        for future in as_completed(futures):
+            artifact_name = futures[future]
+            future.result()
+            print(f"  downloaded artifact {artifact_name}")
+
+
+def _download_and_extract_artifact(
+    repo: str,
+    workflow_id: str,
+    artifact_id: int,
+    artifact_name: str,
+    dest_dir: Path,
+) -> None:
+    download_url = f"https://nightly.link/{repo}/actions/artifacts/{artifact_id}.zip"
+    cache_dir = Path(tempfile.gettempdir()) / "codex-artifact-cache" / repo.replace("/", "--") / workflow_id
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    archive_path = cache_dir / f"{artifact_name}.zip"
+    _curl_download(download_url, archive_path)
+
+    artifact_dest = dest_dir / artifact_name
+    if artifact_dest.exists():
+        shutil.rmtree(artifact_dest)
+    artifact_dest.mkdir(parents=True, exist_ok=True)
+
+    with zipfile.ZipFile(archive_path) as archive:
+        archive.extractall(artifact_dest)
+
+
+def _curl_json(url: str) -> dict:
+    stdout = _curl_text(url)
+    try:
+        return json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Failed to parse JSON from {url}.") from exc
+
+
+def _curl_text(url: str) -> str:
+    return subprocess.check_output(
+        [
+            "curl",
+            "--http1.1",
+            "--max-time",
+            "30",
+            "--retry",
+            "6",
+            "--retry-all-errors",
+            "--retry-delay",
+            "2",
+            "-fsSL",
+            url,
+        ],
+        text=True,
+    )
+
+
+def _artifact_listing_from_run_page(repo: str, workflow_id: str) -> list[dict[str, str | int]]:
+    run_page_url = f"https://github.com/{repo}/actions/runs/{workflow_id}"
+    html = _curl_text(run_page_url)
+    row_pattern = re.compile(
+        r'<tr role="row" data-artifact-id="(?P<id>\d+)">.*?'
+        r'<span class="text-bold color-fg-default" style="word-break: break-word;">\s*'
+        r'(?P<name>[^<]+?)\s*</span>',
+        re.S,
+    )
+    artifacts = [
+        {"id": int(match["id"]), "name": match["name"].strip()}
+        for match in row_pattern.finditer(html)
+    ]
+    if not artifacts:
+        raise RuntimeError(f"Failed to parse artifacts from workflow run page: {run_page_url}")
+    return artifacts
+
+
+def _curl_download(url: str, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.check_call(
+        [
+            "curl",
+            "--http1.1",
+            "--max-time",
+            "0",
+            "--retry",
+            "6",
+            "--retry-all-errors",
+            "--retry-delay",
+            "2",
+            "--continue-at",
+            "-",
+            "-fL",
+            "-o",
+            str(dest),
+            url,
+        ]
+    )
 
 
 def install_binary_components(
     artifacts_dir: Path,
     vendor_dir: Path,
     selected_components: Sequence[BinaryComponent],
+    requested_targets: Sequence[str],
 ) -> None:
     if not selected_components:
         return
 
+    requested_targets_set = set(requested_targets)
+
     for component in selected_components:
-        component_targets = list(component.targets or BINARY_TARGETS)
+        component_targets = [
+            target
+            for target in (component.targets or BINARY_TARGETS)
+            if target in requested_targets_set
+        ]
+        if not component_targets:
+            continue
 
         print(
             f"Installing {component.binary_basename} binaries for targets: "

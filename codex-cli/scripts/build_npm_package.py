@@ -23,7 +23,7 @@ WIDEX_PLATFORM_PACKAGES: dict[str, dict[str, str]] = {
     "widex-linux-x64": {
         "npm_name": "@wellau/widex-linux-x64",
         "npm_tag": "linux-x64",
-        "target_triple": "x86_64-unknown-linux-musl",
+        "target_triple": "x86_64-unknown-linux-gnu",
         "os": "linux",
         "cpu": "x64",
     },
