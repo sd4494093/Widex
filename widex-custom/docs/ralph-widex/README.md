@@ -115,7 +115,21 @@ TUI 内帮助页应统一理解为：
 - Ralph 正在运行却想退出：先 `/ralph-widex stop`
 - 需要看状态：用 `/ralph-widex status`
 
-## 7) 当前产品结论
+## 7) Overlay 维护原则
+
+Ralph 的 Widex 自定义层统一落在：
+
+- `widex-custom/features/ralph-widex/overlay/`
+- `widex-custom/features/ralph-widex/templates/`
+
+后续追 upstream 时：
+
+- 用户侧文案、TUI help、loop prompt 优先只改 overlay
+- `.ralph/` 初始化模板优先只改 templates
+- `codex-rs/ralph-widex` 只做共享 adapter / 执行引擎接线
+- 尽量不要再回到 `codex-rs/tui/src/chatwidget.rs` 直接改大段 Ralph 文案
+
+## 8) 当前产品结论
 
 `ralph-widex` 的用户侧定义已经固定：
 

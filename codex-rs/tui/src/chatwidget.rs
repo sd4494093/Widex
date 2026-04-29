@@ -222,6 +222,8 @@ use codex_protocol::request_user_input::RequestUserInputEvent;
 use codex_protocol::request_user_input::RequestUserInputQuestionOption;
 use codex_protocol::user_input::TextElement;
 use codex_protocol::user_input::UserInput;
+use codex_ralph_widex::CompletionMode as RalphOverlayCompletionMode;
+use codex_ralph_widex::widex_overlay;
 use codex_terminal_detection::Multiplexer;
 use codex_terminal_detection::TerminalInfo;
 use codex_terminal_detection::TerminalName;
@@ -1067,6 +1069,14 @@ impl RalphCompletionMode {
             "promise-tag" => Some(Self::PromiseTag),
             "regex" => Some(Self::Regex),
             _ => None,
+        }
+    }
+
+    fn as_overlay_mode(self) -> RalphOverlayCompletionMode {
+        match self {
+            Self::Contains => RalphOverlayCompletionMode::Contains,
+            Self::PromiseTag => RalphOverlayCompletionMode::PromiseTag,
+            Self::Regex => RalphOverlayCompletionMode::Regex,
         }
     }
 }
@@ -7471,25 +7481,14 @@ impl ChatWidget {
             .unwrap_or_else(|| vec![args.to_string()]);
 
         if argv.iter().any(|a| a == "-h" || a == "--help") {
-            self.add_info_message(
-                "Ralph-Widex (TUI)\n\n\
-Usage:\n\
-  /ralph-widex init [--overwrite]\n\
-  /ralph-widex start [--loops N] [--calls N] [--timeout-minutes N] [--skip-git-repo-check]\n\
-                    [--completion-phrase TEXT]... [--completion-mode MODE]\n\
-                    [--completion-regex PATTERN]...\n\
-  /ralph-widex stop\n\
-  /ralph-widex status"
-                    .to_string(),
-                None,
-            );
+            self.add_info_message(widex_overlay::tui_help_text().to_string(), None);
             return;
         }
 
         let Some((first, rest)) = argv.split_first() else {
             self.start_ralph_tui(RalphTuiConfig {
-                loops: 20,
-                completion_phrases: vec!["所有任务已完成".to_string()],
+                loops: widex_overlay::DEFAULT_TUI_LOOPS,
+                completion_phrases: vec![widex_overlay::DEFAULT_TUI_COMPLETION_PHRASE.to_string()],
                 completion_mode: RalphCompletionMode::Contains,
                 completion_regexes: Vec::new(),
                 max_calls_per_hour: None,
@@ -7536,7 +7535,8 @@ Usage:\n\
         }
 
         if cfg.completion_phrases.is_empty() {
-            cfg.completion_phrases.push("所有任务已完成".to_string());
+            cfg.completion_phrases
+                .push(widex_overlay::DEFAULT_TUI_COMPLETION_PHRASE.to_string());
         }
 
         let completion_regexes = if cfg.completion_mode == RalphCompletionMode::Regex {
@@ -7584,7 +7584,7 @@ Usage:\n\
 
         // Best-effort: ensure expected files exist so the prompt can reliably reference them.
         let _ = std::fs::create_dir_all(ralph_dir.join("logs"));
-        let _ = ensure_ralph_fix_progress_file(&ralph_dir);
+        let _ = widex_overlay::ensure_fix_progress_file(&ralph_dir);
         // Clear STOP so a previous run doesn't immediately stop the loop.
         let _ = std::fs::remove_file(ralph_dir.join("STOP"));
 
@@ -7790,60 +7790,12 @@ Usage:\n\
                 let wait_secs = (next_hour - now).num_seconds().max(1) as u64;
                 wait_for_reset = Some((wait_secs, max));
             } else {
-                let max = if state.max_loops == 0 {
-                    "infinite".to_string()
-                } else {
-                    state.max_loops.to_string()
-                };
-                let completion_instruction = match state.completion_mode {
-                    RalphCompletionMode::Contains => {
-                        if state.completion_phrases.is_empty() {
-                            String::new()
-                        } else {
-                            let phrases = state.completion_phrases.join(" | ");
-                            format!(
-                                "If all tasks are complete, print one of these completion phrases in your FINAL assistant message (exact text):\n{phrases}\n"
-                            )
-                        }
-                    }
-                    RalphCompletionMode::PromiseTag => {
-                        if state.completion_phrases.is_empty() {
-                            String::new()
-                        } else {
-                            let tags = state
-                                .completion_phrases
-                                .iter()
-                                .map(|p| {
-                                    let p = p.trim();
-                                    format!("<promise>{p}</promise>")
-                                })
-                                .collect::<Vec<_>>()
-                                .join(" | ");
-                            format!(
-                                "If all tasks are complete, print ONE of these completion promise tags in your FINAL assistant message (exact text):\n{tags}\n"
-                            )
-                        }
-                    }
-                    RalphCompletionMode::Regex => {
-                        if state.completion_regex_patterns.is_empty() {
-                            String::new()
-                        } else {
-                            let patterns = state.completion_regex_patterns.join(" | ");
-                            format!(
-                                "If all tasks are complete, ensure your FINAL assistant message matches one of these regex patterns:\n{patterns}\n"
-                            )
-                        }
-                    }
-                };
-                let text = format!(
-                    "Ralph-Widex loop {}/{}.\n\n\
-Read and follow:\n\
-- .ralph/PROMPT.md\n\
-- .ralph/@fix_plan.md\n\
-- .ralph/@fix_progress.md\n\n\
-After you make progress, append a short update to `.ralph/@fix_progress.md` under the `## Notes (editable)` section (above `<!-- RALPH_WIDEX_AUTOLOG_START -->`). Never edit the auto log section.\n\
-{completion_instruction}",
-                    state.current_loop, max
+                let text = widex_overlay::render_tui_loop_prompt(
+                    state.current_loop,
+                    state.max_loops,
+                    state.completion_mode.as_overlay_mode(),
+                    &state.completion_phrases,
+                    &state.completion_regex_patterns,
                 );
 
                 state.in_flight = true;
@@ -7978,60 +7930,12 @@ After you make progress, append a short update to `.ralph/@fix_progress.md` unde
             } else {
                 state.current_loop = state.current_loop.saturating_add(1);
 
-                let max = if state.max_loops == 0 {
-                    "infinite".to_string()
-                } else {
-                    state.max_loops.to_string()
-                };
-                let completion_instruction = match state.completion_mode {
-                    RalphCompletionMode::Contains => {
-                        if state.completion_phrases.is_empty() {
-                            String::new()
-                        } else {
-                            let phrases = state.completion_phrases.join(" | ");
-                            format!(
-                                "If all tasks are complete, print one of these completion phrases in your FINAL assistant message (exact text):\n{phrases}\n"
-                            )
-                        }
-                    }
-                    RalphCompletionMode::PromiseTag => {
-                        if state.completion_phrases.is_empty() {
-                            String::new()
-                        } else {
-                            let tags = state
-                                .completion_phrases
-                                .iter()
-                                .map(|p| {
-                                    let p = p.trim();
-                                    format!("<promise>{p}</promise>")
-                                })
-                                .collect::<Vec<_>>()
-                                .join(" | ");
-                            format!(
-                                "If all tasks are complete, print ONE of these completion promise tags in your FINAL assistant message (exact text):\n{tags}\n"
-                            )
-                        }
-                    }
-                    RalphCompletionMode::Regex => {
-                        if state.completion_regex_patterns.is_empty() {
-                            String::new()
-                        } else {
-                            let patterns = state.completion_regex_patterns.join(" | ");
-                            format!(
-                                "If all tasks are complete, ensure your FINAL assistant message matches one of these regex patterns:\n{patterns}\n"
-                            )
-                        }
-                    }
-                };
-                next_prompt = Some(format!(
-                    "Ralph-Widex loop {}/{}.\n\n\
-Read and follow:\n\
-- .ralph/PROMPT.md\n\
-- .ralph/@fix_plan.md\n\
-- .ralph/@fix_progress.md\n\n\
-After you make progress, append a short update to `.ralph/@fix_progress.md` under the `## Notes (editable)` section (above `<!-- RALPH_WIDEX_AUTOLOG_START -->`). Never edit the auto log section.\n\
-{completion_instruction}",
-                    state.current_loop, max
+                next_prompt = Some(widex_overlay::render_tui_loop_prompt(
+                    state.current_loop,
+                    state.max_loops,
+                    state.completion_mode.as_overlay_mode(),
+                    &state.completion_phrases,
+                    &state.completion_regex_patterns,
                 ));
 
                 state.in_flight = true;
@@ -11762,8 +11666,8 @@ fn extract_first_bold(s: &str) -> Option<String> {
 }
 
 const RALPH_FIX_PROGRESS_AUTOLOG_JSONL: &str = ".fix_progress.autolog.jsonl";
-const RALPH_FIX_PROGRESS_AUTOLOG_START: &str = "<!-- RALPH_WIDEX_AUTOLOG_START -->";
-const RALPH_FIX_PROGRESS_AUTOLOG_END: &str = "<!-- RALPH_WIDEX_AUTOLOG_END -->";
+const RALPH_FIX_PROGRESS_AUTOLOG_START: &str = widex_overlay::FIX_PROGRESS_AUTOLOG_START;
+const RALPH_FIX_PROGRESS_AUTOLOG_END: &str = widex_overlay::FIX_PROGRESS_AUTOLOG_END;
 const RALPH_FIX_PROGRESS_AUTOLOG_MAX_EVENTS: usize = 200;
 const RALPH_FIX_PROGRESS_REGENERATE_MAX_ATTEMPTS: usize = 10;
 
@@ -11821,42 +11725,6 @@ impl RalphFixProgressEvent {
     }
 }
 
-fn ensure_ralph_fix_progress_file(ralph_dir: &Path) -> std::io::Result<()> {
-    let md_path = ralph_dir.join("@fix_progress.md");
-    if md_path.exists() {
-        // Treat an empty/truncated file as missing so we can recover.
-        if let Ok(existing) = std::fs::read_to_string(&md_path)
-            && !existing.trim().is_empty()
-        {
-            return Ok(());
-        }
-    }
-
-    let content = "\
-# Ralph Fix Progress
-
-This file has two sections:
-- Notes (editable): the agent can append short updates after each loop.
-- Auto log: written by the Ralph supervisor at loop start/end (do not edit).
-
-## Notes (editable)
-
-Append-only suggested format:
-
-- Loop N (YYYY-MM-DD HH:MM:SS):
-  - What I did:
-  - Result:
-  - Next:
-
-<!-- RALPH_WIDEX_AUTOLOG_START -->
-
-## Auto log (managed by ralph-widex; do not edit)
-
-<!-- RALPH_WIDEX_AUTOLOG_END -->
-";
-    std::fs::write(md_path, content)
-}
-
 fn write_ralph_fix_progress_event(
     ralph_dir: &Path,
     event: RalphFixProgressEvent,
@@ -11878,14 +11746,14 @@ fn regenerate_ralph_fix_progress_md(ralph_dir: &Path) -> std::io::Result<()> {
         let mut original = match std::fs::read_to_string(&md_path) {
             Ok(v) => v,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                ensure_ralph_fix_progress_file(ralph_dir)?;
+                widex_overlay::ensure_fix_progress_file(ralph_dir)?;
                 std::fs::read_to_string(&md_path)?
             }
             Err(err) => return Err(err),
         };
 
         if original.trim().is_empty() {
-            ensure_ralph_fix_progress_file(ralph_dir)?;
+            widex_overlay::ensure_fix_progress_file(ralph_dir)?;
             original = std::fs::read_to_string(&md_path)?;
         }
         let mut contents = original.clone();
@@ -12169,9 +12037,9 @@ fn parse_ralph_tui_args(args: &[String]) -> RalphTuiConfig {
         i += 1;
     }
 
-    let loops = loops.unwrap_or(20);
+    let loops = loops.unwrap_or(widex_overlay::DEFAULT_TUI_LOOPS);
     if completion_phrases.is_empty() {
-        completion_phrases.push("所有任务已完成".to_string());
+        completion_phrases.push(widex_overlay::DEFAULT_TUI_COMPLETION_PHRASE.to_string());
     }
     RalphTuiConfig {
         loops,

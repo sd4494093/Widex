@@ -8,6 +8,7 @@
 - 第二优先级：保持 `ralph-widex` 主线能力稳定，包括：
   - TUI `/ralph-widex init/start/stop/status`
   - `.ralph/` 状态/进度/恢复链路
+  - `widex-custom/features/ralph-widex/overlay/` 作为 Widex 自定义抽象层，后续优先改 overlay，不再优先改大块 upstream Rust 文案/模板逻辑
 - 多 LLM 集成（例如 Gemini / Grok / 其它非上游默认 provider）目前**不再作为 Widex 主产品线持续演进目标**。
 - 当前 `widex` 主线已经按这个原则继续收口：
   - 仓库内文档继续保留
@@ -39,6 +40,25 @@
 如果将来你们明确想把 fork 的 `main` 也维护成上游镜像，再单独执行 `push origin main` 即可；但这不应作为默认流程。
 
 目标：上游更新频繁时，用最少命令把**本地** `main` 同步到 upstream 稳定 release tag，再把 `main` 合入 `widex`，最后只推 `origin/widex`。
+
+## Ralph overlay 策略
+
+后续 `ralph-widex` 跟 upstream 时，按下面原则做：
+
+- 不要再把 Widex 自定义的 Ralph 文案、loop prompt、初始化模板要求直接散落修改在 `codex-rs/tui/src/chatwidget.rs`
+- Widex 自定义层统一放在：
+  - `widex-custom/features/ralph-widex/overlay/`
+  - `widex-custom/features/ralph-widex/templates/`
+- `codex-rs/ralph-widex` 只作为共享执行引擎 / adapter，负责消费 overlay 资产
+- TUI 与 CLI 都尽量走同一个 Ralph overlay API，避免双写文案、双写模板、双写默认值
+
+后续追 upstream 时，Ralph 相关改动优先顺序应是：
+
+1. 先看 upstream 是否动了 Ralph 命令接线 / 状态机
+2. 若只是 Widex 产品口径变化，只改 `widex-custom/features/ralph-widex/overlay/`
+3. 若必须改 Rust，只改 `codex-rs/ralph-widex` 的共享 overlay adapter，尽量不再回到 `chatwidget.rs` 大段硬编码
+
+这条策略的目标是：把 Ralph 的冲突面从“大文件人工合并”降到“小 adapter + overlay 资产同步”。
 
 ## 0) 前置检查
 

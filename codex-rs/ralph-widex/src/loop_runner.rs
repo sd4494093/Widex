@@ -12,6 +12,7 @@ use crate::response_analysis::Analysis;
 use crate::response_analysis::AnalysisFile;
 use crate::response_analysis::ExitSignalsFile;
 use crate::response_analysis::analyze_last_message;
+use crate::widex_overlay;
 use anyhow::Context;
 use chrono::Datelike;
 use chrono::Local;
@@ -44,10 +45,6 @@ const TEMPLATE_FIX_PLAN: &str = include_str!(concat!(
 const TEMPLATE_AGENT: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../widex-custom/features/ralph-widex/templates/AGENT.md"
-));
-const TEMPLATE_FIX_PROGRESS: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../widex-custom/features/ralph-widex/templates/fix_progress.md"
 ));
 const TEMPLATE_SPECS_GITKEEP: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -140,7 +137,11 @@ pub(crate) async fn init_in_place(cwd: &Path, no_overwrite: bool) -> anyhow::Res
 
     tokio::fs::write(&prompt_path, TEMPLATE_PROMPT).await?;
     tokio::fs::write(ralph_dir.join("@fix_plan.md"), TEMPLATE_FIX_PLAN).await?;
-    tokio::fs::write(ralph_dir.join("@fix_progress.md"), TEMPLATE_FIX_PROGRESS).await?;
+    tokio::fs::write(
+        ralph_dir.join("@fix_progress.md"),
+        widex_overlay::fix_progress_template(),
+    )
+    .await?;
     tokio::fs::write(ralph_dir.join("@AGENT.md"), TEMPLATE_AGENT).await?;
 
     let specs_dir = ralph_dir.join("specs");
@@ -157,8 +158,8 @@ pub(crate) async fn init_in_place(cwd: &Path, no_overwrite: bool) -> anyhow::Res
 }
 
 const FIX_PROGRESS_AUTOLOG_JSONL: &str = ".fix_progress.autolog.jsonl";
-const FIX_PROGRESS_AUTOLOG_START: &str = "<!-- RALPH_WIDEX_AUTOLOG_START -->";
-const FIX_PROGRESS_AUTOLOG_END: &str = "<!-- RALPH_WIDEX_AUTOLOG_END -->";
+const FIX_PROGRESS_AUTOLOG_START: &str = widex_overlay::FIX_PROGRESS_AUTOLOG_START;
+const FIX_PROGRESS_AUTOLOG_END: &str = widex_overlay::FIX_PROGRESS_AUTOLOG_END;
 const FIX_PROGRESS_AUTOLOG_MAX_EVENTS: usize = 200;
 const FIX_PROGRESS_REGENERATE_MAX_ATTEMPTS: usize = 10;
 
@@ -240,7 +241,7 @@ async fn regenerate_fix_progress_md(paths: &RalphPaths) -> anyhow::Result<()> {
             .await
             .unwrap_or_else(|_| String::new());
         let mut contents = if original.trim().is_empty() {
-            TEMPLATE_FIX_PROGRESS.to_string()
+            widex_overlay::fix_progress_template().to_string()
         } else {
             original.clone()
         };
@@ -1464,7 +1465,7 @@ async fn ensure_fix_progress_file(paths: &RalphPaths) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    tokio::fs::write(&path, TEMPLATE_FIX_PROGRESS).await?;
+    tokio::fs::write(&path, widex_overlay::fix_progress_template()).await?;
     Ok(())
 }
 
@@ -2190,7 +2191,7 @@ mod tests {
             .await
             .expect("write fix_progress");
 
-        let events = vec![FixProgressEvent {
+        let events = [FixProgressEvent {
             ts: "2026-01-01 00:00:00".to_string(),
             loop_number: 1,
             kind: FixProgressEventKind::Start,

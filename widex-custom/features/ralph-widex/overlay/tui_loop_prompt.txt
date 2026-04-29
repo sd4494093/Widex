@@ -1,0 +1,9 @@
+Ralph-Widex loop {current_loop}/{max_loops}.
+
+Read and follow:
+- .ralph/PROMPT.md
+- .ralph/@fix_plan.md
+- .ralph/@fix_progress.md
+
+After you make progress, append a short update to `.ralph/@fix_progress.md` under the `## Notes (editable)` section (above `<!-- RALPH_WIDEX_AUTOLOG_START -->`). Never edit the auto log section.
+{completion_instruction}

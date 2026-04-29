@@ -263,6 +263,7 @@ mod mcp_startup;
 mod permissions;
 mod plan_mode;
 mod popups_and_settings;
+mod ralph_widex;
 mod review_mode;
 mod slash_commands;
 mod status_and_layout;

@@ -1,0 +1,9 @@
+Ralph-Widex (TUI)
+
+Usage:
+  /ralph-widex init [--overwrite]
+  /ralph-widex start [--loops N] [--calls N] [--timeout-minutes N] [--skip-git-repo-check]
+                    [--completion-phrase TEXT]... [--completion-mode MODE]
+                    [--completion-regex PATTERN]...
+  /ralph-widex stop
+  /ralph-widex status

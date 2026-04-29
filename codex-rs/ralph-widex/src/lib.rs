@@ -13,6 +13,7 @@ mod monitor;
 mod ralph_status;
 mod ralph_storage;
 mod response_analysis;
+pub mod widex_overlay;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 #[clap(rename_all = "kebab-case")]
