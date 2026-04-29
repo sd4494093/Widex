@@ -74,7 +74,7 @@ impl<'a> ChatRequestBuilder<'a> {
                                 text.push_str(t);
                                 items.push(json!({"type":"text","text": t}));
                             }
-                            ContentItem::InputImage { image_url } => {
+                            ContentItem::InputImage { image_url, .. } => {
                                 saw_image = true;
                                 image_urls.push(image_url);
                                 items.push(
@@ -293,6 +293,7 @@ mod tests {
                 text: "hi".to_string(),
             }],
             end_turn: None,
+            phase: None,
         }];
         let req = ChatRequestBuilder::new("gpt-test", "inst", &prompt_input, &[])
             .conversation_id(Some("conv-1".into()))
@@ -320,10 +321,12 @@ mod tests {
                     text: "read these".to_string(),
                 }],
                 end_turn: None,
+                phase: None,
             },
             ResponseItem::FunctionCall {
                 id: None,
                 name: "read_file".to_string(),
+                namespace: None,
                 arguments: r#"{"path":"a.txt"}"#.to_string(),
                 call_id: "call-a".to_string(),
                 thought_signature: None,
@@ -331,6 +334,7 @@ mod tests {
             ResponseItem::FunctionCall {
                 id: None,
                 name: "read_file".to_string(),
+                namespace: None,
                 arguments: r#"{"path":"b.txt"}"#.to_string(),
                 call_id: "call-b".to_string(),
                 thought_signature: None,
@@ -338,30 +342,22 @@ mod tests {
             ResponseItem::FunctionCall {
                 id: None,
                 name: "read_file".to_string(),
+                namespace: None,
                 arguments: r#"{"path":"c.txt"}"#.to_string(),
                 call_id: "call-c".to_string(),
                 thought_signature: None,
             },
             ResponseItem::FunctionCallOutput {
                 call_id: "call-a".to_string(),
-                output: FunctionCallOutputPayload {
-                    content: "A".to_string(),
-                    ..Default::default()
-                },
+                output: FunctionCallOutputPayload::from_text("A".to_string()),
             },
             ResponseItem::FunctionCallOutput {
                 call_id: "call-b".to_string(),
-                output: FunctionCallOutputPayload {
-                    content: "B".to_string(),
-                    ..Default::default()
-                },
+                output: FunctionCallOutputPayload::from_text("B".to_string()),
             },
             ResponseItem::FunctionCallOutput {
                 call_id: "call-c".to_string(),
-                output: FunctionCallOutputPayload {
-                    content: "C".to_string(),
-                    ..Default::default()
-                },
+                output: FunctionCallOutputPayload::from_text("C".to_string()),
             },
         ];
 
@@ -408,6 +404,7 @@ mod tests {
                 text: "hi".to_string(),
             }],
             end_turn: None,
+            phase: None,
         }];
         let tools = vec![json!({
             "type": "function",
@@ -445,9 +442,11 @@ mod tests {
                 },
                 ContentItem::InputImage {
                     image_url: "https://example.com/image.png".to_string(),
+                    detail: None,
                 },
             ],
             end_turn: None,
+            phase: None,
         }];
 
         let req = ChatRequestBuilder::new("grok-4.1", "inst", &prompt_input, &[])
@@ -477,9 +476,11 @@ mod tests {
                 },
                 ContentItem::InputImage {
                     image_url: "https://example.com/image.png".to_string(),
+                    detail: None,
                 },
             ],
             end_turn: None,
+            phase: None,
         }];
 
         let req = ChatRequestBuilder::new("gpt-test", "inst", &prompt_input, &[])

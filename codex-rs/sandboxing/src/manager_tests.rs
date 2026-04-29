@@ -5,9 +5,9 @@ use super::SandboxType;
 use super::SandboxablePreference;
 use super::get_platform_sandbox;
 use codex_protocol::config_types::WindowsSandboxLevel;
+use codex_protocol::models::AdditionalPermissionProfile as PermissionProfile;
 use codex_protocol::models::FileSystemPermissions;
 use codex_protocol::models::NetworkPermissions;
-use codex_protocol::models::PermissionProfile;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSandboxEntry;
@@ -130,10 +130,10 @@ fn transform_additional_permissions_enable_network_for_external_sandbox() {
                     network: Some(NetworkPermissions {
                         enabled: Some(true),
                     }),
-                    file_system: Some(FileSystemPermissions {
-                        read: Some(vec![path]),
-                        write: Some(Vec::new()),
-                    }),
+                    file_system: Some(FileSystemPermissions::from_read_write_roots(
+                        Some(vec![path]),
+                        Some(Vec::new()),
+                    )),
                 }),
             },
             policy: &SandboxPolicy::ExternalSandbox {
@@ -183,10 +183,10 @@ fn transform_additional_permissions_preserves_denied_entries() {
                 cwd: cwd.clone(),
                 env: HashMap::new(),
                 additional_permissions: Some(PermissionProfile {
-                    file_system: Some(FileSystemPermissions {
-                        read: None,
-                        write: Some(vec![allowed_path.clone()]),
-                    }),
+                    file_system: Some(FileSystemPermissions::from_read_write_roots(
+                        /*read*/ None,
+                        Some(vec![allowed_path.clone()]),
+                    )),
                     ..Default::default()
                 }),
             },

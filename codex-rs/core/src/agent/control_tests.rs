@@ -5,7 +5,8 @@ use crate::agent::agent_status_from_event;
 use crate::config::AgentRoleConfig;
 use crate::config::Config;
 use crate::config::ConfigBuilder;
-use crate::contextual_user_message::SUBAGENT_NOTIFICATION_OPEN_TAG;
+use crate::context::ContextualUserFragment;
+use crate::context::SubagentNotification;
 use assert_matches::assert_matches;
 use codex_features::Feature;
 use codex_login::CodexAuth;
@@ -95,9 +96,7 @@ impl AgentControlHarness {
             CodexAuth::from_api_key("dummy"),
             config.model_provider.clone(),
             config.codex_home.to_path_buf(),
-            std::sync::Arc::new(codex_exec_server::EnvironmentManager::new(
-                /*exec_server_url*/ None,
-            )),
+            std::sync::Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         );
         let control = manager.agent_control();
         Self {
@@ -128,7 +127,7 @@ fn has_subagent_notification(history_items: &[ResponseItem]) -> bool {
         }
         content.iter().any(|content_item| match content_item {
             ContentItem::InputText { text } | ContentItem::OutputText { text } => {
-                text.contains(SUBAGENT_NOTIFICATION_OPEN_TAG)
+                SubagentNotification::matches_text(text)
             }
             ContentItem::InputImage { .. } => false,
         })
@@ -280,6 +279,7 @@ async fn on_event_updates_status_from_task_complete() {
         last_agent_message: Some("done".to_string()),
         completed_at: None,
         duration_ms: None,
+        time_to_first_token_ms: None,
     }));
     let expected = AgentStatus::Completed(Some("done".to_string()));
     assert_eq!(status, Some(expected));
@@ -430,6 +430,7 @@ async fn send_input_submits_user_message() {
     let expected = (
         thread_id,
         Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "hello from tests".to_string(),
                 text_elements: Vec::new(),
@@ -559,6 +560,7 @@ async fn spawn_agent_creates_thread_and_sends_prompt() {
     let expected = (
         thread_id,
         Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "spawned".to_string(),
                 text_elements: Vec::new(),
@@ -638,6 +640,7 @@ async fn spawn_agent_can_fork_parent_thread_history_with_sanitized_items() {
             SpawnAgentOptions {
                 fork_parent_spawn_call_id: Some(parent_spawn_call_id.clone()),
                 fork_mode: Some(SpawnAgentForkMode::FullHistory),
+                ..Default::default()
             },
         )
         .await
@@ -672,6 +675,7 @@ async fn spawn_agent_can_fork_parent_thread_history_with_sanitized_items() {
     let expected = (
         child_thread_id,
         Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "child task".to_string(),
                 text_elements: Vec::new(),
@@ -731,6 +735,7 @@ async fn spawn_agent_fork_flushes_parent_rollout_before_loading_history() {
             SpawnAgentOptions {
                 fork_parent_spawn_call_id: Some(parent_spawn_call_id.clone()),
                 fork_mode: Some(SpawnAgentForkMode::FullHistory),
+                ..Default::default()
             },
         )
         .await
@@ -840,6 +845,7 @@ async fn spawn_agent_fork_last_n_turns_keeps_only_recent_turns() {
             SpawnAgentOptions {
                 fork_parent_spawn_call_id: Some(parent_spawn_call_id.clone()),
                 fork_mode: Some(SpawnAgentForkMode::LastNTurns(2)),
+                ..Default::default()
             },
         )
         .await
@@ -893,9 +899,7 @@ async fn spawn_agent_respects_max_threads_limit() {
         CodexAuth::from_api_key("dummy"),
         config.model_provider.clone(),
         config.codex_home.to_path_buf(),
-        std::sync::Arc::new(codex_exec_server::EnvironmentManager::new(
-            /*exec_server_url*/ None,
-        )),
+        std::sync::Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
     );
     let control = manager.agent_control();
 
@@ -947,9 +951,7 @@ async fn spawn_agent_releases_slot_after_shutdown() {
         CodexAuth::from_api_key("dummy"),
         config.model_provider.clone(),
         config.codex_home.to_path_buf(),
-        std::sync::Arc::new(codex_exec_server::EnvironmentManager::new(
-            /*exec_server_url*/ None,
-        )),
+        std::sync::Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
     );
     let control = manager.agent_control();
 
@@ -992,9 +994,7 @@ async fn spawn_agent_limit_shared_across_clones() {
         CodexAuth::from_api_key("dummy"),
         config.model_provider.clone(),
         config.codex_home.to_path_buf(),
-        std::sync::Arc::new(codex_exec_server::EnvironmentManager::new(
-            /*exec_server_url*/ None,
-        )),
+        std::sync::Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
     );
     let control = manager.agent_control();
     let cloned = control.clone();
@@ -1039,9 +1039,7 @@ async fn resume_agent_respects_max_threads_limit() {
         CodexAuth::from_api_key("dummy"),
         config.model_provider.clone(),
         config.codex_home.to_path_buf(),
-        std::sync::Arc::new(codex_exec_server::EnvironmentManager::new(
-            /*exec_server_url*/ None,
-        )),
+        std::sync::Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
     );
     let control = manager.agent_control();
 
@@ -1097,9 +1095,7 @@ async fn resume_agent_releases_slot_after_resume_failure() {
         CodexAuth::from_api_key("dummy"),
         config.model_provider.clone(),
         config.codex_home.to_path_buf(),
-        std::sync::Arc::new(codex_exec_server::EnvironmentManager::new(
-            /*exec_server_url*/ None,
-        )),
+        std::sync::Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
     );
     let control = manager.agent_control();
 
@@ -1212,6 +1208,7 @@ async fn multi_agent_v2_completion_ignores_dead_direct_parent() {
                 last_agent_message: Some("done".to_string()),
                 completed_at: None,
                 duration_ms: None,
+                time_to_first_token_ms: None,
             }),
         )
         .await;
@@ -1298,6 +1295,7 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
                 last_agent_message: Some("done".to_string()),
                 completed_at: None,
                 duration_ms: None,
+                time_to_first_token_ms: None,
             }),
         )
         .await;
@@ -1494,9 +1492,7 @@ async fn resume_thread_subagent_restores_stored_nickname_and_role() {
         CodexAuth::from_api_key("dummy"),
         config.model_provider.clone(),
         config.codex_home.to_path_buf(),
-        std::sync::Arc::new(codex_exec_server::EnvironmentManager::new(
-            /*exec_server_url*/ None,
-        )),
+        std::sync::Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
     );
     let control = manager.agent_control();
     let harness = AgentControlHarness {

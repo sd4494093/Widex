@@ -8,6 +8,7 @@ use crate::command_canonicalization::canonicalize_command_for_approval;
 use crate::exec::ExecCapturePolicy;
 use crate::exec::ExecExpiration;
 use crate::guardian::GuardianApprovalRequest;
+use crate::guardian::GuardianNetworkAccessTrigger;
 use crate::guardian::review_approval_request;
 use crate::sandboxing::ExecOptions;
 use crate::sandboxing::ExecServerEnvConfig;
@@ -21,6 +22,7 @@ use crate::tools::runtimes::shell::zsh_fork_backend;
 use crate::tools::sandboxing::Approvable;
 use crate::tools::sandboxing::ApprovalCtx;
 use crate::tools::sandboxing::ExecApprovalRequirement;
+use crate::tools::sandboxing::PermissionRequestPayload;
 use crate::tools::sandboxing::SandboxAttempt;
 use crate::tools::sandboxing::SandboxOverride;
 use crate::tools::sandboxing::Sandboxable;
@@ -36,7 +38,7 @@ use crate::unified_exec::UnifiedExecProcessManager;
 use codex_network_proxy::NetworkProxy;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::SandboxErr;
-use codex_protocol::models::PermissionProfile;
+use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::protocol::ReviewDecision;
 use codex_sandboxing::SandboxablePreference;
 use codex_shell_command::powershell::prefix_powershell_script_with_utf8;
@@ -50,6 +52,7 @@ use std::collections::HashMap;
 #[derive(Clone, Debug)]
 pub struct UnifiedExecRequest {
     pub command: Vec<String>,
+    pub hook_command: String,
     pub process_id: i32,
     pub cwd: AbsolutePathBuf,
     pub env: HashMap<String, String>,
@@ -58,7 +61,7 @@ pub struct UnifiedExecRequest {
     pub network: Option<NetworkProxy>,
     pub tty: bool,
     pub sandbox_permissions: SandboxPermissions,
-    pub additional_permissions: Option<PermissionProfile>,
+    pub additional_permissions: Option<AdditionalPermissionProfile>,
     #[cfg(unix)]
     pub additional_permissions_preapproved: bool,
     pub justification: Option<String>,
@@ -73,7 +76,7 @@ pub struct UnifiedExecApprovalKey {
     pub cwd: AbsolutePathBuf,
     pub tty: bool,
     pub sandbox_permissions: SandboxPermissions,
-    pub additional_permissions: Option<PermissionProfile>,
+    pub additional_permissions: Option<AdditionalPermissionProfile>,
 }
 
 /// Runtime adapter that keeps policy and sandbox orchestration on the
@@ -179,6 +182,16 @@ impl Approvable<UnifiedExecRequest> for UnifiedExecRuntime<'_> {
         Some(req.exec_approval_requirement.clone())
     }
 
+    fn permission_request_payload(
+        &self,
+        req: &UnifiedExecRequest,
+    ) -> Option<PermissionRequestPayload> {
+        Some(PermissionRequestPayload::bash(
+            req.hook_command.clone(),
+            req.justification.clone(),
+        ))
+    }
+
     fn sandbox_mode_for_first_attempt(&self, req: &UnifiedExecRequest) -> SandboxOverride {
         sandbox_override_for_first_attempt(req.sandbox_permissions, &req.exec_approval_requirement)
     }
@@ -188,12 +201,23 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecProcess> for UnifiedExecRunt
     fn network_approval_spec(
         &self,
         req: &UnifiedExecRequest,
-        _ctx: &ToolCtx,
+        ctx: &ToolCtx,
     ) -> Option<NetworkApprovalSpec> {
         req.network.as_ref()?;
         Some(NetworkApprovalSpec {
             network: req.network.clone(),
             mode: NetworkApprovalMode::Deferred,
+            trigger: GuardianNetworkAccessTrigger {
+                call_id: ctx.call_id.clone(),
+                tool_name: ctx.tool_name.clone(),
+                command: req.command.clone(),
+                cwd: req.cwd.clone(),
+                sandbox_permissions: req.sandbox_permissions,
+                additional_permissions: req.additional_permissions.clone(),
+                justification: req.justification.clone(),
+                tty: Some(req.tty),
+            },
+            command: req.hook_command.clone(),
         })
     }
 

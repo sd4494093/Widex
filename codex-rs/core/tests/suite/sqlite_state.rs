@@ -1,7 +1,5 @@
 use anyhow::Result;
-use codex_config::types::AppToolApproval;
 use codex_config::types::McpServerConfig;
-use codex_config::types::McpServerToolConfig;
 use codex_config::types::McpServerTransportConfig;
 use codex_features::Feature;
 use codex_protocol::ThreadId;
@@ -37,20 +35,6 @@ use std::fs;
 use tokio::time::Duration;
 use tracing_subscriber::prelude::*;
 use uuid::Uuid;
-
-fn approve_mcp_tools(tool_names: &[&str]) -> HashMap<String, McpServerToolConfig> {
-    tool_names
-        .iter()
-        .map(|tool_name| {
-            (
-                (*tool_name).to_string(),
-                McpServerToolConfig {
-                    approval_mode: Some(AppToolApproval::Approve),
-                },
-            )
-        })
-        .collect()
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn new_thread_is_recorded_in_state_db() -> Result<()> {
@@ -119,6 +103,7 @@ async fn backfill_scans_existing_rollouts() -> Result<()> {
 
     let dynamic_tools = vec![
         DynamicToolSpec {
+            namespace: Some("codex_app".to_string()),
             name: "geo_lookup".to_string(),
             description: "lookup a city".to_string(),
             input_schema: json!({
@@ -129,6 +114,7 @@ async fn backfill_scans_existing_rollouts() -> Result<()> {
             defer_loading: true,
         },
         DynamicToolSpec {
+            namespace: None,
             name: "weather_lookup".to_string(),
             description: "lookup weather".to_string(),
             input_schema: json!({
@@ -313,7 +299,7 @@ async fn web_search_marks_thread_memory_mode_polluted_when_configured() -> Resul
             .features
             .enable(Feature::Sqlite)
             .expect("test config should allow feature update");
-        config.memories.no_memories_if_mcp_or_web_search = true;
+        config.memories.disable_on_external_context = true;
     });
     let test = builder.build(&server).await?;
     let db = test.codex.state_db().expect("state db enabled");
@@ -371,7 +357,7 @@ async fn mcp_call_marks_thread_memory_mode_polluted_when_configured() -> Result<
             .features
             .enable(Feature::Sqlite)
             .expect("test config should allow feature update");
-        config.memories.no_memories_if_mcp_or_web_search = true;
+        config.memories.disable_on_external_context = true;
 
         let mut servers = config.mcp_servers.get().clone();
         servers.insert(
@@ -394,11 +380,12 @@ async fn mcp_call_marks_thread_memory_mode_polluted_when_configured() -> Result<
                 disabled_reason: None,
                 startup_timeout_sec: Some(Duration::from_secs(10)),
                 tool_timeout_sec: None,
+                default_tools_approval_mode: None,
                 enabled_tools: None,
                 disabled_tools: None,
                 scopes: None,
                 oauth_resource: None,
-                tools: approve_mcp_tools(&["echo"]),
+                tools: HashMap::new(),
             },
         );
         config
@@ -412,6 +399,7 @@ async fn mcp_call_marks_thread_memory_mode_polluted_when_configured() -> Result<
 
     test.codex
         .submit(Op::UserTurn {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "call the rmcp echo tool".to_string(),
                 text_elements: Vec::new(),
@@ -420,7 +408,8 @@ async fn mcp_call_marks_thread_memory_mode_polluted_when_configured() -> Result<
             cwd: test.cwd_path().to_path_buf(),
             approval_policy: AskForApproval::Never,
             approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::DangerFullAccess,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            permission_profile: None,
             model: test.session_configured.model.clone(),
             effort: None,
             summary: None,

@@ -4,7 +4,7 @@
 
 后续 Widex 维护策略统一按下面执行：
 
-- 第一优先级：持续跟随 upstream 的稳定 release tag（例如 `rust-v0.122.0`），不要默认追 `upstream/main`。
+- 第一优先级：持续跟随 upstream 的稳定 release tag（例如 `rust-v0.125.0`），不要默认追 `upstream/main`。
 - 第二优先级：保持 `ralph-widex` 主线能力稳定，包括：
   - TUI `/ralph-widex init/start/stop/status`
   - `.ralph/` 状态/进度/恢复链路
@@ -100,8 +100,8 @@ git checkout main
 # 先确认最新稳定 release tag
 git tag -l 'rust-v0.*' | sort -V | tail
 
-# 例：追到 rust-v0.122.0
-git merge --ff-only rust-v0.122.0
+# 例：追到 rust-v0.125.0
+git merge --ff-only rust-v0.125.0
 ```
 
 如果本地没有 `main`，可从 `origin/main` 建一个本地分支：
@@ -297,7 +297,7 @@ widex exec --color never --sandbox read-only -c mcp.enabled=false -c mcp.auto_at
   说明鉴权已通，但当前 key/租户额度或限流有问题。这是服务侧/账号侧问题，不是 Widex 启动链路、wrapper、TUI onboarding 的代码问题。
 - 只有在 key 有效、额度正常的前提下，`widex exec` 仍失败，才继续查 Widex 代码或 upstream 兼容性。
 
-## 5) 2026-03-06 这次更新的实际记录
+## 5) 2026-04-29 这次更新的实际记录
 
 本次升级是一次真实的“Widex 跟随上游”案例，遇到并确认了下面这些点：
 
@@ -398,7 +398,7 @@ git fetch upstream && git fetch origin
 - 上游仓库源码里这个值经常保持 `0.0.0`，因为官方 release 流水线会在发布时再注入正式版本
 - 但 Widex 是长期运行源码构建版，所以**每次完成一次 upstream 对齐后，都应把这个版本手工更新为本次对齐的 Codex 版本**
 - 这样你们一眼就能看出：当前 Widex 对齐到哪个 upstream 版本、是否落后，以及 TUI 里的 update 提示是否真的有意义
-- 本次 2026-03-06 升级后，Widex 版本已对齐为 `0.111.0`
+- 本次 2026-04-29 升级后，Widex 版本已对齐为 `0.125.0`
 
 ### 6.4 验证优先级
 
@@ -483,7 +483,28 @@ test ! -f "$tmp_home/auth.json"
 4. 输入 /ralph-widex status
 ```
 
-### 6.4.3 以后如何把跟随 upstream 的周期压短
+### 6.4.3 npm 发版最小闭环
+
+完成代码合并和测试后，Widex 的标准发布动作固定为：
+
+```bash
+cd /home/will/data/widex/codex-rs
+cargo build -p codex-cli --bin codex --profile widex-release
+
+cd /home/will/data/widex
+npm pack --dry-run
+# 如需正式发布：
+# npm publish --access public
+```
+
+发布前必须额外确认：
+
+- `widex-custom/bin/widex` 实际引用的是刚构建出来的 `codex-rs/target/widex-release/codex`
+- `npm install -g @wellau/widex` 在干净机器上可直接安装
+- macOS / Linux 目标架构包都已在本次版本中可获取，不再出现 optional dependency 缺失
+- 如 npm 账号开启 2FA，需要提前确认本次发布 token 是否具备 bypass 2FA 能力
+
+### 6.4.4 以后如何把跟随 upstream 的周期压短
 
 后续要有意识把流程压缩成“只保 Ralph，其它尽量回到 upstream”：
 
