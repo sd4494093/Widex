@@ -1,6 +1,6 @@
 # Widex npm 发版流程
 
-本次建议发版号：`0.122.0`
+本次建议发版号：`0.125.0`
 
 目标：让客户可直接执行：
 
@@ -48,7 +48,7 @@ cargo build -p codex-cli --bin codex --profile widex-release
 ```bash
 cd /home/will/data/widex
 ./scripts/stage_npm_packages.py \
-  --release-version 0.122.0 \
+  --release-version 0.125.0 \
   --package widex
 ```
 
@@ -60,13 +60,13 @@ dist/npm/
 
 正常情况下会得到：
 
-- `widex-npm-0.122.0.tgz`
-- `widex-npm-linux-x64-0.122.0.tgz`
-- `widex-npm-linux-arm64-0.122.0.tgz`
-- `widex-npm-darwin-x64-0.122.0.tgz`
-- `widex-npm-darwin-arm64-0.122.0.tgz`
-- `widex-npm-win32-x64-0.122.0.tgz`
-- `widex-npm-win32-arm64-0.122.0.tgz`
+- `widex-npm-0.125.0.tgz`
+- `widex-npm-linux-x64-0.125.0.tgz`
+- `widex-npm-linux-arm64-0.125.0.tgz`
+- `widex-npm-darwin-x64-0.125.0.tgz`
+- `widex-npm-darwin-arm64-0.125.0.tgz`
+- `widex-npm-win32-x64-0.125.0.tgz`
+- `widex-npm-win32-arm64-0.125.0.tgz`
 
 如果不想自动查 workflow，也可以先准备好 native vendor 目录，再单独调用：
 
@@ -74,10 +74,12 @@ dist/npm/
 cd /home/will/data/widex
 python3 codex-cli/scripts/build_npm_package.py \
   --package widex \
-  --release-version 0.122.0 \
+  --release-version 0.125.0 \
   --staging-dir /tmp/widex-stage \
-  --pack-output /tmp/widex-npm-0.122.0.tgz
+  --pack-output /tmp/widex-npm-0.125.0.tgz
 ```
+
+补充：`widex-linux-x64` 现在依赖 `x86_64-unknown-linux-gnu` 目标产物，stage 时需要确保 vendor 目录里有这个 target；不能只带 `x86_64-unknown-linux-musl`。
 
 ## 4. 发布顺序
 
@@ -88,13 +90,13 @@ python3 codex-cli/scripts/build_npm_package.py \
 示例：
 
 ```bash
-npm publish dist/npm/widex-npm-linux-x64-0.122.0.tgz --access public
-npm publish dist/npm/widex-npm-linux-arm64-0.122.0.tgz --access public
-npm publish dist/npm/widex-npm-darwin-x64-0.122.0.tgz --access public
-npm publish dist/npm/widex-npm-darwin-arm64-0.122.0.tgz --access public
-npm publish dist/npm/widex-npm-win32-x64-0.122.0.tgz --access public
-npm publish dist/npm/widex-npm-win32-arm64-0.122.0.tgz --access public
-npm publish dist/npm/widex-npm-0.122.0.tgz --access public
+npm publish dist/npm/widex-npm-linux-x64-0.125.0.tgz --access public
+npm publish dist/npm/widex-npm-linux-arm64-0.125.0.tgz --access public
+npm publish dist/npm/widex-npm-darwin-x64-0.125.0.tgz --access public
+npm publish dist/npm/widex-npm-darwin-arm64-0.125.0.tgz --access public
+npm publish dist/npm/widex-npm-win32-x64-0.125.0.tgz --access public
+npm publish dist/npm/widex-npm-win32-arm64-0.125.0.tgz --access public
+npm publish dist/npm/widex-npm-0.125.0.tgz --access public
 ```
 
 ## 5. 发布后验证
@@ -102,7 +104,7 @@ npm publish dist/npm/widex-npm-0.122.0.tgz --access public
 建议在一台干净机器或干净用户环境验证：
 
 ```bash
-npm install -g @wellau/widex@0.122.0
+npm install -g @wellau/widex@0.125.0
 widex --version
 widex
 ```

@@ -24,7 +24,7 @@ _BUILD_MODULE = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_BUILD_MODULE)
 PACKAGE_NATIVE_COMPONENTS = getattr(_BUILD_MODULE, "PACKAGE_NATIVE_COMPONENTS", {})
 PACKAGE_EXPANSIONS = getattr(_BUILD_MODULE, "PACKAGE_EXPANSIONS", {})
-CODEX_PLATFORM_PACKAGES = getattr(_BUILD_MODULE, "CODEX_PLATFORM_PACKAGES", {})
+WIDEX_PLATFORM_PACKAGES = getattr(_BUILD_MODULE, "WIDEX_PLATFORM_PACKAGES", {})
 
 
 def parse_args() -> argparse.Namespace:
@@ -108,15 +108,32 @@ def resolve_workflow_url(version: str, override: str | None) -> tuple[str, str |
     return workflow["url"], workflow.get("headSha")
 
 
+def collect_required_targets(packages: list[str]) -> list[str]:
+    targets: list[str] = []
+    for package in packages:
+        platform_package = WIDEX_PLATFORM_PACKAGES.get(package)
+        if not isinstance(platform_package, dict):
+            continue
+
+        target = platform_package.get("source_target_triple") or platform_package.get("target_triple")
+        if not isinstance(target, str) or target in targets:
+            continue
+        targets.append(target)
+    return targets
+
+
 def install_native_components(
     workflow_url: str,
     components: set[str],
+    targets: list[str],
     vendor_root: Path,
 ) -> None:
     if not components:
         return
 
     cmd = [str(INSTALL_NATIVE_DEPS), "--workflow-url", workflow_url]
+    for target in targets:
+        cmd.extend(["--target", target])
     for component in sorted(components):
         cmd.extend(["--component", component])
     cmd.append(str(vendor_root))
@@ -129,7 +146,7 @@ def run_command(cmd: list[str]) -> None:
 
 
 def tarball_name_for_package(package: str, version: str) -> str:
-    if package in CODEX_PLATFORM_PACKAGES:
+    if package in WIDEX_PLATFORM_PACKAGES:
         platform = package.removeprefix("widex-")
         return f"widex-npm-{platform}-{version}.tgz"
     return f"{package}-npm-{version}.tgz"
@@ -145,6 +162,7 @@ def main() -> int:
 
     packages = expand_packages(list(args.packages))
     native_components = collect_native_components(packages)
+    required_targets = collect_required_targets(packages)
 
     vendor_temp_root: Path | None = None
     vendor_src: Path | None = None
@@ -158,7 +176,12 @@ def main() -> int:
                 args.release_version, args.workflow_url
             )
             vendor_temp_root = Path(tempfile.mkdtemp(prefix="npm-native-", dir=runner_temp))
-            install_native_components(workflow_url, native_components, vendor_temp_root)
+            install_native_components(
+                workflow_url,
+                native_components,
+                required_targets,
+                vendor_temp_root,
+            )
             vendor_src = vendor_temp_root / "vendor"
 
         if resolved_head_sha:
