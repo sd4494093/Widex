@@ -432,7 +432,17 @@ def _download_and_extract_artifact(
     cache_dir = Path(tempfile.gettempdir()) / "codex-artifact-cache" / repo.replace("/", "--") / workflow_id
     cache_dir.mkdir(parents=True, exist_ok=True)
     archive_path = cache_dir / f"{artifact_name}.zip"
-    _curl_download(download_url, archive_path)
+    if archive_path.exists():
+        try:
+            with zipfile.ZipFile(archive_path) as archive:
+                if archive.testzip() is None:
+                    print(f"  reusing cached artifact {artifact_name}")
+                else:
+                    _curl_download(download_url, archive_path)
+        except zipfile.BadZipFile:
+            _curl_download(download_url, archive_path)
+    else:
+        _curl_download(download_url, archive_path)
 
     artifact_dest = dest_dir / artifact_name
     if artifact_dest.exists():
@@ -648,9 +658,23 @@ def _fetch_single_rg(
 def _download_file(url: str, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.unlink(missing_ok=True)
-
-    with urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECS) as response, open(dest, "wb") as out:
-        shutil.copyfileobj(response, out)
+    subprocess.check_call(
+        [
+            "curl",
+            "--http1.1",
+            "--max-time",
+            "0",
+            "--retry",
+            "6",
+            "--retry-all-errors",
+            "--retry-delay",
+            "2",
+            "-fL",
+            "-o",
+            str(dest),
+            url,
+        ]
+    )
 
 
 def extract_archive(
@@ -701,12 +725,19 @@ def extract_archive(
 
 
 def _load_manifest(manifest_path: Path) -> dict:
-    cmd = ["dotslash", "--", "parse", str(manifest_path)]
-    stdout = subprocess.check_output(cmd, text=True)
+    manifest_text = manifest_path.read_text(encoding="utf-8")
+    if manifest_text.startswith("#!"):
+        _, _, manifest_text = manifest_text.partition("\n")
+
     try:
-        manifest = json.loads(stdout)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Invalid DotSlash manifest output from {manifest_path}.") from exc
+        manifest = json.loads(manifest_text)
+    except json.JSONDecodeError:
+        cmd = ["dotslash", "--", "parse", str(manifest_path)]
+        stdout = subprocess.check_output(cmd, text=True)
+        try:
+            manifest = json.loads(stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Invalid DotSlash manifest output from {manifest_path}.") from exc
 
     if not isinstance(manifest, dict):
         raise RuntimeError(

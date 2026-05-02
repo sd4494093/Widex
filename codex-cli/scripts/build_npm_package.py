@@ -17,8 +17,7 @@ CODEX_SDK_ROOT = REPO_ROOT / "sdk" / "typescript"
 WIDEX_NPM_README = CODEX_CLI_ROOT / "README.md"
 WIDEX_NPM_NAME = "@wellau/widex"
 
-# `npm_name` is the local optional-dependency alias consumed by `bin/widex.js`.
-# The underlying package published to npm is always `@wellau/widex`.
+# `npm_name` is the real package name published for each platform package.
 WIDEX_PLATFORM_PACKAGES: dict[str, dict[str, str]] = {
     "widex-linux-x64": {
         "npm_name": "@wellau/widex-linux-x64",
@@ -268,8 +267,6 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
         package_json_path = CODEX_CLI_ROOT / "package.json"
     elif package in WIDEX_PLATFORM_PACKAGES:
         platform_package = WIDEX_PLATFORM_PACKAGES[package]
-        platform_npm_tag = platform_package["npm_tag"]
-        platform_version = compute_platform_package_version(version, platform_npm_tag)
 
         if WIDEX_NPM_README.exists():
             shutil.copy2(WIDEX_NPM_README, staging_dir / "README.md")
@@ -278,8 +275,8 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
             codex_package_json = json.load(fh)
 
         package_json = {
-            "name": WIDEX_NPM_NAME,
-            "version": platform_version,
+            "name": platform_package["npm_name"],
+            "version": version,
             "license": codex_package_json.get("license", "Apache-2.0"),
             "os": [platform_package["os"]],
             "cpu": [platform_package["cpu"]],
@@ -320,10 +317,7 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
     if package == "widex":
         package_json["files"] = ["bin"]
         package_json["optionalDependencies"] = {
-            WIDEX_PLATFORM_PACKAGES[platform_package]["npm_name"]: (
-                f"npm:{WIDEX_NPM_NAME}@"
-                f"{compute_platform_package_version(version, WIDEX_PLATFORM_PACKAGES[platform_package]['npm_tag'])}"
-            )
+            WIDEX_PLATFORM_PACKAGES[platform_package]["npm_name"]: version
             for platform_package in PACKAGE_EXPANSIONS["widex"]
             if platform_package != "widex"
         }
