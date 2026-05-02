@@ -1,4 +1,5 @@
 mod auth;
+mod keys;
 pub(crate) mod onboarding_screen;
 pub(crate) mod startup_splash;
 mod trust_directory;

@@ -8,6 +8,9 @@ use ctor::ctor;
 use std::sync::OnceLock;
 use tempfile::TempDir;
 
+use codex_config::CloudRequirementsLoader;
+use codex_config::ConfigRequirementsToml;
+use codex_config::NetworkRequirementsToml;
 use codex_core::CodexThread;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
@@ -164,14 +167,39 @@ pub fn fetch_dotslash_file(
 /// temporary directory. Using a per-test directory keeps tests hermetic and
 /// avoids clobbering a developer’s real `~/.codex`.
 pub async fn load_default_config_for_test(codex_home: &TempDir) -> Config {
-    let mut overrides = default_test_overrides();
-    overrides.cwd = Some(codex_home.path().to_path_buf());
+    load_default_config_for_test_with_cloud_requirements(
+        codex_home,
+        CloudRequirementsLoader::default(),
+    )
+    .await
+}
+
+/// Returns a default `Config` with test-provided cloud requirements applied
+/// during config construction.
+pub async fn load_default_config_for_test_with_cloud_requirements(
+    codex_home: &TempDir,
+    cloud_requirements: CloudRequirementsLoader,
+) -> Config {
     ConfigBuilder::default()
         .codex_home(codex_home.path().to_path_buf())
-        .harness_overrides(overrides)
+        .harness_overrides(default_test_overrides())
+        .cloud_requirements(cloud_requirements)
         .build()
         .await
         .expect("defaults for test should always succeed")
+}
+
+pub fn managed_network_requirements_loader() -> CloudRequirementsLoader {
+    CloudRequirementsLoader::new(async {
+        Ok(Some(ConfigRequirementsToml {
+            network: Some(NetworkRequirementsToml {
+                enabled: Some(true),
+                allow_local_binding: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }))
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -283,20 +311,15 @@ where
 {
     use tokio::time::Duration;
     use tokio::time::timeout;
-    let mut seen_events = Vec::new();
     loop {
-        // Suite tests spin up mock servers, temp workspaces, and background tasks concurrently.
-        // A 10s floor flakes under load, so keep a wider default budget for event waits.
-        let ev = timeout(wait_time.max(Duration::from_secs(30)), codex.next_event())
+        // Allow a bit more time to accommodate async startup work (e.g. config IO, tool discovery)
+        let ev = timeout(wait_time.max(Duration::from_secs(10)), codex.next_event())
             .await
-            .unwrap_or_else(|err| {
-                panic!("timeout waiting for event after seeing: {seen_events:#?}: {err:?}")
-            })
+            .expect("timeout waiting for event")
             .expect("stream ended unexpectedly");
         if predicate(&ev.msg) {
             return ev.msg;
         }
-        seen_events.push(format!("{:?}", ev.msg));
     }
 }
 
