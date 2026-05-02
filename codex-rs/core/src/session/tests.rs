@@ -1712,7 +1712,6 @@ async fn fork_startup_context_then_first_turn_diff_snapshot() -> anyhow::Result<
             permission_profile: None,
             windows_sandbox_level: None,
             model: None,
-            model_provider_id: None,
             effort: None,
             summary: None,
             service_tier: None,
@@ -4257,7 +4256,6 @@ fn op_kind_distinguishes_turn_ops() {
             permission_profile: None,
             windows_sandbox_level: None,
             model: None,
-            model_provider_id: None,
             effort: None,
             summary: None,
             service_tier: None,
@@ -7584,7 +7582,6 @@ async fn tool_calls_reopen_mailbox_delivery_for_current_turn() {
         namespace: None,
         arguments: "{}".to_string(),
         call_id: "call-1".to_string(),
-        thought_signature: None,
     };
     let mut ctx = HandleOutputCtx {
         sess: Arc::clone(&sess),

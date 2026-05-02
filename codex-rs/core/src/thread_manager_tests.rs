@@ -78,7 +78,6 @@ fn truncates_before_requested_user_message() {
             name: "tool".to_string(),
             namespace: None,
             arguments: "{}".to_string(),
-            thought_signature: None,
         },
         assistant_msg("a4"),
     ];

@@ -2,11 +2,11 @@ use clap::Parser;
 use std::path::PathBuf;
 
 use codex_api_switchover::ApiSwitchoverConfig;
-use codex_core::auth::AuthCredentialsStoreMode;
-use codex_core::auth::AuthDotJson;
-use codex_core::auth::load_auth_dot_json;
-use codex_core::auth::save_auth;
 use codex_core::config::edit::ConfigEditsBuilder;
+use codex_login::AuthCredentialsStoreMode;
+use codex_login::AuthDotJson;
+use codex_login::load_auth_dot_json;
+use codex_login::save_auth;
 
 #[derive(Debug, Parser)]
 #[command(name = "codex-api-switchover")]
@@ -110,31 +110,27 @@ fn main() -> anyhow::Result<()> {
                     if plan.auth.wants_openai_api_key {
                         if plan.auth.openai_api_key.is_some() {
                             println!("auth: OPENAI_API_KEY (set)");
+                        } else if let Some(env) = plan.auth.openai_api_key_env.as_deref() {
+                            println!(
+                                "auth: OPENAI_API_KEY (missing env: {env}; will use saved if available)"
+                            );
                         } else {
-                            if let Some(env) = plan.auth.openai_api_key_env.as_deref() {
-                                println!(
-                                    "auth: OPENAI_API_KEY (missing env: {env}; will use saved if available)"
-                                );
-                            } else {
-                                println!(
-                                    "auth: OPENAI_API_KEY (missing env; will use saved if available)"
-                                );
-                            }
+                            println!(
+                                "auth: OPENAI_API_KEY (missing env; will use saved if available)"
+                            );
                         }
                     }
                     if plan.auth.wants_gemini_api_key {
                         if plan.auth.gemini_api_key.is_some() {
                             println!("auth: GEMINI_API_KEY (set)");
+                        } else if let Some(env) = plan.auth.gemini_api_key_env.as_deref() {
+                            println!(
+                                "auth: GEMINI_API_KEY (missing env: {env}; will use saved if available)"
+                            );
                         } else {
-                            if let Some(env) = plan.auth.gemini_api_key_env.as_deref() {
-                                println!(
-                                    "auth: GEMINI_API_KEY (missing env: {env}; will use saved if available)"
-                                );
-                            } else {
-                                println!(
-                                    "auth: GEMINI_API_KEY (missing env; will use saved if available)"
-                                );
-                            }
+                            println!(
+                                "auth: GEMINI_API_KEY (missing env; will use saved if available)"
+                            );
                         }
                     }
                 }
@@ -174,11 +170,13 @@ fn main() -> anyhow::Result<()> {
                 let mut auth = load_auth_dot_json(&codex_home, auth_store)
                     .unwrap_or(None)
                     .unwrap_or(AuthDotJson {
+                        auth_mode: None,
                         openai_api_key: None,
                         gemini_api_key: None,
                         widex_saved_api_keys: Default::default(),
                         tokens: None,
                         last_refresh: None,
+                        agent_identity: None,
                     });
 
                 let openai_cache_key = format!("profile:{}:OPENAI_API_KEY", plan.profile_id);
@@ -186,9 +184,16 @@ fn main() -> anyhow::Result<()> {
 
                 if plan.auth.wants_openai_api_key {
                     if let Some(key) = plan.auth.openai_api_key.clone() {
+                        let trimmed = key.trim().to_string();
+                        if trimmed.starts_with("wellau-live-") {
+                            anyhow::bail!(
+                                "Profile `{}` resolved to a blocked Widex seed OPENAI_API_KEY",
+                                plan.profile_id
+                            );
+                        }
                         auth.widex_saved_api_keys
-                            .insert(openai_cache_key.clone(), key.clone());
-                        auth.openai_api_key = Some(key);
+                            .insert(openai_cache_key.clone(), trimmed.clone());
+                        auth.openai_api_key = Some(trimmed);
                     } else if let Some(saved) = auth.widex_saved_api_keys.get(&openai_cache_key) {
                         auth.openai_api_key = Some(saved.clone());
                     } else {
@@ -207,9 +212,16 @@ fn main() -> anyhow::Result<()> {
 
                 if plan.auth.wants_gemini_api_key {
                     if let Some(key) = plan.auth.gemini_api_key.clone() {
+                        let trimmed = key.trim().to_string();
+                        if trimmed.starts_with("wellau-live-") {
+                            anyhow::bail!(
+                                "Profile `{}` resolved to a blocked Widex seed GEMINI_API_KEY",
+                                plan.profile_id
+                            );
+                        }
                         auth.widex_saved_api_keys
-                            .insert(gemini_cache_key.clone(), key.clone());
-                        auth.gemini_api_key = Some(key);
+                            .insert(gemini_cache_key.clone(), trimmed.clone());
+                        auth.gemini_api_key = Some(trimmed);
                     } else if let Some(saved) = auth.widex_saved_api_keys.get(&gemini_cache_key) {
                         auth.gemini_api_key = Some(saved.clone());
                     } else {

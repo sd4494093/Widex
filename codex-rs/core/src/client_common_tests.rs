@@ -178,7 +178,6 @@ fn reserializes_shell_outputs_for_function_and_custom_tool_calls() {
             namespace: None,
             arguments: "{}".to_string(),
             call_id: "call-1".to_string(),
-            thought_signature: None,
         },
         ResponseItem::FunctionCallOutput {
             call_id: "call-1".to_string(),
@@ -209,7 +208,6 @@ fn reserializes_shell_outputs_for_function_and_custom_tool_calls() {
                 namespace: None,
                 arguments: "{}".to_string(),
                 call_id: "call-1".to_string(),
-                thought_signature: None,
             },
             ResponseItem::FunctionCallOutput {
                 call_id: "call-1".to_string(),

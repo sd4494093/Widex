@@ -431,7 +431,6 @@ async fn resume_model_switch_is_not_duplicated_after_pre_turn_override() -> Resu
             permission_profile: None,
             windows_sandbox_level: None,
             model: Some("gpt-5.4".to_string()),
-            model_provider_id: None,
             effort: None,
             summary: None,
             service_tier: None,

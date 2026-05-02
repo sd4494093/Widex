@@ -185,6 +185,11 @@ pub(crate) async fn run_startup_splash(
                     frame.render_widget_ref(&widget, frame.area());
                 });
             }
+            TuiEvent::Resize => {
+                let _ = tui.draw(u16::MAX, |frame| {
+                    frame.render_widget_ref(&widget, frame.area());
+                });
+            }
         }
     }
 

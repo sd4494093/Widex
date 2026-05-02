@@ -3043,7 +3043,6 @@ async fn snapshot_request_shape_pre_turn_compaction_including_incoming_user_mess
             permission_profile: None,
             windows_sandbox_level: None,
             model: None,
-            model_provider_id: None,
             effort: None,
             summary: None,
             service_tier: None,

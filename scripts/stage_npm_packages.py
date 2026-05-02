@@ -115,10 +115,19 @@ def collect_required_targets(packages: list[str]) -> list[str]:
         if not isinstance(platform_package, dict):
             continue
 
-        target = platform_package.get("source_target_triple") or platform_package.get("target_triple")
-        if not isinstance(target, str) or target in targets:
-            continue
-        targets.append(target)
+        source_targets = platform_package.get("source_target_triples")
+        if isinstance(source_targets, list):
+            package_targets = source_targets
+        else:
+            target = platform_package.get("source_target_triple") or platform_package.get("target_triple")
+            if not isinstance(target, str):
+                continue
+            package_targets = [target]
+
+        for package_target in package_targets:
+            if package_target in targets:
+                continue
+            targets.append(package_target)
     return targets
 
 

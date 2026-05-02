@@ -714,7 +714,6 @@ async fn permissions_selection_sends_approvals_reviewer_in_override_turn_context
             permission_profile: Some(PermissionProfile::workspace_write()),
             windows_sandbox_level: None,
             model: None,
-            model_provider_id: None,
             effort: None,
             summary: None,
             service_tier: None,

@@ -118,6 +118,8 @@ async fn refresh_token_refreshes_when_auth_is_unchanged() -> Result<()> {
     let initial_auth = AuthDotJson {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
+        gemini_api_key: None,
+        widex_saved_api_keys: Default::default(),
         tokens: Some(initial_tokens.clone()),
         last_refresh: Some(initial_last_refresh),
         agent_identity: None,
@@ -173,6 +175,8 @@ async fn refresh_token_skips_refresh_when_auth_changed() -> Result<()> {
     let initial_auth = AuthDotJson {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
+        gemini_api_key: None,
+        widex_saved_api_keys: Default::default(),
         tokens: Some(initial_tokens),
         last_refresh: Some(initial_last_refresh),
         agent_identity: None,
@@ -183,6 +187,8 @@ async fn refresh_token_skips_refresh_when_auth_changed() -> Result<()> {
     let disk_auth = AuthDotJson {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
+        gemini_api_key: None,
+        widex_saved_api_keys: Default::default(),
         tokens: Some(disk_tokens.clone()),
         last_refresh: Some(initial_last_refresh),
         agent_identity: None,
@@ -238,6 +244,8 @@ async fn refresh_token_errors_on_account_mismatch() -> Result<()> {
     let initial_auth = AuthDotJson {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
+        gemini_api_key: None,
+        widex_saved_api_keys: Default::default(),
         tokens: Some(initial_tokens.clone()),
         last_refresh: Some(initial_last_refresh),
         agent_identity: None,
@@ -249,6 +257,8 @@ async fn refresh_token_errors_on_account_mismatch() -> Result<()> {
     let disk_auth = AuthDotJson {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
+        gemini_api_key: None,
+        widex_saved_api_keys: Default::default(),
         tokens: Some(disk_tokens),
         last_refresh: Some(initial_last_refresh),
         agent_identity: None,
@@ -410,6 +420,8 @@ async fn auth_reloads_disk_auth_when_cached_auth_is_stale() -> Result<()> {
     let initial_auth = AuthDotJson {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
+        gemini_api_key: None,
+        widex_saved_api_keys: Default::default(),
         tokens: Some(initial_tokens),
         last_refresh: Some(stale_refresh),
         agent_identity: None,
@@ -421,6 +433,8 @@ async fn auth_reloads_disk_auth_when_cached_auth_is_stale() -> Result<()> {
     let disk_auth = AuthDotJson {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
+        gemini_api_key: None,
+        widex_saved_api_keys: Default::default(),
         tokens: Some(disk_tokens.clone()),
         last_refresh: Some(fresh_refresh),
         agent_identity: None,
@@ -473,6 +487,8 @@ async fn auth_reloads_disk_auth_without_calling_expired_refresh_token() -> Resul
     let initial_auth = AuthDotJson {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
+        gemini_api_key: None,
+        widex_saved_api_keys: Default::default(),
         tokens: Some(initial_tokens),
         last_refresh: Some(stale_refresh),
         agent_identity: None,
@@ -484,6 +500,8 @@ async fn auth_reloads_disk_auth_without_calling_expired_refresh_token() -> Resul
     let disk_auth = AuthDotJson {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
+        gemini_api_key: None,
+        widex_saved_api_keys: Default::default(),
         tokens: Some(disk_tokens.clone()),
         last_refresh: Some(fresh_refresh),
         agent_identity: None,
@@ -589,6 +607,8 @@ async fn refresh_token_does_not_retry_after_permanent_failure() -> Result<()> {
     let initial_auth = AuthDotJson {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
+        gemini_api_key: None,
+        widex_saved_api_keys: Default::default(),
         tokens: Some(initial_tokens.clone()),
         last_refresh: Some(initial_last_refresh),
         agent_identity: None,
@@ -656,6 +676,8 @@ async fn refresh_token_reloads_changed_auth_after_permanent_failure() -> Result<
     let initial_auth = AuthDotJson {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
+        gemini_api_key: None,
+        widex_saved_api_keys: Default::default(),
         tokens: Some(initial_tokens.clone()),
         last_refresh: Some(initial_last_refresh),
         agent_identity: None,
@@ -678,6 +700,8 @@ async fn refresh_token_reloads_changed_auth_after_permanent_failure() -> Result<
     let disk_auth = AuthDotJson {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
+        gemini_api_key: None,
+        widex_saved_api_keys: Default::default(),
         tokens: Some(disk_tokens.clone()),
         last_refresh: Some(fresh_refresh),
         agent_identity: None,

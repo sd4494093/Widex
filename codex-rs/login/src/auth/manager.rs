@@ -468,26 +468,67 @@ pub const OPENAI_API_KEY_ENV_VAR: &str = "OPENAI_API_KEY";
 pub const CODEX_API_KEY_ENV_VAR: &str = "CODEX_API_KEY";
 pub const GEMINI_API_KEY_ENV_VAR: &str = "GEMINI_API_KEY";
 pub const CODEX_AGENT_IDENTITY_ENV_VAR: &str = "CODEX_AGENT_IDENTITY";
+const DISALLOWED_WIDEX_SEED_API_KEY_PREFIX: &str = "wellau-live-";
+
+pub fn is_disallowed_widex_seed_api_key(api_key: &str) -> bool {
+    api_key
+        .trim()
+        .starts_with(DISALLOWED_WIDEX_SEED_API_KEY_PREFIX)
+}
+
+fn sanitize_api_key_value(api_key: String) -> Option<String> {
+    let trimmed = api_key.trim().to_string();
+    if trimmed.is_empty() || is_disallowed_widex_seed_api_key(&trimmed) {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+fn sanitize_auth_dot_json(mut auth_dot_json: AuthDotJson) -> Option<AuthDotJson> {
+    auth_dot_json.openai_api_key = auth_dot_json
+        .openai_api_key
+        .and_then(sanitize_api_key_value);
+    auth_dot_json.gemini_api_key = auth_dot_json
+        .gemini_api_key
+        .and_then(sanitize_api_key_value);
+    auth_dot_json
+        .widex_saved_api_keys
+        .retain(|_, value| !is_disallowed_widex_seed_api_key(value) && !value.trim().is_empty());
+
+    if matches!(auth_dot_json.auth_mode, Some(ApiAuthMode::ApiKey))
+        && auth_dot_json.openai_api_key.is_none()
+    {
+        auth_dot_json.auth_mode = None;
+    }
+
+    if auth_dot_json.openai_api_key.is_none()
+        && auth_dot_json.gemini_api_key.is_none()
+        && auth_dot_json.tokens.is_none()
+        && auth_dot_json.agent_identity.is_none()
+    {
+        None
+    } else {
+        Some(auth_dot_json)
+    }
+}
 
 pub fn read_openai_api_key_from_env() -> Option<String> {
     env::var(OPENAI_API_KEY_ENV_VAR)
         .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+        .and_then(sanitize_api_key_value)
 }
 
 pub fn read_codex_api_key_from_env() -> Option<String> {
     env::var(CODEX_API_KEY_ENV_VAR)
         .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+        .and_then(sanitize_api_key_value)
 }
 
 pub fn read_gemini_api_key_from_env() -> Option<String> {
     env::var(GEMINI_API_KEY_ENV_VAR)
         .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+        .and_then(sanitize_api_key_value)
 }
 
 pub fn read_codex_agent_identity_from_env() -> Option<String> {
@@ -507,8 +548,9 @@ pub fn read_gemini_api_key_from_auth_json(
     codex_home: &Path,
     auth_credentials_store_mode: AuthCredentialsStoreMode,
 ) -> Option<String> {
-    let storage = create_auth_storage(codex_home.to_path_buf(), auth_credentials_store_mode);
-    let auth = storage.load().ok().flatten()?;
+    let auth = load_auth_dot_json(codex_home, auth_credentials_store_mode)
+        .ok()
+        .flatten()?;
 
     let key = auth
         .gemini_api_key
@@ -566,6 +608,12 @@ pub fn login_with_api_key(
     api_key: &str,
     auth_credentials_store_mode: AuthCredentialsStoreMode,
 ) -> std::io::Result<()> {
+    if is_disallowed_widex_seed_api_key(api_key) {
+        return Err(std::io::Error::other(
+            "Refusing to save blocked Widex seed API key.",
+        ));
+    }
+
     let auth_dot_json = AuthDotJson {
         auth_mode: Some(ApiAuthMode::ApiKey),
         openai_api_key: Some(api_key.to_string()),
@@ -593,6 +641,8 @@ pub async fn login_with_agent_identity(
     let auth_dot_json = AuthDotJson {
         auth_mode: Some(ApiAuthMode::AgentIdentity),
         openai_api_key: None,
+        gemini_api_key: None,
+        widex_saved_api_keys: Default::default(),
         tokens: None,
         last_refresh: None,
         agent_identity: Some(agent_identity.to_string()),
@@ -639,7 +689,7 @@ pub fn load_auth_dot_json(
     auth_credentials_store_mode: AuthCredentialsStoreMode,
 ) -> std::io::Result<Option<AuthDotJson>> {
     let storage = create_auth_storage(codex_home.to_path_buf(), auth_credentials_store_mode);
-    storage.load()
+    Ok(storage.load()?.and_then(sanitize_auth_dot_json))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -798,8 +848,7 @@ async fn load_auth(
     }
 
     // Fall back to the configured persistent store (file/keyring/auto) for managed auth.
-    let storage = create_auth_storage(codex_home.to_path_buf(), auth_credentials_store_mode);
-    let auth_dot_json = match storage.load()? {
+    let auth_dot_json = match load_auth_dot_json(codex_home, auth_credentials_store_mode)? {
         Some(auth) => auth,
         None => return Ok(None),
     };

@@ -184,6 +184,8 @@ fn chatgpt_auth_with_refresh_token(refresh_token: &str) -> AuthDotJson {
     AuthDotJson {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
+        gemini_api_key: None,
+        widex_saved_api_keys: Default::default(),
         tokens: Some(TokenData {
             id_token: IdTokenInfo {
                 raw_jwt: minimal_jwt(),

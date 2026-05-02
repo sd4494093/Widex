@@ -18,11 +18,15 @@ WIDEX_NPM_README = CODEX_CLI_ROOT / "README.md"
 WIDEX_NPM_NAME = "@wellau/widex"
 
 # `npm_name` is the real package name published for each platform package.
-WIDEX_PLATFORM_PACKAGES: dict[str, dict[str, str]] = {
+WIDEX_PLATFORM_PACKAGES: dict[str, dict[str, object]] = {
     "widex-linux-x64": {
         "npm_name": "@wellau/widex-linux-x64",
         "npm_tag": "linux-x64",
         "target_triple": "x86_64-unknown-linux-gnu",
+        "source_target_triples": [
+            "x86_64-unknown-linux-gnu",
+            "x86_64-unknown-linux-musl",
+        ],
         "os": "linux",
         "cpu": "x64",
     },
@@ -44,7 +48,6 @@ WIDEX_PLATFORM_PACKAGES: dict[str, dict[str, str]] = {
         "npm_name": "@wellau/widex-darwin-arm64",
         "npm_tag": "darwin-arm64",
         "target_triple": "aarch64-apple-darwin",
-        "source_target_triple": "x86_64-apple-darwin",
         "os": "darwin",
         "cpu": "arm64",
     },
@@ -78,11 +81,6 @@ PACKAGE_NATIVE_COMPONENTS: dict[str, list[str]] = {
     "widex-win32-arm64": ["codex", "rg", "codex-windows-sandbox-setup", "codex-command-runner"],
     "codex-responses-api-proxy": ["codex-responses-api-proxy"],
     "codex-sdk": [],
-}
-
-PACKAGE_TARGET_FILTERS: dict[str, str] = {
-    package_name: package_config.get("source_target_triple", package_config["target_triple"])
-    for package_name, package_config in WIDEX_PLATFORM_PACKAGES.items()
 }
 
 PACKAGE_CHOICES = tuple(PACKAGE_NATIVE_COMPONENTS)
@@ -162,15 +160,17 @@ def main() -> int:
 
         vendor_src = args.vendor_src.resolve() if args.vendor_src else None
         native_components = PACKAGE_NATIVE_COMPONENTS.get(package, [])
-        target_filter = PACKAGE_TARGET_FILTERS.get(package)
-        vendor_target_triple = None
+        target_filter = None
+        vendor_target_renames: dict[str, str] = {}
 
         if package in WIDEX_PLATFORM_PACKAGES:
             platform_package = WIDEX_PLATFORM_PACKAGES[package]
+            source_targets = source_target_triples_for_package(platform_package)
+            target_filter = set(source_targets)
             source_target = platform_package.get("source_target_triple")
             target_triple = platform_package.get("target_triple")
             if source_target and target_triple and source_target != target_triple:
-                vendor_target_triple = target_triple
+                vendor_target_renames[source_target] = target_triple
 
         if native_components:
             if vendor_src is None:
@@ -185,12 +185,12 @@ def main() -> int:
                 vendor_src,
                 staging_dir,
                 native_components,
-                target_filter={target_filter} if target_filter else None,
+                target_filter=target_filter,
             )
 
-            if vendor_target_triple and target_filter:
-                source_vendor_dir = staging_dir / "vendor" / target_filter
-                target_vendor_dir = staging_dir / "vendor" / vendor_target_triple
+            for source_target, target_triple in vendor_target_renames.items():
+                source_vendor_dir = staging_dir / "vendor" / source_target
+                target_vendor_dir = staging_dir / "vendor" / target_triple
                 if target_vendor_dir.exists():
                     shutil.rmtree(target_vendor_dir)
                 source_vendor_dir.rename(target_vendor_dir)
@@ -336,6 +336,18 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
     with open(staging_dir / "package.json", "w", encoding="utf-8") as out:
         json.dump(package_json, out, indent=2)
         out.write("\n")
+
+
+def source_target_triples_for_package(platform_package: dict[str, object]) -> tuple[str, ...]:
+    source_targets = platform_package.get("source_target_triples")
+    if isinstance(source_targets, list):
+        return tuple(source_targets)
+
+    source_target = platform_package.get("source_target_triple")
+    if isinstance(source_target, str):
+        return (source_target,)
+
+    return (platform_package["target_triple"],)
 
 
 def compute_platform_package_version(version: str, platform_tag: str) -> str:

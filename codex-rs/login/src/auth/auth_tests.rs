@@ -226,6 +226,8 @@ async fn pro_account_with_no_api_key_uses_chatgpt_auth() {
         AuthDotJson {
             auth_mode: None,
             openai_api_key: None,
+            gemini_api_key: None,
+            widex_saved_api_keys: Default::default(),
             tokens: Some(TokenData {
                 id_token: IdTokenInfo {
                     email: Some("user@example.com".to_string()),
@@ -274,11 +276,77 @@ async fn loads_api_key_from_auth_json() {
 }
 
 #[test]
+fn load_auth_dot_json_filters_blocked_widex_seed_key() {
+    let dir = tempdir().unwrap();
+    let auth_file = dir.path().join("auth.json");
+    std::fs::write(
+        auth_file,
+        r#"{"OPENAI_API_KEY":"wellau-live-test","WIDEX_SAVED_API_KEYS":{"profile:test:OPENAI_API_KEY":"wellau-live-test"},"tokens":null,"last_refresh":null}"#,
+    )
+    .unwrap();
+
+    let auth = load_auth_dot_json(dir.path(), AuthCredentialsStoreMode::File)
+        .expect("load_auth_dot_json should succeed");
+
+    assert_eq!(auth, None);
+}
+
+#[test]
+fn load_auth_dot_json_removes_blocked_saved_keys_but_keeps_user_key() {
+    let dir = tempdir().unwrap();
+    let auth_file = dir.path().join("auth.json");
+    std::fs::write(
+        auth_file,
+        r#"{"OPENAI_API_KEY":"sk-user","WIDEX_SAVED_API_KEYS":{"profile:blocked:OPENAI_API_KEY":"wellau-live-test","profile:allowed:OPENAI_API_KEY":"sk-user-2"},"tokens":null,"last_refresh":null}"#,
+    )
+    .unwrap();
+
+    let auth = load_auth_dot_json(dir.path(), AuthCredentialsStoreMode::File)
+        .expect("load_auth_dot_json should succeed")
+        .expect("auth should remain available");
+
+    assert_eq!(auth.openai_api_key.as_deref(), Some("sk-user"));
+    assert_eq!(auth.widex_saved_api_keys.len(), 1);
+    assert_eq!(
+        auth.widex_saved_api_keys
+            .get("profile:allowed:OPENAI_API_KEY")
+            .map(String::as_str),
+        Some("sk-user-2")
+    );
+}
+
+#[test]
+fn login_with_api_key_rejects_blocked_widex_seed_key() {
+    let dir = tempdir().unwrap();
+
+    let err = login_with_api_key(
+        dir.path(),
+        "wellau-live-test",
+        AuthCredentialsStoreMode::File,
+    )
+    .expect_err("blocked seed key should be rejected");
+
+    assert_eq!(
+        err.to_string(),
+        "Refusing to save blocked Widex seed API key."
+    );
+}
+
+#[test]
+fn read_openai_api_key_from_env_ignores_blocked_widex_seed_key() {
+    let _guard = EnvVarGuard::set(OPENAI_API_KEY_ENV_VAR, "wellau-live-test");
+
+    assert_eq!(read_openai_api_key_from_env(), None);
+}
+
+#[test]
 fn logout_removes_auth_file() -> Result<(), std::io::Error> {
     let dir = tempdir()?;
     let auth_dot_json = AuthDotJson {
         auth_mode: Some(ApiAuthMode::ApiKey),
         openai_api_key: Some("sk-test-key".to_string()),
+        gemini_api_key: None,
+        widex_saved_api_keys: Default::default(),
         tokens: None,
         last_refresh: None,
         agent_identity: None,

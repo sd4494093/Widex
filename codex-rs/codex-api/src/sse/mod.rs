@@ -1,5 +1,4 @@
-pub mod chat;
-pub mod responses;
+pub(crate) mod responses;
 
 pub(crate) use responses::ResponsesStreamEvent;
 pub(crate) use responses::process_responses_event;

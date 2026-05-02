@@ -54,7 +54,6 @@ mod tests {
             namespace: namespace.map(str::to_string),
             arguments: "{}".to_string(),
             call_id: format!("call-{name}"),
-            thought_signature: None,
         }
     }
 

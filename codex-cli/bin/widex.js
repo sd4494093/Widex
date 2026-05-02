@@ -31,8 +31,8 @@ switch (platform) {
     switch (arch) {
       case "x64":
         targetTriples = [
-          "x86_64-unknown-linux-gnu",
           "x86_64-unknown-linux-musl",
+          "x86_64-unknown-linux-gnu",
         ];
         break;
       case "arm64":

@@ -1023,7 +1023,6 @@ pub(super) async fn submission_loop(
                     permission_profile,
                     windows_sandbox_level,
                     model,
-                    model_provider_id: _,
                     effort,
                     summary,
                     service_tier,

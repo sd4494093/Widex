@@ -6181,7 +6181,7 @@ impl ChatWidget {
                 .unwrap_or(trimmed)
                 .trim_start();
             self.dispatch_ralph_tui_command(rest);
-            return None;
+            return (true, None);
         }
 
         // Special-case: "!cmd" executes a local shell command instead of sending to the model.
@@ -6195,7 +6195,7 @@ impl ChatWidget {
                     .unwrap_or(shell_cmd)
                     .trim_start();
                 self.dispatch_ralph_tui_command(rest);
-                return None;
+                return (true, None);
             }
             let app_command = match self.submit_shell_command_with_history(stripped, &text) {
                 QueueDrain::Continue => None,
@@ -8863,17 +8863,10 @@ impl ChatWidget {
             return;
         }
 
-        // Prefer the Rust-native CLI subcommand (`codex ralph-widex ...`).
-        // If we're running as `codex-tui`, fall back to invoking `codex` on PATH.
-        let codex_cmd = std::env::current_exe()
-            .ok()
-            .and_then(|p| {
-                p.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n == "codex")
-                    .then_some(p.display().to_string())
-            })
-            .unwrap_or_else(|| "codex".to_string());
+        // Prefer the current Widex/Codex executable so packaged Windows installs keep routing
+        // Ralph back through the same binary instead of falling through to an unrelated `codex`
+        // executable on PATH.
+        let codex_cmd = ralph_widex_command_for_current_exe(std::env::current_exe().ok());
 
         let mut cmd: Vec<String> = vec![codex_cmd, "ralph-widex".to_string()];
         cmd.extend(argv);
@@ -13198,6 +13191,17 @@ fn append_ralph_tui_log_line(path: &Path, level: &str, message: &str) -> std::io
         .open(path)?;
     file.write_all(line.as_bytes())?;
     Ok(())
+}
+
+fn ralph_widex_command_for_current_exe(current_exe: Option<PathBuf>) -> String {
+    current_exe
+        .filter(|path| {
+            path.file_stem()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| matches!(name, "codex" | "widex"))
+        })
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "codex".to_string())
 }
 
 fn parse_ralph_tui_args(args: &[String]) -> RalphTuiConfig {

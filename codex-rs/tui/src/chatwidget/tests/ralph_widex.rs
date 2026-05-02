@@ -1,6 +1,25 @@
 use super::*;
 use codex_ralph_widex::widex_overlay;
 
+#[test]
+fn ralph_widex_command_prefers_current_widex_exe() {
+    let exe = std::path::PathBuf::from("/tmp/widex.exe");
+    assert_eq!(
+        super::super::ralph_widex_command_for_current_exe(Some(exe.clone())),
+        exe.display().to_string()
+    );
+}
+
+#[test]
+fn ralph_widex_command_falls_back_to_codex_for_unknown_binary() {
+    assert_eq!(
+        super::super::ralph_widex_command_for_current_exe(Some(std::path::PathBuf::from(
+            "/tmp/not-widex",
+        ))),
+        "codex"
+    );
+}
+
 fn submit_composer_text(chat: &mut ChatWidget, text: &str) {
     chat.bottom_pane
         .set_composer_text(text.to_string(), Vec::new(), Vec::new());

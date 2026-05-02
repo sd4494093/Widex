@@ -788,15 +788,6 @@ pub enum ResponseItem {
         // Session::handle_function_call parse it into a Value.
         arguments: String,
         call_id: String,
-        /// Gemini thought signature associated with the function call.
-        ///
-        /// This is not part of the OpenAI wire schema. We keep it in-memory so
-        /// Gemini integrations can preserve and replay thought signatures
-        /// between turns without leaking provider-specific fields to other
-        /// wire APIs.
-        #[serde(default, skip_serializing)]
-        #[ts(skip)]
-        thought_signature: Option<String>,
     },
     ToolSearchCall {
         #[serde(default, skip_serializing)]
