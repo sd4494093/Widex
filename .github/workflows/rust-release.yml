@@ -11,6 +11,7 @@ on:
     tags:
       - "rust-v*.*.*"
       - "widex-rust-v*.*.*"
+      - "widex-v*.*.*"
 
 concurrency:
   group: ${{ github.workflow }}
@@ -31,11 +32,12 @@ jobs:
           # 1. Must be a tag and match the regex
           [[ "${GITHUB_REF_TYPE}" == "tag" ]] \
             || { echo "❌  Not a tag push"; exit 1; }
-          [[ "${GITHUB_REF_NAME}" =~ ^(widex-)?rust-v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta)(\.[0-9]+)?)?$ ]] \
+          [[ "${GITHUB_REF_NAME}" =~ ^((widex-)?rust|widex)-v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta)(\.[0-9]+)?)?$ ]] \
             || { echo "❌  Tag '${GITHUB_REF_NAME}' doesn't match expected format"; exit 1; }
 
           # 2. Extract versions
           tag_ver="${GITHUB_REF_NAME#widex-rust-v}"
+          tag_ver="${tag_ver#widex-v}"
           tag_ver="${tag_ver#rust-v}"
           cargo_ver="$(grep -m1 '^version' codex-rs/Cargo.toml \
                         | sed -E 's/version *= *"([^"]+)".*/\1/')"
@@ -420,7 +422,9 @@ jobs:
         run: |
           # Extract the version from the tag name, which is in the format
           # "rust-v0.1.0".
-          version="${GITHUB_REF_NAME#rust-v}"
+          version="${GITHUB_REF_NAME#widex-rust-v}"
+          version="${version#widex-v}"
+          version="${version#rust-v}"
           echo "name=${version}" >> $GITHUB_OUTPUT
 
       - name: Determine npm publish settings
@@ -431,7 +435,7 @@ jobs:
           set -euo pipefail
           version="${VERSION}"
 
-          if [[ "${GITHUB_REF_NAME}" == widex-rust-v* ]]; then
+          if [[ "${GITHUB_REF_NAME}" == widex-rust-v* || "${GITHUB_REF_NAME}" == widex-v* ]]; then
             echo "should_publish=false" >> "$GITHUB_OUTPUT"
             echo "npm_tag=" >> "$GITHUB_OUTPUT"
           elif [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -487,6 +491,7 @@ jobs:
           prerelease: ${{ contains(steps.release_name.outputs.name, '-') }}
 
       - uses: facebook/dotslash-publish-release@9c9ec027515c34db9282a09a25a9cab5880b2c52 # v2
+        if: ${{ !startsWith(github.ref_name, 'widex-rust-v') && !startsWith(github.ref_name, 'widex-v') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -494,6 +499,7 @@ jobs:
           config: .github/dotslash-config.json
 
       - uses: facebook/dotslash-publish-release@9c9ec027515c34db9282a09a25a9cab5880b2c52 # v2
+        if: ${{ !startsWith(github.ref_name, 'widex-rust-v') && !startsWith(github.ref_name, 'widex-v') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -501,6 +507,7 @@ jobs:
           config: .github/dotslash-zsh-config.json
 
       - uses: facebook/dotslash-publish-release@9c9ec027515c34db9282a09a25a9cab5880b2c52 # v2
+        if: ${{ !startsWith(github.ref_name, 'widex-rust-v') && !startsWith(github.ref_name, 'widex-v') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
