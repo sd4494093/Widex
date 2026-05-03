@@ -2,8 +2,9 @@
 // Unified entry point for the Widex CLI.
 
 import { spawn } from "node:child_process";
-import { existsSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { createRequire } from "node:module";
+import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -176,7 +177,127 @@ if (existsSync(pathDir)) {
 }
 const updatedPath = getUpdatedPath(additionalDirs);
 
-const env = { ...process.env, PATH: updatedPath };
+function widexDefaultConfig() {
+  return `model_provider = "custom"
+model = "gpt-5.4"
+model_reasoning_effort = "high"
+disable_response_storage = true
+personality = "pragmatic"
+cli_auth_credentials_store = "file"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://api.wellau.com/v1"
+
+[features]
+apps = false
+child_agents_md = true
+codex_git_commit = true
+js_repl = true
+memories = true
+multi_agent = true
+prevent_idle_sleep = true
+responses_websockets = true
+responses_websockets_v2 = true
+skill_env_var_dependency_prompt = true
+sqlite = true
+undo = true
+`;
+}
+
+function ensureRootSetting(configText, key, value) {
+  const pattern = new RegExp(`^\\s*${key}\\s*=`, "m");
+  if (pattern.test(configText)) {
+    return configText;
+  }
+
+  return `${key} = ${value}\n${configText}`;
+}
+
+function ensureBlock(configText, header, block) {
+  const escapedHeader = header.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`^\\s*${escapedHeader}\\s*$`, "m");
+  if (pattern.test(configText)) {
+    return configText;
+  }
+
+  return `${configText.replace(/\s*$/, "")}\n\n${block}\n`;
+}
+
+function ensureWidexConfig(codexHome) {
+  mkdirSync(codexHome, { recursive: true });
+  const configPath = path.join(codexHome, "config.toml");
+  if (!existsSync(configPath)) {
+    writeFileSync(configPath, widexDefaultConfig(), { mode: 0o600 });
+    return;
+  }
+
+  let configText = readFileSync(configPath, "utf8");
+  configText = ensureRootSetting(configText, "model_provider", '"custom"');
+  configText = ensureRootSetting(configText, "model", '"gpt-5.4"');
+  configText = ensureRootSetting(configText, "model_reasoning_effort", '"high"');
+  configText = ensureRootSetting(configText, "disable_response_storage", "true");
+  configText = ensureRootSetting(configText, "personality", '"pragmatic"');
+  configText = ensureRootSetting(configText, "cli_auth_credentials_store", '"file"');
+  configText = ensureBlock(
+    configText,
+    "[model_providers.custom]",
+    `[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://api.wellau.com/v1"`,
+  );
+  configText = ensureBlock(
+    configText,
+    "[features]",
+    `[features]
+apps = false
+child_agents_md = true
+codex_git_commit = true
+js_repl = true
+memories = true
+multi_agent = true
+prevent_idle_sleep = true
+responses_websockets = true
+responses_websockets_v2 = true
+skill_env_var_dependency_prompt = true
+sqlite = true
+undo = true`,
+  );
+  writeFileSync(configPath, configText);
+}
+
+function resolveWidexCodexHome() {
+  const defaultCodexHome = path.join(os.homedir(), ".widex-codex");
+  const explicitWidexHome = process.env.WIDEX_CODEX_HOME;
+  if (explicitWidexHome && explicitWidexHome.length > 0) {
+    return explicitWidexHome;
+  }
+
+  const inheritedCodexHome = process.env.CODEX_HOME;
+  if (inheritedCodexHome && inheritedCodexHome !== defaultCodexHome) {
+    // eslint-disable-next-line no-console
+    console.error(
+      `widex: ignoring inherited CODEX_HOME='${inheritedCodexHome}' and using '${defaultCodexHome}'`,
+    );
+  }
+
+  return defaultCodexHome;
+}
+
+const codexHome = resolveWidexCodexHome();
+ensureWidexConfig(codexHome);
+
+const env = {
+  ...process.env,
+  PATH: updatedPath,
+  CODEX_HOME: codexHome,
+  WIDEX_CMD: process.env.WIDEX_CMD || "widex",
+  CODEX_CMD: process.env.CODEX_CMD || "widex",
+};
 const packageManagerEnvVar =
   detectPackageManager() === "bun"
     ? "CODEX_MANAGED_BY_BUN"
