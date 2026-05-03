@@ -20,7 +20,7 @@
 ### 0. 安全边界（强制）
 
 - **禁止提交任何密钥/令牌**：包括 `sk-...`、cookies、`auth.json`、以及包含真实 key 的 yaml/toml/json。
-- `CODEX_HOME` 默认应在仓库外（推荐：官方 `~/.codex`；widex `~/.widex-codex`），不要把 `CODEX_HOME` 指到仓库目录。
+- `CODEX_HOME` 默认应在仓库外（推荐：官方 `~/.codex`；widex `~/.widex`），不要把 `CODEX_HOME` 指到仓库目录。
 - switchover 会把 key 缓存进 `${CODEX_HOME}/auth.json` 的 `WIDEX_SAVED_API_KEYS`（这是 secrets 数据），只能存在于用户机器本地。
 
 ### A. 按层拆解（强制）
@@ -50,8 +50,8 @@
 ### D. 官方 codex 与 widex 分离（强制）
 
 - 继续保留官方 npm `codex`，不要让 widex 的配置/schema 破坏它。
-- widex 运行请使用 `widex-custom/bin/widex`（它会默认隔离 `CODEX_HOME=~/.widex-codex`，并在缺 binary 时自动 release 构建）。
-- MCP 配置也随 `CODEX_HOME` 隔离：widex 用 `~/.widex-codex/config.toml`；官方 npm codex 用 `~/.codex/config.toml`（不要混用/互改）。
+- widex 运行请使用 `widex-custom/bin/widex`（它会默认隔离 `CODEX_HOME=~/.widex`，并在缺 binary 时自动 release 构建）。
+- MCP 配置也随 `CODEX_HOME` 隔离：widex 用 `~/.widex/config.toml`；官方 npm codex 用 `~/.codex/config.toml`（不要混用/互改）。
 
 ### E. Ralph Widex（强制）
 

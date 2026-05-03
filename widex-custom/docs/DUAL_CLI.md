@@ -16,11 +16,11 @@ Solution
 1) Separate `CODEX_HOME`
 
 - Official npm codex: `~/.codex`
-- Widex codex: `~/.widex-codex`
+- Widex codex: `~/.widex`
 
 This repo now ships a wrapper script at `widex-custom/bin/widex` that:
 
-- sets `CODEX_HOME=~/.widex-codex` by default
+- sets `CODEX_HOME=~/.widex` by default
 - runs the repo-built Rust binary (default: `codex-rs/target/widex-release/codex`)
 - builds the binary automatically on first run
 - defaults to a fast multi-core build profile, but can be forced back to upstream `--release`
@@ -92,7 +92,7 @@ WIDEX_USE_SCCACHE=1 widex --version
 
 Notes
 
-- Widex keeps its config isolated via `CODEX_HOME` (default: `~/.widex-codex`). Official `codex` uses `~/.codex`.
+- Widex keeps its config isolated via `CODEX_HOME` (default: `~/.widex`). Official `codex` uses `~/.codex`.
 - `${CODEX_HOME}/.env` (if present) is loaded on startup, so you can keep per-CLI env vars separate too.
 - API switchover config (Widex):
   - `$WIDEX_API_SWITCHER_CONFIG` (override)

@@ -74,7 +74,7 @@ Grok 目前分两条线路（都走 Chat Completions wire）：
 最小可用配置（建议直接参考并拷贝模板，然后按你的环境变量名改掉）：
 
 - 模板：`widex-custom/features/api-switchover/api_config.example.yaml`
-- 安装版默认路径：`${CODEX_HOME}/api_switchover.yaml`（Widex 默认 `CODEX_HOME=~/.widex-codex`）
+- 安装版默认路径：`${CODEX_HOME}/api_switchover.yaml`（Widex 默认 `CODEX_HOME=~/.widex`）
 
 你需要保证至少包含以下路由语义：
 

@@ -113,7 +113,7 @@ widex
 
 - 安装命令是 `npm install -g @wellau/widex`
 - 启动命令是 `widex`
-- Widex 使用的是 `~/.widex-codex/`
+- Widex 使用的是 `~/.widex/`
 - 无 key 时，启动页显示 `Input Widex Key (WillAU API Key)` / Quit
 - 有 key 时，启动页允许直接继续
 

@@ -132,7 +132,7 @@ impl OnboardingScreen {
             };
             let is_widex_mode = codex_home
                 .file_name()
-                .is_some_and(|name| name == ".widex-codex");
+                .is_some_and(|name| name == ".widex" || name == ".widex-codex");
             if let Some(app_server_request_handle) = app_server_request_handle {
                 let sign_in_state = if start_with_api_key_entry && is_widex_mode {
                     SignInState::ApiKeyEntry(Default::default())

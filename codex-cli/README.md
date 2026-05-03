@@ -25,7 +25,7 @@ Widex uses its own isolated home directory by default and does not reuse the ups
 Default Widex runtime state:
 
 ```text
-~/.widex-codex/
+~/.widex/
 ```
 
 On first launch, if no Widex API key is available yet, the startup flow will prompt the user to input a Widex Key (WillAU API Key).

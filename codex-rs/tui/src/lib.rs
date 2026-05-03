@@ -1785,7 +1785,7 @@ fn is_widex_codex_home(config: &Config) -> bool {
     config
         .codex_home
         .file_name()
-        .is_some_and(|name| name == ".widex-codex")
+        .is_some_and(|name| name == ".widex" || name == ".widex-codex")
 }
 
 fn widex_api_key_present(config: &Config) -> bool {
@@ -1859,7 +1859,7 @@ mod tests {
     }
 
     async fn build_widex_config(temp_dir: &TempDir) -> std::io::Result<Config> {
-        let codex_home = temp_dir.path().join(".widex-codex");
+        let codex_home = temp_dir.path().join(".widex");
         std::fs::create_dir_all(&codex_home)?;
         ConfigBuilder::default()
             .codex_home(codex_home)

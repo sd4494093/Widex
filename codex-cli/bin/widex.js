@@ -271,7 +271,7 @@ undo = true`,
 }
 
 function resolveWidexCodexHome() {
-  const defaultCodexHome = path.join(os.homedir(), ".widex-codex");
+  const defaultCodexHome = path.join(os.homedir(), ".widex");
   const explicitWidexHome = process.env.WIDEX_CODEX_HOME;
   if (explicitWidexHome && explicitWidexHome.length > 0) {
     return explicitWidexHome;

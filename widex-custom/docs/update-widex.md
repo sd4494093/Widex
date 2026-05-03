@@ -212,11 +212,11 @@ cargo build -p codex-cli --bin codex --profile widex-release
 
 后续把这一步当成 Widex 启动链路验收前的固定动作。
 
-### 4.2 重要经验：真实 `~/.widex-codex/config.toml` 也要自动迁到 Widex 标准主配置
+### 4.2 重要经验：真实 `~/.widex/config.toml` 也要自动迁到 Widex 标准主配置
 
 不要只满足“新用户首次生成 config 正确”。
 
-真实生产环境里，很多用户的 `~/.widex-codex/config.toml` 可能已经被旧的 API switcher、
+真实生产环境里，很多用户的 `~/.widex/config.toml` 可能已经被旧的 API switcher、
 ppchat 配置、Gemini/Grok 试验配置等污染过。如果 wrapper 只是“补缺省”，那么用户机器上仍可能继续跑旧的：
 
 - `model_provider = "gpt-ppchat"`
@@ -263,7 +263,7 @@ base_url = "https://wellau.com/v1"
 所以后续维护原则是：
 
 - wrapper 不只负责初始化新 config
-- 也必须把已有 `~/.widex-codex/config.toml` 迁移回上述 Widex 标准主配置
+- 也必须把已有 `~/.widex/config.toml` 迁移回上述 Widex 标准主配置
 - 迁移时保留 `.bak` 备份
 - 迁移逻辑必须是**幂等**的，不能每次执行 `widex` 都重复改写 config
 
@@ -278,7 +278,7 @@ widex --help
 # /ralph-widex --help
 ```
 
-然后检查真实 `~/.widex-codex/`：
+然后检查真实 `~/.widex/`：
 
 - `config.toml` 是否已经回到 Widex/WillAU 标准主配置
 - `auth.json` 是否存在 `OPENAI_API_KEY`
@@ -539,7 +539,7 @@ npm pack --dry-run
   - 多半是上游新增字段 / 协议变更导致（例如 struct 新字段、enum 新变体），按报错逐个补齐即可。
 - 老用户升级后 `widex resume` / `widex` 启动时提示
   `unknown variant 'gemini', expected 'responses'`：
-  - 这是旧 `~/.widex-codex/config.toml` 里遗留的历史 Widex provider 配置（例如 `wire_api = "gemini"` / `wire_api = "chat"`）导致。
+  - 这是旧 `~/.widex/config.toml` 里遗留的历史 Widex provider 配置（例如 `wire_api = "gemini"` / `wire_api = "chat"`）导致。
   - 当前 wrapper 会在启动前自动把历史 `gemini*` / `grok-*` provider 的 `wire_api` 迁移成 `responses`，并在同目录生成
     `config.toml.pre-mainline-wire-api.bak` 备份。
   - 如果仍想彻底清理，直接手工删除这些历史 provider 块即可；当前主线不再默认维护它们。

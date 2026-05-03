@@ -4,7 +4,7 @@ set -euo pipefail
 # Run the widex fork of codex (Rust) without interfering with the npm `codex`.
 #
 # - Official npm codex uses:   $HOME/.codex
-# - Widex codex uses:          $HOME/.widex-codex
+# - Widex codex uses:          $HOME/.widex
 #
 # This prevents config/schema mismatches from breaking the npm CLI.
 
@@ -16,7 +16,7 @@ fi
 SCRIPT_DIR="$(cd -- "$(dirname -- "${SCRIPT_PATH}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 
-CODEX_HOME_DEFAULT="${HOME}/.widex-codex"
+CODEX_HOME_DEFAULT="${HOME}/.widex"
 
 # Strict isolation: Widex should not inherit an existing CODEX_HOME (e.g. from the official `codex`)
 # because that would "cross the streams" and pollute ~/.codex.

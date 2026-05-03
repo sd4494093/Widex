@@ -31,14 +31,14 @@ git push origin widex
 目标：官方 npm `codex` 与 widex fork 共存，互不干扰。
 
 - 官方 npm `codex`：默认使用 `~/.codex`
-- widex：使用 `widex-custom/bin/widex` 启动，默认使用 `~/.widex-codex`
+- widex：使用 `widex-custom/bin/widex` 启动，默认使用 `~/.widex`
 
 原因：widex 增加了官方 npm CLI 不识别的配置扩展（例如 `wire_api = "gemini"`）。共用同一个 `CODEX_HOME`
 会互相“读坏配置”。
 
 更多说明见：`widex-custom/docs/DUAL_CLI.md`。
 
-补充：MCP 配置也随 `CODEX_HOME` 隔离（widex：`~/.widex-codex/config.toml`；官方 npm codex：`~/.codex/config.toml`）。
+补充：MCP 配置也随 `CODEX_HOME` 隔离（widex：`~/.widex/config.toml`；官方 npm codex：`~/.codex/config.toml`）。
 
 
 ## 统一约束：新增任何模型/Provider 必须按层实现

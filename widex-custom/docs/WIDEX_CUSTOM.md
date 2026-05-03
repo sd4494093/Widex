@@ -47,7 +47,7 @@ git push origin widex
 目标：
 
 - 继续使用官方 npm 安装的 `codex`（配置默认 `~/.codex`）
-- widex fork 使用单独的命令 `widex`（配置默认 `~/.widex-codex`）
+- widex fork 使用单独的命令 `widex`（配置默认 `~/.widex`）
 
 原因：
 
@@ -57,7 +57,7 @@ git push origin widex
 实现：
 
 - wrapper：`widex-custom/bin/widex`
-  - 默认 `CODEX_HOME=~/.widex-codex`
+  - 默认 `CODEX_HOME=~/.widex`
   - 默认运行 `codex-rs/target/widex-release/codex`（Widex 专用快速构建 profile）
   - 若二进制不存在，会自动构建：
     - 默认：`cargo build -p codex-cli --bin codex --profile widex-release`
@@ -266,7 +266,7 @@ Widex 的生产级目标：把 Ralph 做成 **原生 Widex 功能**（原生 sla
 - 超时不致命：当单次 `widex exec` 触发 `--timeout-minutes` 超时，Rust 版会将其视为本轮失败（exit code 124）并继续下一轮；
   若持续超时/持续同错，会被熔断器收敛（避免无限消耗）。
 - MCP 排查：如遇 rmcp serde / JsonRpcMessage 类错误，优先在 Widex 配置里临时禁用出问题的 MCP server（设置 `mcp_servers.<name>.enabled=false`），避免 JSON-RPC framing 被破坏。
-  - 配置文件位置：Widex 使用 `${CODEX_HOME}/config.toml`（默认 `~/.widex-codex/config.toml`）；不要修改官方 npm codex 的 `~/.codex/config.toml`。
+  - 配置文件位置：Widex 使用 `${CODEX_HOME}/config.toml`（默认 `~/.widex/config.toml`）；不要修改官方 npm codex 的 `~/.codex/config.toml`。
   - 推荐做法：只禁用坏掉的 server（保留 playwright / chrome-devtools 等正常 MCP），例如：
 
     ```toml
@@ -389,7 +389,7 @@ undo = true
 
 防呆：
 
-- 仓库根 `.gitignore` 已忽略 repo 内的 `.codex/` 与 `.widex-codex/`，避免把 `CODEX_HOME` 指到仓库时意外提交鉴权文件。
+- 仓库根 `.gitignore` 已忽略 repo 内的 `.codex/` 与 `.widex/`，避免把 `CODEX_HOME` 指到仓库时意外提交鉴权文件。
 - `widex-custom/features/api-switchover/api_config.yaml`（本地 secrets 文件）已在 `.gitignore` 中忽略。
 
 
