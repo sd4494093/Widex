@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ralph"
+  short_description: "Build coherent Ralph autonomous-loop docs"
+  default_prompt: "Use Ralph to create, review, or repair .ralph documentation for autonomous development loops."
