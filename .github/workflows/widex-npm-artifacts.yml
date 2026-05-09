@@ -7,6 +7,14 @@ on:
         description: "Version to write into staged npm packages, e.g. 0.128.4 or 0.128.4-test.0"
         required: true
         type: string
+  push:
+    branches:
+      - widex
+    paths:
+      - ".github/workflows/widex-npm-artifacts.yml"
+      - "codex-cli/**"
+      - "codex-rs/**"
+      - "widex-custom/**"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -258,7 +266,7 @@ jobs:
       - name: Stage npm packages
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_VERSION: ${{ inputs.release_version }}
+          RELEASE_VERSION: ${{ github.event.inputs.release_version || '0.128.4-test.0' }}
         run: |
           set -euo pipefail
           ./scripts/stage_npm_packages.py \
