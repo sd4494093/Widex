@@ -46,10 +46,11 @@ use uuid::Uuid;
 use crate::LoginStatus;
 use crate::key_hint::KeyBinding;
 use crate::key_hint::KeyBindingListExt;
+use crate::motion::MotionMode;
+use crate::motion::shimmer_text;
 use crate::onboarding::keys;
 use crate::onboarding::onboarding_screen::KeyboardHandler;
 use crate::onboarding::onboarding_screen::StepStateProvider;
-use crate::shimmer::shimmer_spans;
 use crate::tui::FrameRequester;
 
 /// Marks buffer cells that have cyan+underlined style as an OSC 8 hyperlink.
@@ -60,6 +61,24 @@ use crate::tui::FrameRequester;
 /// row boundary, which breaks normal terminal URL detection for long URLs that
 /// wrap across multiple rows.
 pub(crate) fn mark_url_hyperlink(buf: &mut Buffer, area: Rect, url: &str) {
+    mark_hyperlink_cells(buf, area, url, |cell| {
+        cell.fg == Color::Cyan && cell.modifier.contains(Modifier::UNDERLINED)
+    });
+}
+
+/// Marks any underlined buffer cells as an OSC 8 hyperlink.
+pub(crate) fn mark_underlined_hyperlink(buf: &mut Buffer, area: Rect, url: &str) {
+    mark_hyperlink_cells(buf, area, url, |cell| {
+        cell.modifier.contains(Modifier::UNDERLINED)
+    });
+}
+
+fn mark_hyperlink_cells(
+    buf: &mut Buffer,
+    area: Rect,
+    url: &str,
+    should_mark: impl Fn(&ratatui::buffer::Cell) -> bool,
+) {
     // Sanitize: strip any characters that could break out of the OSC 8
     // sequence (ESC or BEL) to prevent terminal escape injection from a
     // malformed or compromised upstream URL.
@@ -74,8 +93,7 @@ pub(crate) fn mark_url_hyperlink(buf: &mut Buffer, area: Rect, url: &str) {
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
             let cell = &mut buf[(x, y)];
-            // Only mark cells that carry the URL's distinctive style.
-            if cell.fg != Color::Cyan || !cell.modifier.contains(Modifier::UNDERLINED) {
+            if !should_mark(cell) {
                 continue;
             }
             let sym = cell.symbol().to_string();
@@ -612,7 +630,10 @@ impl AuthModeWidget {
             // Schedule a follow-up frame to keep the shimmer animation going.
             self.request_frame
                 .schedule_frame_in(std::time::Duration::from_millis(100));
-            spans.extend(shimmer_spans("Finish signing in via your browser"));
+            spans.extend(shimmer_text(
+                "Finish signing in via your browser",
+                MotionMode::Animated,
+            ));
         } else {
             spans.push("Finish signing in via your browser".into());
         }
@@ -1139,7 +1160,6 @@ mod tests {
     use codex_cloud_requirements::cloud_requirements_loader_for_storage;
     use codex_config::types::AuthCredentialsStoreMode;
 
-    use codex_protocol::protocol::SessionSource;
     use pretty_assertions::assert_eq;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -1166,11 +1186,13 @@ mod tests {
             .await,
             feedback: codex_feedback::CodexFeedback::new(),
             log_db: None,
+            state_db: None,
             environment_manager: Arc::new(
                 codex_app_server_client::EnvironmentManager::default_for_tests(),
             ),
             config_warnings: Vec::new(),
-            session_source: SessionSource::Cli,
+            session_source: serde_json::from_value(serde_json::json!("cli"))
+                .expect("cli session source should deserialize"),
             enable_codex_api_key_env: false,
             client_name: "test".to_string(),
             client_version: "test".to_string(),
@@ -1331,41 +1353,53 @@ mod tests {
         assert!(rendered.contains("auth.json"));
     }
 
-    #[tokio::test]
-    async fn widex_save_api_key_writes_auth_json_only() {
+    #[test]
+    fn widex_save_api_key_writes_auth_json_only() {
+        const TEST_STACK_SIZE_BYTES: usize = 16 * 1024 * 1024;
+
         use std::time::Duration;
 
-        let (mut widget, tmp) = widget_widex().await;
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_stack_size(TEST_STACK_SIZE_BYTES)
+            .enable_all()
+            .build()
+            .unwrap();
 
-        widget.save_api_key("sk-test".to_string());
+        runtime.block_on(async {
+            let (mut widget, tmp) = widget_widex().await;
 
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                if matches!(
-                    &*widget.sign_in_state.read().unwrap(),
-                    SignInState::ApiKeyConfigured
-                ) {
-                    break;
+            widget.save_api_key("sk-test".to_string());
+
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if matches!(
+                        &*widget.sign_in_state.read().unwrap(),
+                        SignInState::ApiKeyConfigured
+                    ) {
+                        break;
+                    }
+                    let error = widget.error_message();
+                    assert_eq!(error, None, "save_api_key should not fail");
+                    tokio::time::sleep(Duration::from_millis(20)).await;
                 }
-                let error = widget.error_message();
-                assert_eq!(error, None, "save_api_key should not fail");
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("widex api key save should complete");
-
-        let auth: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(tmp.path().join("auth.json")).unwrap())
-                .unwrap();
-        assert_eq!(
-            auth,
-            serde_json::json!({
-                "OPENAI_API_KEY": "sk-test",
-                "auth_mode": "apikey"
             })
-        );
-        assert!(!tmp.path().join("config.toml").exists());
+            .await
+            .expect("widex api key save should complete");
+
+            let auth: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(tmp.path().join("auth.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                auth,
+                serde_json::json!({
+                    "OPENAI_API_KEY": "sk-test",
+                    "auth_mode": "apikey"
+                })
+            );
+            assert!(!tmp.path().join("config.toml").exists());
+        });
     }
 
     /// Collects all buffer cell symbols that contain the OSC 8 open sequence

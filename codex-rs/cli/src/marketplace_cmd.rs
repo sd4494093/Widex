@@ -4,8 +4,8 @@ use anyhow::bail;
 use clap::Parser;
 use codex_core::config::Config;
 use codex_core::config::find_codex_home;
-use codex_core::plugins::PluginMarketplaceUpgradeOutcome;
-use codex_core::plugins::PluginsManager;
+use codex_core_plugins::PluginMarketplaceUpgradeOutcome;
+use codex_core_plugins::PluginsManager;
 use codex_core_plugins::marketplace_add::MarketplaceAddRequest;
 use codex_core_plugins::marketplace_add::add_marketplace;
 use codex_core_plugins::marketplace_remove::MarketplaceRemoveRequest;
@@ -13,7 +13,7 @@ use codex_core_plugins::marketplace_remove::remove_marketplace;
 use codex_utils_cli::CliConfigOverrides;
 
 #[derive(Debug, Parser)]
-#[command(bin_name = "codex plugin marketplace")]
+#[command(bin_name = "widex plugin marketplace")]
 pub struct MarketplaceCli {
     #[clap(flatten)]
     pub config_overrides: CliConfigOverrides,
@@ -30,7 +30,7 @@ enum MarketplaceSubcommand {
 }
 
 #[derive(Debug, Parser)]
-#[command(bin_name = "codex plugin marketplace add")]
+#[command(bin_name = "widex plugin marketplace add")]
 struct AddMarketplaceArgs {
     /// Marketplace source. Supports owner/repo[@ref], HTTP(S) Git URLs, SSH URLs,
     /// or local marketplace root directories.
@@ -48,13 +48,13 @@ struct AddMarketplaceArgs {
 }
 
 #[derive(Debug, Parser)]
-#[command(bin_name = "codex plugin marketplace upgrade")]
+#[command(bin_name = "widex plugin marketplace upgrade")]
 struct UpgradeMarketplaceArgs {
     marketplace_name: Option<String>,
 }
 
 #[derive(Debug, Parser)]
-#[command(bin_name = "codex plugin marketplace remove")]
+#[command(bin_name = "widex plugin marketplace remove")]
 struct RemoveMarketplaceArgs {
     /// Configured marketplace name to remove.
     marketplace_name: String,
@@ -128,8 +128,9 @@ async fn run_upgrade(
         .context("failed to load configuration")?;
     let codex_home = find_codex_home().context("failed to resolve CODEX_HOME")?;
     let manager = PluginsManager::new(codex_home.to_path_buf());
+    let plugins_input = config.plugins_config_input();
     let outcome = manager
-        .upgrade_configured_marketplaces_for_config(&config, marketplace_name.as_deref())
+        .upgrade_configured_marketplaces_for_config(&plugins_input, marketplace_name.as_deref())
         .map_err(anyhow::Error::msg)?;
     print_upgrade_outcome(&outcome, marketplace_name.as_deref())
 }

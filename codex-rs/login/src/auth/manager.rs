@@ -468,6 +468,7 @@ pub const OPENAI_API_KEY_ENV_VAR: &str = "OPENAI_API_KEY";
 pub const CODEX_API_KEY_ENV_VAR: &str = "CODEX_API_KEY";
 pub const GEMINI_API_KEY_ENV_VAR: &str = "GEMINI_API_KEY";
 pub const CODEX_AGENT_IDENTITY_ENV_VAR: &str = "CODEX_AGENT_IDENTITY";
+pub const CODEX_ACCESS_TOKEN_ENV_VAR: &str = "CODEX_ACCESS_TOKEN";
 const DISALLOWED_WIDEX_SEED_API_KEY_PREFIX: &str = "wellau-live-";
 
 pub fn is_disallowed_widex_seed_api_key(api_key: &str) -> bool {
@@ -531,8 +532,12 @@ pub fn read_gemini_api_key_from_env() -> Option<String> {
         .and_then(sanitize_api_key_value)
 }
 
-pub fn read_codex_agent_identity_from_env() -> Option<String> {
-    env::var(CODEX_AGENT_IDENTITY_ENV_VAR)
+pub fn read_codex_access_token_from_env() -> Option<String> {
+    read_non_empty_env_var(CODEX_ACCESS_TOKEN_ENV_VAR)
+}
+
+fn read_non_empty_env_var(key: &str) -> Option<String> {
+    env::var(key)
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
@@ -626,10 +631,10 @@ pub fn login_with_api_key(
     save_auth(codex_home, &auth_dot_json, auth_credentials_store_mode)
 }
 
-/// Writes an `auth.json` that contains only the Agent Identity token.
-pub async fn login_with_agent_identity(
+/// Writes an `auth.json` that contains only the access token.
+pub async fn login_with_access_token(
     codex_home: &Path,
-    agent_identity: &str,
+    access_token: &str,
     auth_credentials_store_mode: AuthCredentialsStoreMode,
     chatgpt_base_url: Option<&str>,
 ) -> std::io::Result<()> {
@@ -637,7 +642,7 @@ pub async fn login_with_agent_identity(
         .unwrap_or(DEFAULT_CHATGPT_BACKEND_BASE_URL)
         .trim_end_matches('/')
         .to_string();
-    verified_agent_identity_record(agent_identity, &base_url).await?;
+    verified_agent_identity_record(access_token, &base_url).await?;
     let auth_dot_json = AuthDotJson {
         auth_mode: Some(ApiAuthMode::AgentIdentity),
         openai_api_key: None,
@@ -645,7 +650,7 @@ pub async fn login_with_agent_identity(
         widex_saved_api_keys: Default::default(),
         tokens: None,
         last_refresh: None,
-        agent_identity: Some(agent_identity.to_string()),
+        agent_identity: Some(access_token.to_string()),
     };
     save_auth(codex_home, &auth_dot_json, auth_credentials_store_mode)
 }
@@ -841,7 +846,7 @@ async fn load_auth(
         return Ok(None);
     }
 
-    if let Some(agent_identity) = read_codex_agent_identity_from_env() {
+    if let Some(agent_identity) = read_codex_access_token_from_env() {
         return CodexAuth::from_agent_identity_jwt(&agent_identity, chatgpt_base_url)
             .await
             .map(Some);

@@ -33,6 +33,7 @@ use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
+use core_test_support::wait_for_event_with_timeout;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serial_test::serial;
@@ -41,38 +42,49 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
-use std::time::Instant;
 use wiremock::MockServer;
 
 async fn wait_for_rmcp_tools(test: &TestCodex) -> Result<()> {
-    let expected_tools = HashSet::from([
-        "mcp__rmcp__echo".to_string(),
-        "mcp__rmcp__echo_tool".to_string(),
-        "mcp__rmcp__image".to_string(),
-        "mcp__rmcp__image_scenario".to_string(),
-        "mcp__rmcp__sandbox_meta".to_string(),
-        "mcp__rmcp__sync".to_string(),
-    ]);
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        test.codex.submit(Op::ListMcpTools).await?;
-        let list_event = wait_for_event_match(&test.codex, |event| match event {
-            EventMsg::McpListToolsResponse(response) => Some(response.tools.clone()),
-            _ => None,
-        })
-        .await;
-        let available_tools = list_event.keys().cloned().collect::<HashSet<_>>();
-        if expected_tools.is_subset(&available_tools) {
-            return Ok(());
-        }
-        if Instant::now() >= deadline {
-            let available_tools = available_tools.into_iter().collect::<Vec<_>>();
-            return Err(anyhow::anyhow!(
-                "timed out waiting for rmcp tools; discovered tools: {available_tools:?}"
-            ));
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
+    let startup_event = wait_for_event_with_timeout(
+        &test.codex,
+        |event| match event {
+            EventMsg::McpStartupComplete(summary) => {
+                summary.ready.iter().any(|server| server == "rmcp")
+                    || summary
+                        .failed
+                        .iter()
+                        .any(|failure| failure.server == "rmcp")
+                    || summary.cancelled.iter().any(|server| server == "rmcp")
+            }
+            _ => false,
+        },
+        Duration::from_secs(30),
+    )
+    .await;
+
+    let EventMsg::McpStartupComplete(startup) = startup_event else {
+        unreachable!("event guard guarantees McpStartupComplete");
+    };
+    if let Some(failure) = startup
+        .failed
+        .iter()
+        .find(|failure| failure.server == "rmcp")
+    {
+        return Err(anyhow::anyhow!(
+            "rmcp MCP server failed to start: {}",
+            failure.error
+        ));
     }
+    if startup.cancelled.iter().any(|server| server == "rmcp") {
+        return Err(anyhow::anyhow!("rmcp MCP server startup was cancelled"));
+    }
+    if startup.ready.iter().any(|server| server == "rmcp") {
+        return Ok(());
+    }
+    Err(anyhow::anyhow!(
+        "MCP startup completed without rmcp ready; ready servers: {:?}",
+        startup.ready
+    ))
 }
 
 fn custom_tool_output_items(req: &ResponsesRequest, call_id: &str) -> Vec<Value> {
@@ -2399,7 +2411,6 @@ text(JSON.stringify(Object.getOwnPropertyNames(globalThis).sort()));
         "Array",
         "ArrayBuffer",
         "AsyncDisposableStack",
-        "Atomics",
         "BigInt",
         "BigInt64Array",
         "BigUint64Array",
@@ -2434,7 +2445,6 @@ text(JSON.stringify(Object.getOwnPropertyNames(globalThis).sort()));
         "Reflect",
         "RegExp",
         "Set",
-        "SharedArrayBuffer",
         "String",
         "SuppressedError",
         "Symbol",
@@ -2449,7 +2459,6 @@ text(JSON.stringify(Object.getOwnPropertyNames(globalThis).sort()));
         "WeakMap",
         "WeakRef",
         "WeakSet",
-        "WebAssembly",
         "__codexContentItems",
         "add_content",
         "decodeURI",
@@ -2584,7 +2593,6 @@ async fn code_mode_can_call_hidden_dynamic_tools() -> Result<()> {
         .thread_manager
         .start_thread_with_tools(
             base_test.config.clone(),
-            codex_core::thread_store_from_config(&base_test.config),
             vec![DynamicToolSpec {
                 namespace: Some("codex_app".to_string()),
                 name: "hidden_dynamic_tool".to_string(),
