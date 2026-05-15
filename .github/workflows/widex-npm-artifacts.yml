@@ -155,7 +155,22 @@ jobs:
           if [[ "${{ matrix.target }}" == *linux* ]]; then
             bins+=(--bin bwrap)
           fi
-          cargo build --target ${{ matrix.target }} --release --timings "${bins[@]}"
+          cargo_build() {
+            cargo build --target ${{ matrix.target }} --release --timings "${bins[@]}"
+          }
+
+          for attempt in 1 2 3; do
+            if cargo_build; then
+              exit 0
+            fi
+            status=$?
+            if [[ "$attempt" == 3 ]]; then
+              exit "$status"
+            fi
+            sleep_for=$((attempt * 30))
+            echo "cargo build failed with status ${status}; retrying in ${sleep_for}s..."
+            sleep "$sleep_for"
+          done
 
       - name: Stage native artifact
         shell: bash
@@ -207,10 +222,26 @@ jobs:
       - name: Cargo build
         shell: bash
         run: |
-          cargo build --target ${{ matrix.target }} --release --timings \
-            --bin codex \
-            --bin codex-windows-sandbox-setup \
-            --bin codex-command-runner
+          set -euo pipefail
+          cargo_build() {
+            cargo build --target ${{ matrix.target }} --release --timings \
+              --bin codex \
+              --bin codex-windows-sandbox-setup \
+              --bin codex-command-runner
+          }
+
+          for attempt in 1 2 3; do
+            if cargo_build; then
+              exit 0
+            fi
+            status=$?
+            if [[ "$attempt" == 3 ]]; then
+              exit "$status"
+            fi
+            sleep_for=$((attempt * 30))
+            echo "cargo build failed with status ${status}; retrying in ${sleep_for}s..."
+            sleep "$sleep_for"
+          done
 
       - name: Stage native artifacts
         shell: bash
