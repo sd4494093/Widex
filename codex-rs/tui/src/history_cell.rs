@@ -101,6 +101,7 @@ use url::Url;
 
 const RAW_DIFF_SUMMARY_WIDTH: usize = 10_000;
 const RAW_TOOL_OUTPUT_WIDTH: usize = 10_000;
+const WIDEX_NPM_PACKAGE_URL: &str = "https://www.npmjs.com/package/@wellau/widex";
 
 mod hook_cell;
 
@@ -673,11 +674,7 @@ impl HistoryCell for UpdateAvailableHistoryCell {
         let update_instruction = if let Some(update_action) = self.update_action {
             line!["Run ", update_action.command_str().cyan(), " to update."]
         } else {
-            line![
-                "See ",
-                "https://github.com/openai/codex".cyan().underlined(),
-                " for installation options."
-            ]
+            line!["See ", WIDEX_NPM_PACKAGE_URL.cyan().underlined(), "."]
         };
 
         let content = text![
@@ -689,10 +686,8 @@ impl HistoryCell for UpdateAvailableHistoryCell {
             ],
             update_instruction,
             "",
-            "See full release notes:",
-            "https://github.com/openai/codex/releases/latest"
-                .cyan()
-                .underlined(),
+            "See package versions:",
+            WIDEX_NPM_PACKAGE_URL.cyan().underlined(),
         ];
 
         let inner_width = content
@@ -706,15 +701,15 @@ impl HistoryCell for UpdateAvailableHistoryCell {
         let update_instruction = if let Some(update_action) = self.update_action {
             format!("Run {} to update.", update_action.command_str())
         } else {
-            "See https://github.com/openai/codex for installation options.".to_string()
+            format!("See {WIDEX_NPM_PACKAGE_URL}.")
         };
         vec![
             Line::from("Update available!"),
             Line::from(format!("{CODEX_CLI_VERSION} -> {}", self.latest_version)),
             Line::from(update_instruction),
             Line::from(""),
-            Line::from("See full release notes:"),
-            Line::from("https://github.com/openai/codex/releases/latest"),
+            Line::from("See package versions:"),
+            Line::from(WIDEX_NPM_PACKAGE_URL),
         ]
     }
 }

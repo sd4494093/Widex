@@ -97,7 +97,6 @@ async fn check_for_update(version_file: &Path, action: Option<UpdateAction>) -> 
             version
         }
         Some(UpdateAction::NpmGlobalLatest) | Some(UpdateAction::BunGlobalLatest) => {
-            let latest_version = fetch_latest_github_release_version().await?;
             let package_info = create_client()
                 .get(npm_registry::PACKAGE_URL)
                 .send()
@@ -105,8 +104,7 @@ async fn check_for_update(version_file: &Path, action: Option<UpdateAction>) -> 
                 .error_for_status()?
                 .json::<NpmPackageInfo>()
                 .await?;
-            npm_registry::ensure_version_ready(&package_info, &latest_version)?;
-            latest_version
+            npm_registry::latest_ready_version(&package_info)?
         }
         Some(UpdateAction::StandaloneUnix) | Some(UpdateAction::StandaloneWindows) | None => {
             fetch_latest_github_release_version().await?

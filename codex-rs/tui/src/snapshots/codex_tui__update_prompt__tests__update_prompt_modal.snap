@@ -1,12 +1,13 @@
 ---
 source: tui/src/update_prompt.rs
-expression: terminal.backend()
+expression: terminal.backend().vt100().screen().contents()
 ---
-  ✨ Update available! 0.0.0 -> 9.9.9
 
-  Release notes: https://github.com/openai/codex/releases/latest
+  ✨ Update available! 0.130.1 -> 9.9.9
 
-› 1. Update now (runs `npm install -g @openai/codex@latest`)                    
+  Package: https://www.npmjs.com/package/@wellau/widex
+
+› 1. Update now (runs `npm install -g @wellau/widex@latest`)
   2. Skip
   3. Skip until next version
 

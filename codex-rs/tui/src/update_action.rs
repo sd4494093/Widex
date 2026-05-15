@@ -6,9 +6,9 @@ use codex_install_context::StandalonePlatform;
 /// Update action the CLI should perform after the TUI exits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateAction {
-    /// Update via `npm install -g @openai/codex@latest`.
+    /// Update via `npm install -g @wellau/widex@latest`.
     NpmGlobalLatest,
-    /// Update via `bun install -g @openai/codex@latest`.
+    /// Update via `bun install -g @wellau/widex@latest`.
     BunGlobalLatest,
     /// Update via `brew upgrade codex`.
     BrewUpgrade,
@@ -36,8 +36,8 @@ impl UpdateAction {
     /// Returns the list of command-line arguments for invoking the update.
     pub fn command_args(self) -> (&'static str, &'static [&'static str]) {
         match self {
-            UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "@openai/codex"]),
-            UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@openai/codex"]),
+            UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "@wellau/widex@latest"]),
+            UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@wellau/widex@latest"]),
             UpdateAction::BrewUpgrade => ("brew", &["upgrade", "--cask", "codex"]),
             UpdateAction::StandaloneUnix => (
                 "sh",
@@ -104,6 +104,18 @@ mod tests {
                 resources_dir: Some(native_release_dir.join("codex-resources")),
             }),
             Some(UpdateAction::StandaloneWindows)
+        );
+    }
+
+    #[test]
+    fn npm_and_bun_update_commands_install_widex_package() {
+        assert_eq!(
+            UpdateAction::NpmGlobalLatest.command_args(),
+            ("npm", &["install", "-g", "@wellau/widex@latest"][..],)
+        );
+        assert_eq!(
+            UpdateAction::BunGlobalLatest.command_args(),
+            ("bun", &["install", "-g", "@wellau/widex@latest"][..],)
         );
     }
 

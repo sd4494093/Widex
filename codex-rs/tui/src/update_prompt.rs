@@ -27,6 +27,8 @@ use ratatui::widgets::Clear;
 use ratatui::widgets::WidgetRef;
 use tokio_stream::StreamExt;
 
+const WIDEX_NPM_PACKAGE_URL: &str = "https://www.npmjs.com/package/@wellau/widex";
+
 pub(crate) enum UpdatePromptOutcome {
     Continue,
     RunUpdate(UpdateAction),
@@ -203,10 +205,8 @@ impl WidgetRef for &UpdatePromptScreen {
         column.push("");
         column.push(
             Line::from(vec![
-                "Release notes: ".dim(),
-                "https://github.com/openai/codex/releases/latest"
-                    .dim()
-                    .underlined(),
+                "Package: ".dim(),
+                WIDEX_NPM_PACKAGE_URL.dim().underlined(),
             ])
             .inset(Insets::tlbr(0, 2, 0, 0)),
         );
@@ -264,7 +264,10 @@ mod tests {
         terminal
             .draw(|frame| frame.render_widget_ref(&screen, frame.area()))
             .expect("render update prompt");
-        insta::assert_snapshot!("update_prompt_modal", terminal.backend());
+        insta::assert_snapshot!(
+            "update_prompt_modal",
+            terminal.backend().vt100().screen().contents()
+        );
     }
 
     #[test]
