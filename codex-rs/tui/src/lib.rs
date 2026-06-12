@@ -278,7 +278,6 @@ pub(crate) mod test_support;
 
 use crate::onboarding::onboarding_screen::OnboardingScreenArgs;
 use crate::onboarding::onboarding_screen::run_onboarding_app;
-use crate::onboarding::startup_splash::StartupSplashMode;
 use crate::onboarding::startup_splash::StartupSplashOutcome;
 use crate::onboarding::startup_splash::run_startup_splash;
 use crate::startup_hooks_review::StartupHooksReviewOutcome;
