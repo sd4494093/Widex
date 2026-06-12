@@ -109,10 +109,7 @@ fn save_session_resolved_fields(sc: &SessionConfiguration, lock_config: &mut Con
     lock_config.model = Some(sc.collaboration_mode.model().to_string());
     lock_config.model_reasoning_effort = sc.collaboration_mode.reasoning_effort();
     lock_config.model_reasoning_summary = sc.model_reasoning_summary;
-    lock_config.service_tier = sc
-        .service_tier
-        .as_deref()
-        .and_then(codex_protocol::config_types::ServiceTier::from_request_value);
+    lock_config.service_tier = sc.service_tier.clone();
     lock_config.instructions = Some(sc.base_instructions.clone());
     lock_config.developer_instructions = sc.developer_instructions.clone();
     lock_config.compact_prompt = sc.compact_prompt.clone();
@@ -132,10 +129,12 @@ fn save_config_resolved_fields(
 ) -> anyhow::Result<()> {
     lock_config.web_search = Some(config.web_search_mode.value());
     lock_config.model_provider = Some(config.model_provider_id.clone());
-    lock_config.plan_mode_reasoning_effort = config.plan_mode_reasoning_effort;
+    lock_config.plan_mode_reasoning_effort = config.plan_mode_reasoning_effort.clone();
     lock_config.model_verbosity = config.model_verbosity;
     lock_config.include_permissions_instructions = Some(config.include_permissions_instructions);
     lock_config.include_apps_instructions = Some(config.include_apps_instructions);
+    lock_config.include_collaboration_mode_instructions =
+        Some(config.include_collaboration_mode_instructions);
     lock_config.include_environment_context = Some(config.include_environment_context);
     lock_config.background_terminal_max_timeout = Some(config.background_terminal_max_timeout);
 
@@ -187,7 +186,6 @@ fn drop_lockfile_inputs(lock_config: &mut ConfigToml) {
     lock_config.profiles.clear();
     clear_config_lock_debug_controls(lock_config);
     lock_config.model_instructions_file = None;
-    lock_config.experimental_instructions_file = None;
     lock_config.experimental_compact_prompt_file = None;
     lock_config.model_catalog_json = None;
     lock_config.sandbox_mode = None;
@@ -195,7 +193,6 @@ fn drop_lockfile_inputs(lock_config: &mut ConfigToml) {
     lock_config.default_permissions = None;
     lock_config.permissions = None;
     lock_config.experimental_use_unified_exec_tool = None;
-    lock_config.experimental_use_freeform_apply_patch = None;
 }
 
 fn resolved_config_to_toml<Toml>(
@@ -254,6 +251,14 @@ mod tests {
                 spec.key
             );
         }
+        assert_eq!(
+            features.code_mode,
+            Some(FeatureToml::Enabled(
+                sc.original_config_do_not_use
+                    .features
+                    .enabled(Feature::CodeMode)
+            ))
+        );
 
         let multi_agent_v2 = features
             .multi_agent_v2
@@ -265,6 +270,8 @@ mod tests {
                 enabled: Some(false),
                 max_concurrent_threads_per_session: Some(_),
                 min_wait_timeout_ms: Some(_),
+                max_wait_timeout_ms: Some(_),
+                default_wait_timeout_ms: Some(_),
                 usage_hint_enabled: Some(_),
                 hide_spawn_agent_metadata: Some(_),
                 ..

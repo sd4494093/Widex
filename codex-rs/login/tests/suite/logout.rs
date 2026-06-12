@@ -197,6 +197,7 @@ fn chatgpt_auth_with_refresh_token(refresh_token: &str) -> AuthDotJson {
         }),
         last_refresh: None,
         agent_identity: None,
+        personal_access_token: None,
     }
 }
 

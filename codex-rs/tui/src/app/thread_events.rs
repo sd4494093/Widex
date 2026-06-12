@@ -50,6 +50,7 @@ impl ThreadEventStore {
             ThreadBufferedEvent::Request(_)
                 | ThreadBufferedEvent::Notification(ServerNotification::HookStarted(_))
                 | ThreadBufferedEvent::Notification(ServerNotification::HookCompleted(_))
+                | ThreadBufferedEvent::Notification(ServerNotification::McpServerStatusUpdated(_))
                 | ThreadBufferedEvent::FeedbackSubmission(_)
         )
     }
@@ -104,10 +105,10 @@ impl ThreadEventStore {
             ServerNotification::TurnStarted(turn) => {
                 self.active_turn_id = Some(turn.turn.id.clone());
             }
-            ServerNotification::TurnCompleted(turn) => {
-                if self.active_turn_id.as_deref() == Some(turn.turn.id.as_str()) {
-                    self.active_turn_id = None;
-                }
+            ServerNotification::TurnCompleted(turn)
+                if self.active_turn_id.as_deref() == Some(turn.turn.id.as_str()) =>
+            {
+                self.active_turn_id = None;
             }
             ServerNotification::ThreadClosed(_) => {
                 self.active_turn_id = None;
@@ -352,8 +353,11 @@ mod tests {
             permission_profile: PermissionProfile::read_only(),
             active_permission_profile: None,
             cwd: cwd.abs(),
+            runtime_workspace_roots: Vec::new(),
             instruction_source_paths: Vec::new(),
             reasoning_effort: None,
+            collaboration_mode: None,
+            personality: None,
             message_history: None,
             network_proxy: None,
             rollout_path: Some(PathBuf::new()),
@@ -585,6 +589,33 @@ mod tests {
                 serde_json::to_value(hook_completed_notification(thread_id, "turn-hook"))
                     .expect("hook notification should serialize"),
             ]
+        );
+    }
+
+    #[test]
+    fn thread_event_store_rebase_preserves_mcp_startup_notifications() {
+        let thread_id = ThreadId::new();
+        let notification = ServerNotification::McpServerStatusUpdated(
+            codex_app_server_protocol::McpServerStatusUpdatedNotification {
+                thread_id: Some(thread_id.to_string()),
+                name: "sentry".to_string(),
+                status: codex_app_server_protocol::McpServerStartupState::Failed,
+                error: Some("sentry is not logged in".to_string()),
+            },
+        );
+        let mut store = ThreadEventStore::new(/*capacity*/ 8);
+        store.push_notification(notification.clone());
+
+        store.rebase_buffer_after_session_refresh();
+
+        let snapshot = store.snapshot();
+        let actual = match snapshot.events.as_slice() {
+            [ThreadBufferedEvent::Notification(actual)] => actual,
+            other => panic!("expected one buffered MCP notification, saw: {other:?}"),
+        };
+        assert_eq!(
+            serde_json::to_value(actual).expect("MCP notification should serialize"),
+            serde_json::to_value(notification).expect("MCP notification should serialize"),
         );
     }
 }

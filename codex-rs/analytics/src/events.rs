@@ -1,7 +1,9 @@
 use std::time::Instant;
 
+use crate::facts::AcceptedLineFingerprint;
 use crate::facts::AppInvocation;
 use crate::facts::CodexCompactionEvent;
+use crate::facts::CodexErrKind;
 use crate::facts::CompactionImplementation;
 use crate::facts::CompactionPhase;
 use crate::facts::CompactionReason;
@@ -19,7 +21,6 @@ use crate::facts::TurnSteerRejectionReason;
 use crate::facts::TurnSteerResult;
 use crate::facts::TurnSubmissionType;
 use crate::now_unix_millis;
-use crate::now_unix_seconds;
 use codex_app_server_protocol::CodexErrorInfo;
 use codex_app_server_protocol::CommandExecutionSource;
 use codex_login::default_client::originator;
@@ -71,6 +72,7 @@ pub(crate) enum TrackEventRequest {
     CollabAgentToolCall(CodexCollabAgentToolCallEventRequest),
     WebSearch(CodexWebSearchEventRequest),
     ImageGeneration(CodexImageGenerationEventRequest),
+    AcceptedLineFingerprints(Box<CodexAcceptedLineFingerprintsEventRequest>),
     #[allow(dead_code)]
     ReviewEvent(CodexReviewEventRequest),
     PluginUsed(CodexPluginUsedEventRequest),
@@ -78,6 +80,32 @@ pub(crate) enum TrackEventRequest {
     PluginUninstalled(CodexPluginEventRequest),
     PluginEnabled(CodexPluginEventRequest),
     PluginDisabled(CodexPluginEventRequest),
+}
+
+impl TrackEventRequest {
+    pub(crate) fn should_send_in_isolated_request(&self) -> bool {
+        matches!(self, Self::AcceptedLineFingerprints(_))
+    }
+}
+
+#[derive(Serialize)]
+pub(crate) struct CodexAcceptedLineFingerprintsEventParams {
+    pub(crate) event_type: &'static str,
+    pub(crate) turn_id: String,
+    pub(crate) thread_id: String,
+    pub(crate) product_surface: Option<String>,
+    pub(crate) model_slug: Option<String>,
+    pub(crate) completed_at: u64,
+    pub(crate) repo_hash: Option<String>,
+    pub(crate) accepted_added_lines: u64,
+    pub(crate) accepted_deleted_lines: u64,
+    pub(crate) line_fingerprints: Vec<AcceptedLineFingerprint>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct CodexAcceptedLineFingerprintsEventRequest {
+    pub(crate) event_type: &'static str,
+    pub(crate) event_params: CodexAcceptedLineFingerprintsEventParams,
 }
 
 #[derive(Serialize)]
@@ -120,6 +148,7 @@ pub(crate) struct CodexRuntimeMetadata {
 #[derive(Serialize)]
 pub(crate) struct ThreadInitializedEventParams {
     pub(crate) thread_id: String,
+    pub(crate) session_id: String,
     pub(crate) app_server_client: CodexAppServerClientMetadata,
     pub(crate) runtime: CodexRuntimeMetadata,
     pub(crate) model: String,
@@ -128,6 +157,7 @@ pub(crate) struct ThreadInitializedEventParams {
     pub(crate) initialization_mode: ThreadInitializationMode,
     pub(crate) subagent_source: Option<String>,
     pub(crate) parent_thread_id: Option<String>,
+    pub(crate) forked_from_thread_id: Option<String>,
     pub(crate) created_at: u64,
 }
 
@@ -292,6 +322,7 @@ impl GuardianReviewTrackContext {
     pub(crate) fn event_params(
         &self,
         result: GuardianReviewAnalyticsResult,
+        completed_at_ms: u64,
     ) -> GuardianReviewEventParams {
         GuardianReviewEventParams {
             thread_id: self.thread_id.clone(),
@@ -318,7 +349,7 @@ impl GuardianReviewTrackContext {
             time_to_first_token_ms: result.time_to_first_token_ms,
             completion_latency_ms: Some(self.started_instant.elapsed().as_millis() as u64),
             started_at: self.started_at_ms / 1_000,
-            completed_at: Some(now_unix_seconds()),
+            completed_at: Some(completed_at_ms / 1_000),
             input_tokens: result.token_usage.as_ref().map(|usage| usage.input_tokens),
             cached_input_tokens: result
                 .token_usage
@@ -392,6 +423,7 @@ impl GuardianReviewAnalyticsResult {
 
 #[derive(Serialize)]
 pub(crate) struct GuardianReviewEventPayload {
+    pub(crate) session_id: String,
     pub(crate) app_server_client: CodexAppServerClientMetadata,
     pub(crate) runtime: CodexRuntimeMetadata,
     #[serde(flatten)]
@@ -401,7 +433,7 @@ pub(crate) struct GuardianReviewEventPayload {
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum ToolItemFinalApprovalOutcome {
+pub(crate) enum FinalApprovalOutcome {
     Unknown,
     NotNeeded,
     ConfigAllowed,
@@ -458,7 +490,7 @@ pub(crate) struct CodexToolItemEventBase {
     pub(crate) review_count: u64,
     pub(crate) guardian_review_count: u64,
     pub(crate) user_review_count: u64,
-    pub(crate) final_approval_outcome: ToolItemFinalApprovalOutcome,
+    pub(crate) final_approval_outcome: FinalApprovalOutcome,
     pub(crate) terminal_status: ToolItemTerminalStatus,
     pub(crate) failure_kind: Option<ToolItemFailureKind>,
     pub(crate) requested_additional_permissions: bool,
@@ -525,8 +557,8 @@ pub(crate) struct CodexReviewEventParams {
     pub(crate) thread_source: Option<ThreadSource>,
     pub(crate) subagent_source: Option<String>,
     pub(crate) parent_thread_id: Option<String>,
-    pub(crate) tool_kind: ReviewSubjectKind,
-    pub(crate) tool_name: String,
+    pub(crate) subject_kind: ReviewSubjectKind,
+    pub(crate) subject_name: String,
     pub(crate) reviewer: Reviewer,
     pub(crate) trigger: ReviewTrigger,
     pub(crate) status: ReviewStatus,
@@ -710,6 +742,7 @@ pub(crate) struct CodexHookRunEventRequest {
 #[derive(Serialize)]
 pub(crate) struct CodexCompactionEventParams {
     pub(crate) thread_id: String,
+    pub(crate) session_id: String,
     pub(crate) turn_id: String,
     pub(crate) app_server_client: CodexAppServerClientMetadata,
     pub(crate) runtime: CodexRuntimeMetadata,
@@ -725,6 +758,8 @@ pub(crate) struct CodexCompactionEventParams {
     pub(crate) error: Option<String>,
     pub(crate) active_context_tokens_before: i64,
     pub(crate) active_context_tokens_after: i64,
+    pub(crate) retained_image_count: Option<usize>,
+    pub(crate) compaction_summary_tokens: Option<i64>,
     pub(crate) started_at: u64,
     pub(crate) completed_at: u64,
     pub(crate) duration_ms: Option<u64>,
@@ -739,6 +774,7 @@ pub(crate) struct CodexCompactionEventRequest {
 #[derive(Serialize)]
 pub(crate) struct CodexTurnEventParams {
     pub(crate) thread_id: String,
+    pub(crate) session_id: String,
     pub(crate) turn_id: String,
     // TODO(rhan-oai): Populate once queued/default submission type is plumbed from
     // the turn/start callsites instead of always being reported as None.
@@ -761,13 +797,14 @@ pub(crate) struct CodexTurnEventParams {
     pub(crate) sandbox_network_access: bool,
     pub(crate) collaboration_mode: Option<&'static str>,
     pub(crate) personality: Option<String>,
+    pub(crate) workspace_kind: Option<String>,
     pub(crate) num_input_images: usize,
     pub(crate) is_first_turn: bool,
     pub(crate) status: Option<TurnStatus>,
     pub(crate) turn_error: Option<CodexErrorInfo>,
+    pub(crate) codex_error_kind: Option<CodexErrKind>,
+    pub(crate) codex_error_http_status_code: Option<u16>,
     pub(crate) steer_count: Option<usize>,
-    // TODO(rhan-oai): Populate these once tool-call accounting is emitted from
-    // core; the schema is reserved but these fields are currently always None.
     pub(crate) total_tool_call_count: Option<usize>,
     pub(crate) shell_command_count: Option<usize>,
     pub(crate) file_change_count: Option<usize>,
@@ -781,6 +818,13 @@ pub(crate) struct CodexTurnEventParams {
     pub(crate) output_tokens: Option<i64>,
     pub(crate) reasoning_output_tokens: Option<i64>,
     pub(crate) total_tokens: Option<i64>,
+    pub(crate) before_first_sampling_ms: u64,
+    pub(crate) sampling_ms: u64,
+    pub(crate) between_sampling_overhead_ms: u64,
+    pub(crate) tool_blocking_ms: u64,
+    pub(crate) after_last_sampling_ms: u64,
+    pub(crate) sampling_request_count: u32,
+    pub(crate) sampling_retry_count: u32,
     pub(crate) duration_ms: Option<u64>,
     pub(crate) started_at: Option<u64>,
     pub(crate) completed_at: Option<u64>,
@@ -795,6 +839,7 @@ pub(crate) struct CodexTurnEventRequest {
 #[derive(Serialize)]
 pub(crate) struct CodexTurnSteerEventParams {
     pub(crate) thread_id: String,
+    pub(crate) session_id: String,
     pub(crate) expected_turn_id: Option<String>,
     pub(crate) accepted_turn_id: Option<String>,
     pub(crate) app_server_client: CodexAppServerClientMetadata,
@@ -829,6 +874,7 @@ pub(crate) struct CodexPluginMetadata {
 pub(crate) struct CodexPluginUsedMetadata {
     #[serde(flatten)]
     pub(crate) plugin: CodexPluginMetadata,
+    pub(crate) mcp_server_names: Option<Vec<String>>,
     pub(crate) thread_id: Option<String>,
     pub(crate) turn_id: Option<String>,
     pub(crate) model_slug: Option<String>,
@@ -900,6 +946,7 @@ pub(crate) fn codex_plugin_metadata(plugin: PluginTelemetryMetadata) -> CodexPlu
 
 pub(crate) fn codex_compaction_event_params(
     input: CodexCompactionEvent,
+    session_id: String,
     app_server_client: CodexAppServerClientMetadata,
     runtime: CodexRuntimeMetadata,
     thread_source: Option<ThreadSource>,
@@ -908,6 +955,7 @@ pub(crate) fn codex_compaction_event_params(
 ) -> CodexCompactionEventParams {
     CodexCompactionEventParams {
         thread_id: input.thread_id,
+        session_id,
         turn_id: input.turn_id,
         app_server_client,
         runtime,
@@ -923,6 +971,8 @@ pub(crate) fn codex_compaction_event_params(
         error: input.error,
         active_context_tokens_before: input.active_context_tokens_before,
         active_context_tokens_after: input.active_context_tokens_after,
+        retained_image_count: input.retained_image_count,
+        compaction_summary_tokens: input.compaction_summary_tokens,
         started_at: input.started_at,
         completed_at: input.completed_at,
         duration_ms: input.duration_ms,
@@ -933,8 +983,13 @@ pub(crate) fn codex_plugin_used_metadata(
     tracking: &TrackEventsContext,
     plugin: PluginTelemetryMetadata,
 ) -> CodexPluginUsedMetadata {
+    let mcp_server_names = plugin
+        .capability_summary
+        .as_ref()
+        .map(|summary| summary.mcp_server_names.clone());
     CodexPluginUsedMetadata {
         plugin: codex_plugin_metadata(plugin),
+        mcp_server_names,
         thread_id: Some(tracking.thread_id.clone()),
         turn_id: Some(tracking.turn_id.clone()),
         model_slug: Some(tracking.model_slug.clone()),
@@ -964,6 +1019,8 @@ fn analytics_hook_event_name(event_name: HookEventName) -> &'static str {
         HookEventName::PostCompact => "PostCompact",
         HookEventName::SessionStart => "SessionStart",
         HookEventName::UserPromptSubmit => "UserPromptSubmit",
+        HookEventName::SubagentStart => "SubagentStart",
+        HookEventName::SubagentStop => "SubagentStop",
         HookEventName::Stop => "Stop",
     }
 }
@@ -977,6 +1034,7 @@ fn analytics_hook_source(source: HookSource) -> &'static str {
         HookSource::SessionFlags => "session_flags",
         HookSource::Plugin => "plugin",
         HookSource::CloudRequirements => "cloud_requirements",
+        HookSource::CloudManagedConfig => "cloud_managed_config",
         HookSource::LegacyManagedConfigFile => "legacy_managed_config_file",
         HookSource::LegacyManagedConfigMdm => "legacy_managed_config_mdm",
         HookSource::Unknown => "unknown",
@@ -998,6 +1056,7 @@ pub(crate) fn subagent_thread_started_event_request(
 ) -> ThreadInitializedEvent {
     let event_params = ThreadInitializedEventParams {
         thread_id: input.thread_id,
+        session_id: input.session_id,
         app_server_client: CodexAppServerClientMetadata {
             product_client_id: input.product_client_id,
             client_name: Some(input.client_name),
@@ -1011,9 +1070,8 @@ pub(crate) fn subagent_thread_started_event_request(
         thread_source: Some(ThreadSource::Subagent),
         initialization_mode: ThreadInitializationMode::New,
         subagent_source: Some(subagent_source_name(&input.subagent_source)),
-        parent_thread_id: input
-            .parent_thread_id
-            .or_else(|| subagent_parent_thread_id(&input.subagent_source)),
+        parent_thread_id: input.parent_thread_id,
+        forked_from_thread_id: input.forked_from_thread_id,
         created_at: input.created_at,
     };
     ThreadInitializedEvent {
@@ -1023,22 +1081,7 @@ pub(crate) fn subagent_thread_started_event_request(
 }
 
 pub(crate) fn subagent_source_name(subagent_source: &SubAgentSource) -> String {
-    match subagent_source {
-        SubAgentSource::Review => "review".to_string(),
-        SubAgentSource::Compact => "compact".to_string(),
-        SubAgentSource::ThreadSpawn { .. } => "thread_spawn".to_string(),
-        SubAgentSource::MemoryConsolidation => "memory_consolidation".to_string(),
-        SubAgentSource::Other(other) => other.clone(),
-    }
-}
-
-pub(crate) fn subagent_parent_thread_id(subagent_source: &SubAgentSource) -> Option<String> {
-    match subagent_source {
-        SubAgentSource::ThreadSpawn {
-            parent_thread_id, ..
-        } => Some(parent_thread_id.to_string()),
-        _ => None,
-    }
+    subagent_source.kind().to_string()
 }
 
 fn analytics_hook_status(status: HookRunStatus) -> HookRunStatus {

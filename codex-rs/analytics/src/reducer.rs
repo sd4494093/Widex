@@ -1,3 +1,7 @@
+use crate::accepted_lines::AcceptedLineFingerprintEventInput;
+use crate::accepted_lines::accepted_line_fingerprint_event_requests;
+use crate::accepted_lines::accepted_line_fingerprints_from_unified_diff;
+use crate::accepted_lines::accepted_line_repo_hash_for_cwd;
 use crate::events::AppServerRpcTransport;
 use crate::events::CodexAppMentionedEventRequest;
 use crate::events::CodexAppServerClientMetadata;
@@ -18,6 +22,8 @@ use crate::events::CodexMcpToolCallEventParams;
 use crate::events::CodexMcpToolCallEventRequest;
 use crate::events::CodexPluginEventRequest;
 use crate::events::CodexPluginUsedEventRequest;
+use crate::events::CodexReviewEventParams;
+use crate::events::CodexReviewEventRequest;
 use crate::events::CodexRuntimeMetadata;
 use crate::events::CodexToolItemEventBase;
 use crate::events::CodexTurnEventParams;
@@ -26,15 +32,20 @@ use crate::events::CodexTurnSteerEventParams;
 use crate::events::CodexTurnSteerEventRequest;
 use crate::events::CodexWebSearchEventParams;
 use crate::events::CodexWebSearchEventRequest;
+use crate::events::FinalApprovalOutcome;
 use crate::events::GuardianReviewEventParams;
 use crate::events::GuardianReviewEventPayload;
 use crate::events::GuardianReviewEventRequest;
+use crate::events::ReviewResolution;
+use crate::events::ReviewStatus;
+use crate::events::ReviewSubjectKind;
+use crate::events::ReviewTrigger;
+use crate::events::Reviewer;
 use crate::events::SkillInvocationEventParams;
 use crate::events::SkillInvocationEventRequest;
 use crate::events::ThreadInitializedEvent;
 use crate::events::ThreadInitializedEventParams;
 use crate::events::ToolItemFailureKind;
-use crate::events::ToolItemFinalApprovalOutcome;
 use crate::events::ToolItemTerminalStatus;
 use crate::events::TrackEventRequest;
 use crate::events::WebSearchActionKind;
@@ -44,7 +55,6 @@ use crate::events::codex_hook_run_metadata;
 use crate::events::codex_plugin_metadata;
 use crate::events::codex_plugin_used_metadata;
 use crate::events::plugin_state_event_type;
-use crate::events::subagent_parent_thread_id;
 use crate::events::subagent_source_name;
 use crate::events::subagent_thread_started_event_request;
 use crate::facts::AnalyticsFact;
@@ -60,6 +70,10 @@ use crate::facts::PluginUsedInput;
 use crate::facts::SkillInvokedInput;
 use crate::facts::SubAgentThreadStartedInput;
 use crate::facts::ThreadInitializationMode;
+use crate::facts::TurnCodexError;
+use crate::facts::TurnCodexErrorFact;
+use crate::facts::TurnProfile;
+use crate::facts::TurnProfileFact;
 use crate::facts::TurnResolvedConfigFact;
 use crate::facts::TurnStatus;
 use crate::facts::TurnSteerRejectionReason;
@@ -76,16 +90,24 @@ use codex_app_server_protocol::CollabAgentStatus;
 use codex_app_server_protocol::CollabAgentTool;
 use codex_app_server_protocol::CollabAgentToolCallStatus;
 use codex_app_server_protocol::CommandAction;
+use codex_app_server_protocol::CommandExecutionApprovalDecision;
 use codex_app_server_protocol::CommandExecutionSource;
 use codex_app_server_protocol::CommandExecutionStatus;
 use codex_app_server_protocol::DynamicToolCallOutputContentItem;
 use codex_app_server_protocol::DynamicToolCallStatus;
+use codex_app_server_protocol::FileChangeApprovalDecision;
+use codex_app_server_protocol::GuardianApprovalReviewAction;
+use codex_app_server_protocol::GuardianApprovalReviewStatus;
 use codex_app_server_protocol::InitializeParams;
 use codex_app_server_protocol::McpToolCallStatus;
+use codex_app_server_protocol::NetworkPolicyRuleAction;
 use codex_app_server_protocol::PatchApplyStatus;
 use codex_app_server_protocol::PatchChangeKind;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::RequestPermissionProfile;
 use codex_app_server_protocol::ServerNotification;
+use codex_app_server_protocol::ServerRequest;
+use codex_app_server_protocol::ServerResponse;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::TurnSteerResponse;
 use codex_app_server_protocol::UserInput;
@@ -101,9 +123,12 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SkillScope;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TokenUsage;
+use codex_protocol::request_permissions::PermissionGrantScope as CorePermissionGrantScope;
+use codex_protocol::request_permissions::RequestPermissionsResponse as CoreRequestPermissionsResponse;
 use sha1::Digest;
 use std::collections::HashMap;
 use std::path::Path;
+use std::path::PathBuf;
 
 #[derive(Default)]
 pub(crate) struct AnalyticsReducer {
@@ -112,6 +137,8 @@ pub(crate) struct AnalyticsReducer {
     connections: HashMap<u64, ConnectionState>,
     threads: HashMap<String, ThreadAnalyticsState>,
     tool_items_started_at_ms: HashMap<ToolItemKey, u64>,
+    pending_reviews: HashMap<RequestId, PendingReviewState>,
+    item_review_summaries: HashMap<ToolItemKey, ItemReviewSummary>,
 }
 
 struct ConnectionState {
@@ -142,6 +169,16 @@ impl<'a> AnalyticsDropSite<'a> {
             turn_id: Some(&input.turn_id),
             review_id: Some(&input.review_id),
             item_id: None,
+        }
+    }
+
+    fn review(input: &'a PendingReviewState) -> Self {
+        Self {
+            event_name: "review",
+            thread_id: &input.thread_id,
+            turn_id: Some(&input.turn_id),
+            review_id: Some(&input.review_id),
+            item_id: input.item_id.as_deref(),
         }
     }
 
@@ -196,7 +233,32 @@ enum MissingAnalyticsContext {
 }
 
 #[derive(Clone)]
+struct PendingReviewState {
+    thread_id: String,
+    turn_id: String,
+    item_id: Option<String>,
+    review_id: String,
+    subject_kind: ReviewSubjectKind,
+    subject_name: String,
+    trigger: ReviewTrigger,
+    started_at_ms: u64,
+    requested_additional_permissions: bool,
+    requested_network_access: bool,
+}
+
+#[derive(Clone, Default)]
+struct ItemReviewSummary {
+    review_count: u64,
+    guardian_review_count: u64,
+    user_review_count: u64,
+    final_approval_outcome: Option<FinalApprovalOutcome>,
+    requested_additional_permissions: bool,
+    requested_network_access: bool,
+}
+
+#[derive(Clone)]
 struct ThreadMetadataState {
+    session_id: String,
     thread_source: Option<ThreadSource>,
     initialization_mode: ThreadInitializationMode,
     subagent_source: Option<String>,
@@ -205,24 +267,24 @@ struct ThreadMetadataState {
 
 impl ThreadMetadataState {
     fn from_thread_metadata(
+        session_id: String,
         session_source: &SessionSource,
         thread_source: Option<ThreadSource>,
+        parent_thread_id: Option<String>,
         initialization_mode: ThreadInitializationMode,
     ) -> Self {
-        let (subagent_source, parent_thread_id) = match session_source {
-            SessionSource::SubAgent(subagent_source) => (
-                Some(subagent_source_name(subagent_source)),
-                subagent_parent_thread_id(subagent_source),
-            ),
+        let subagent_source = match session_source {
+            SessionSource::SubAgent(subagent_source) => Some(subagent_source_name(subagent_source)),
             SessionSource::Cli
             | SessionSource::VSCode
             | SessionSource::Exec
             | SessionSource::Mcp
             | SessionSource::Custom(_)
             | SessionSource::Internal(_)
-            | SessionSource::Unknown => (None, None),
+            | SessionSource::Unknown => None,
         };
         Self {
+            session_id,
             thread_source,
             initialization_mode,
             subagent_source,
@@ -256,6 +318,7 @@ struct CompletedTurnState {
     duration_ms: Option<u64>,
 }
 
+#[derive(Default)]
 struct TurnState {
     connection_id: Option<u64>,
     thread_id: Option<String>,
@@ -263,8 +326,12 @@ struct TurnState {
     resolved_config: Option<TurnResolvedConfigFact>,
     started_at: Option<u64>,
     token_usage: Option<TokenUsage>,
+    profile: Option<TurnProfile>,
     completed: Option<CompletedTurnState>,
+    codex_error: Option<TurnCodexError>,
+    latest_diff: Option<String>,
     steer_count: usize,
+    tool_counts: TurnToolCounts,
 }
 
 #[derive(Hash, Eq, PartialEq)]
@@ -272,6 +339,42 @@ struct ToolItemKey {
     thread_id: String,
     turn_id: String,
     item_id: String,
+}
+
+#[derive(Default)]
+struct TurnToolCounts {
+    total: usize,
+    shell_command: usize,
+    file_change: usize,
+    mcp_tool_call: usize,
+    dynamic_tool_call: usize,
+    subagent_tool_call: usize,
+    web_search: usize,
+    image_generation: usize,
+}
+
+impl TurnToolCounts {
+    fn record(&mut self, item: &ThreadItem) {
+        match item {
+            ThreadItem::CommandExecution { .. } => self.shell_command += 1,
+            ThreadItem::FileChange { .. } => self.file_change += 1,
+            ThreadItem::McpToolCall { .. } => self.mcp_tool_call += 1,
+            ThreadItem::DynamicToolCall { .. } => self.dynamic_tool_call += 1,
+            ThreadItem::CollabAgentToolCall { .. } => self.subagent_tool_call += 1,
+            ThreadItem::WebSearch { .. } => self.web_search += 1,
+            ThreadItem::ImageGeneration { .. } => self.image_generation += 1,
+            ThreadItem::UserMessage { .. }
+            | ThreadItem::HookPrompt { .. }
+            | ThreadItem::AgentMessage { .. }
+            | ThreadItem::Plan { .. }
+            | ThreadItem::Reasoning { .. }
+            | ThreadItem::ImageView { .. }
+            | ThreadItem::EnteredReviewMode { .. }
+            | ThreadItem::ExitedReviewMode { .. }
+            | ThreadItem::ContextCompaction { .. } => return,
+        }
+        self.total += 1;
+    }
 }
 
 impl AnalyticsReducer {
@@ -305,7 +408,7 @@ impl AnalyticsReducer {
                 response,
             } => {
                 if let Some(response) = response.into_client_response(request_id) {
-                    self.ingest_response(connection_id, response, out);
+                    self.ingest_response(connection_id, response, out).await;
                 }
             }
             AnalyticsFact::ErrorResponse {
@@ -317,16 +420,38 @@ impl AnalyticsReducer {
                 self.ingest_error_response(connection_id, request_id, error_type, out);
             }
             AnalyticsFact::Notification(notification) => {
-                self.ingest_notification(*notification, out);
+                self.ingest_notification(*notification, out).await;
             }
             AnalyticsFact::ServerRequest {
-                connection_id: _connection_id,
-                request: _request,
-            } => {}
+                connection_id,
+                request,
+            } => {
+                self.ingest_server_request(connection_id, *request);
+            }
             AnalyticsFact::ServerResponse {
-                response: _response,
-                ..
-            } => {}
+                completed_at_ms,
+                response,
+            } => {
+                self.ingest_server_response(completed_at_ms, *response, out);
+            }
+            AnalyticsFact::EffectivePermissionsApprovalResponse {
+                completed_at_ms,
+                request_id,
+                response,
+            } => {
+                self.ingest_effective_permissions_approval_response(
+                    completed_at_ms,
+                    request_id,
+                    *response,
+                    out,
+                );
+            }
+            AnalyticsFact::ServerRequestAborted {
+                completed_at_ms,
+                request_id,
+            } => {
+                self.ingest_server_request_aborted(completed_at_ms, request_id, out);
+            }
             AnalyticsFact::Custom(input) => match input {
                 CustomAnalyticsFact::SubAgentThreadStarted(input) => {
                     self.ingest_subagent_thread_started(input, out);
@@ -338,10 +463,16 @@ impl AnalyticsReducer {
                     self.ingest_guardian_review(*input, out);
                 }
                 CustomAnalyticsFact::TurnResolvedConfig(input) => {
-                    self.ingest_turn_resolved_config(*input, out);
+                    self.ingest_turn_resolved_config(*input, out).await;
                 }
                 CustomAnalyticsFact::TurnTokenUsage(input) => {
-                    self.ingest_turn_token_usage(*input, out);
+                    self.ingest_turn_token_usage(*input, out).await;
+                }
+                CustomAnalyticsFact::TurnProfile(input) => {
+                    self.ingest_turn_profile(*input, out).await;
+                }
+                CustomAnalyticsFact::TurnCodexError(input) => {
+                    self.ingest_turn_codex_error(*input);
                 }
                 CustomAnalyticsFact::SkillInvoked(input) => {
                     self.ingest_skill_invoked(input, out).await;
@@ -395,10 +526,7 @@ impl AnalyticsReducer {
         input: SubAgentThreadStartedInput,
         out: &mut Vec<TrackEventRequest>,
     ) {
-        let parent_thread_id = input
-            .parent_thread_id
-            .clone()
-            .or_else(|| subagent_parent_thread_id(&input.subagent_source));
+        let parent_thread_id = input.parent_thread_id.clone();
         let parent_connection_id = parent_thread_id
             .as_ref()
             .and_then(|parent_thread_id| self.threads.get(parent_thread_id))
@@ -407,6 +535,7 @@ impl AnalyticsReducer {
         thread_state
             .metadata
             .get_or_insert_with(|| ThreadMetadataState {
+                session_id: input.session_id.clone(),
                 thread_source: Some(ThreadSource::Subagent),
                 initialization_mode: ThreadInitializationMode::New,
                 subagent_source: Some(subagent_source_name(&input.subagent_source)),
@@ -425,8 +554,8 @@ impl AnalyticsReducer {
         input: GuardianReviewEventParams,
         out: &mut Vec<TrackEventRequest>,
     ) {
-        let Some(connection_state) =
-            self.thread_connection_or_warn(AnalyticsDropSite::guardian(&input))
+        let Some((connection_state, thread_metadata)) =
+            self.thread_context_or_warn(AnalyticsDropSite::guardian(&input))
         else {
             return;
         };
@@ -434,6 +563,7 @@ impl AnalyticsReducer {
             GuardianReviewEventRequest {
                 event_type: "codex_guardian_review",
                 event_params: GuardianReviewEventPayload {
+                    session_id: thread_metadata.session_id.clone(),
                     app_server_client: connection_state.app_server_client.clone(),
                     runtime: connection_state.runtime.clone(),
                     guardian_review: input,
@@ -473,7 +603,7 @@ impl AnalyticsReducer {
         }
     }
 
-    fn ingest_turn_resolved_config(
+    async fn ingest_turn_resolved_config(
         &mut self,
         input: TurnResolvedConfigFact,
         out: &mut Vec<TrackEventRequest>,
@@ -481,41 +611,45 @@ impl AnalyticsReducer {
         let turn_id = input.turn_id.clone();
         let thread_id = input.thread_id.clone();
         let num_input_images = input.num_input_images;
-        let turn_state = self.turns.entry(turn_id.clone()).or_insert(TurnState {
-            connection_id: None,
-            thread_id: None,
-            num_input_images: None,
-            resolved_config: None,
-            started_at: None,
-            token_usage: None,
-            completed: None,
-            steer_count: 0,
-        });
+        let turn_state = self.turns.entry(turn_id.clone()).or_default();
         turn_state.thread_id = Some(thread_id);
         turn_state.num_input_images = Some(num_input_images);
         turn_state.resolved_config = Some(input);
-        self.maybe_emit_turn_event(&turn_id, out);
+        self.maybe_emit_turn_event(&turn_id, out).await;
     }
 
-    fn ingest_turn_token_usage(
+    async fn ingest_turn_token_usage(
         &mut self,
         input: TurnTokenUsageFact,
         out: &mut Vec<TrackEventRequest>,
     ) {
         let turn_id = input.turn_id.clone();
-        let turn_state = self.turns.entry(turn_id.clone()).or_insert(TurnState {
-            connection_id: None,
-            thread_id: None,
-            num_input_images: None,
-            resolved_config: None,
-            started_at: None,
-            token_usage: None,
-            completed: None,
-            steer_count: 0,
-        });
+        let turn_state = self.turns.entry(turn_id.clone()).or_default();
         turn_state.thread_id = Some(input.thread_id);
         turn_state.token_usage = Some(input.token_usage);
-        self.maybe_emit_turn_event(&turn_id, out);
+        self.maybe_emit_turn_event(&turn_id, out).await;
+    }
+
+    async fn ingest_turn_profile(
+        &mut self,
+        input: TurnProfileFact,
+        out: &mut Vec<TrackEventRequest>,
+    ) {
+        let TurnProfileFact { turn_id, profile } = input;
+        let turn_state = self.turns.entry(turn_id.clone()).or_default();
+        turn_state.profile = Some(profile);
+        self.maybe_emit_turn_event(&turn_id, out).await;
+    }
+
+    fn ingest_turn_codex_error(&mut self, input: TurnCodexErrorFact) {
+        let TurnCodexErrorFact {
+            turn_id,
+            thread_id,
+            error,
+        } = input;
+        let turn_state = self.turns.entry(turn_id).or_default();
+        turn_state.thread_id.get_or_insert(thread_id);
+        turn_state.codex_error = Some(error);
     }
 
     async fn ingest_skill_invoked(
@@ -622,7 +756,7 @@ impl AnalyticsReducer {
         });
     }
 
-    fn ingest_response(
+    async fn ingest_response(
         &mut self,
         connection_id: u64,
         response: ClientResponse,
@@ -666,20 +800,11 @@ impl AnalyticsReducer {
                 else {
                     return;
                 };
-                let turn_state = self.turns.entry(turn_id.clone()).or_insert(TurnState {
-                    connection_id: None,
-                    thread_id: None,
-                    num_input_images: None,
-                    resolved_config: None,
-                    started_at: None,
-                    token_usage: None,
-                    completed: None,
-                    steer_count: 0,
-                });
+                let turn_state = self.turns.entry(turn_id.clone()).or_default();
                 turn_state.connection_id = Some(connection_id);
                 turn_state.thread_id = Some(pending_request.thread_id);
                 turn_state.num_input_images = Some(pending_request.num_input_images);
-                self.maybe_emit_turn_event(&turn_id, out);
+                self.maybe_emit_turn_event(&turn_id, out).await;
             }
             ClientResponse::TurnSteer {
                 request_id,
@@ -689,6 +814,207 @@ impl AnalyticsReducer {
             }
             _ => {}
         }
+    }
+
+    fn ingest_server_request(&mut self, _connection_id: u64, request: ServerRequest) {
+        match request {
+            ServerRequest::CommandExecutionRequestApproval { request_id, params } => {
+                let is_network_access_review = params.network_approval_context.is_some();
+                let requested_network_access = is_network_access_review
+                    || params
+                        .proposed_network_policy_amendments
+                        .as_ref()
+                        .is_some_and(|amendments| !amendments.is_empty())
+                    || params
+                        .additional_permissions
+                        .as_ref()
+                        .and_then(|permissions| permissions.network.as_ref())
+                        .and_then(|network| network.enabled)
+                        .unwrap_or(false);
+                let requested_additional_permissions = params.additional_permissions.is_some();
+                let trigger = if params.approval_id.is_some() {
+                    ReviewTrigger::ExecveIntercept
+                } else if requested_network_access {
+                    ReviewTrigger::NetworkPolicyDenial
+                } else if requested_additional_permissions {
+                    ReviewTrigger::SandboxDenial
+                } else {
+                    ReviewTrigger::Initial
+                };
+                let Some(started_at_ms) = option_i64_to_u64(Some(params.started_at_ms)) else {
+                    return;
+                };
+                self.pending_reviews.insert(
+                    request_id.clone(),
+                    PendingReviewState {
+                        thread_id: params.thread_id,
+                        turn_id: params.turn_id,
+                        item_id: Some(params.item_id),
+                        review_id: user_review_id(&request_id),
+                        subject_kind: if is_network_access_review {
+                            ReviewSubjectKind::NetworkAccess
+                        } else {
+                            ReviewSubjectKind::CommandExecution
+                        },
+                        subject_name: if is_network_access_review {
+                            "network_access".to_string()
+                        } else {
+                            "command_execution".to_string()
+                        },
+                        trigger,
+                        started_at_ms,
+                        requested_additional_permissions,
+                        requested_network_access,
+                    },
+                );
+            }
+            ServerRequest::FileChangeRequestApproval { request_id, params } => {
+                let requested_additional_permissions = params.grant_root.is_some();
+                let Some(started_at_ms) = option_i64_to_u64(Some(params.started_at_ms)) else {
+                    return;
+                };
+                self.pending_reviews.insert(
+                    request_id.clone(),
+                    PendingReviewState {
+                        thread_id: params.thread_id,
+                        turn_id: params.turn_id,
+                        item_id: Some(params.item_id),
+                        review_id: user_review_id(&request_id),
+                        subject_kind: ReviewSubjectKind::FileChange,
+                        subject_name: "apply_patch".to_string(),
+                        trigger: if requested_additional_permissions {
+                            ReviewTrigger::SandboxDenial
+                        } else {
+                            ReviewTrigger::Initial
+                        },
+                        started_at_ms,
+                        requested_additional_permissions,
+                        requested_network_access: false,
+                    },
+                );
+            }
+            ServerRequest::PermissionsRequestApproval { request_id, params } => {
+                let requested_network_access = params
+                    .permissions
+                    .network
+                    .as_ref()
+                    .and_then(|network| network.enabled)
+                    .unwrap_or(false);
+                let requested_additional_permissions =
+                    requested_network_access || params.permissions.file_system.is_some();
+                let trigger = if requested_network_access {
+                    ReviewTrigger::NetworkPolicyDenial
+                } else if requested_additional_permissions {
+                    ReviewTrigger::SandboxDenial
+                } else {
+                    ReviewTrigger::Initial
+                };
+                let Some(started_at_ms) = option_i64_to_u64(Some(params.started_at_ms)) else {
+                    return;
+                };
+                self.pending_reviews.insert(
+                    request_id.clone(),
+                    PendingReviewState {
+                        thread_id: params.thread_id,
+                        turn_id: params.turn_id,
+                        item_id: Some(params.item_id),
+                        review_id: user_review_id(&request_id),
+                        subject_kind: ReviewSubjectKind::Permissions,
+                        subject_name: "permissions".to_string(),
+                        trigger,
+                        started_at_ms,
+                        requested_additional_permissions,
+                        requested_network_access,
+                    },
+                );
+            }
+            _ => {}
+        }
+    }
+
+    fn ingest_server_response(
+        &mut self,
+        completed_at_ms: u64,
+        response: ServerResponse,
+        out: &mut Vec<TrackEventRequest>,
+    ) {
+        match response {
+            ServerResponse::CommandExecutionRequestApproval {
+                request_id,
+                response,
+            } => {
+                let Some(pending_review) = self.pending_reviews.remove(&request_id) else {
+                    return;
+                };
+                let (status, resolution) = command_execution_review_result(response.decision);
+                self.emit_review_event(
+                    pending_review,
+                    Reviewer::User,
+                    status,
+                    resolution,
+                    completed_at_ms,
+                    out,
+                );
+            }
+            ServerResponse::FileChangeRequestApproval {
+                request_id,
+                response,
+            } => {
+                let Some(pending_review) = self.pending_reviews.remove(&request_id) else {
+                    return;
+                };
+                let (status, resolution) = file_change_review_result(response.decision);
+                self.emit_review_event(
+                    pending_review,
+                    Reviewer::User,
+                    status,
+                    resolution,
+                    completed_at_ms,
+                    out,
+                );
+            }
+            _ => {}
+        }
+    }
+
+    fn ingest_effective_permissions_approval_response(
+        &mut self,
+        completed_at_ms: u64,
+        request_id: RequestId,
+        response: CoreRequestPermissionsResponse,
+        out: &mut Vec<TrackEventRequest>,
+    ) {
+        let Some(pending_review) = self.pending_reviews.remove(&request_id) else {
+            return;
+        };
+        let (status, resolution) = effective_permissions_review_result(&response);
+        self.emit_review_event(
+            pending_review,
+            Reviewer::User,
+            status,
+            resolution,
+            completed_at_ms,
+            out,
+        );
+    }
+
+    fn ingest_server_request_aborted(
+        &mut self,
+        completed_at_ms: u64,
+        request_id: RequestId,
+        out: &mut Vec<TrackEventRequest>,
+    ) {
+        let Some(pending_review) = self.pending_reviews.remove(&request_id) else {
+            return;
+        };
+        self.emit_review_event(
+            pending_review,
+            Reviewer::User,
+            ReviewStatus::Aborted,
+            ReviewResolution::None,
+            completed_at_ms,
+            out,
+        );
     }
 
     fn ingest_error_response(
@@ -741,7 +1067,7 @@ impl AnalyticsReducer {
         );
     }
 
-    fn ingest_notification(
+    async fn ingest_notification(
         &mut self,
         notification: ServerNotification,
         out: &mut Vec<TrackEventRequest>,
@@ -768,6 +1094,16 @@ impl AnalyticsReducer {
                 let Some(item_id) = tracked_tool_item_id(&notification.item) else {
                     return;
                 };
+                let Some(turn_state) = self.turns.get_mut(&notification.turn_id) else {
+                    tracing::warn!(
+                        thread_id = %notification.thread_id,
+                        turn_id = %notification.turn_id,
+                        item_id,
+                        "dropping turn tool count update: missing turn state"
+                    );
+                    return;
+                };
+                turn_state.tool_counts.record(&notification.item);
                 let key = ToolItemKey {
                     thread_id: notification.thread_id.clone(),
                     turn_id: notification.turn_id.clone(),
@@ -791,48 +1127,40 @@ impl AnalyticsReducer {
                 else {
                     return;
                 };
-                if let Some(event) = tool_item_event(
-                    &notification.thread_id,
-                    &notification.turn_id,
-                    &notification.item,
+                if let Some(event) = tool_item_event(ToolItemEventInput {
+                    thread_id: &notification.thread_id,
+                    turn_id: &notification.turn_id,
+                    item: &notification.item,
                     started_at_ms,
                     completed_at_ms,
                     connection_state,
                     thread_metadata,
-                ) {
+                    review_summary: self.item_review_summaries.get(&key),
+                }) {
                     out.push(event);
                 }
+                self.item_review_summaries.remove(&key);
+            }
+            ServerNotification::ItemGuardianApprovalReviewStarted(notification) => {
+                let _ = notification;
+            }
+            ServerNotification::ItemGuardianApprovalReviewCompleted(notification) => {
+                self.ingest_guardian_review_completed(notification, out);
             }
             ServerNotification::TurnStarted(notification) => {
-                let turn_state = self.turns.entry(notification.turn.id).or_insert(TurnState {
-                    connection_id: None,
-                    thread_id: None,
-                    num_input_images: None,
-                    resolved_config: None,
-                    started_at: None,
-                    token_usage: None,
-                    completed: None,
-                    steer_count: 0,
-                });
+                let turn_state = self.turns.entry(notification.turn.id).or_default();
                 turn_state.started_at = notification
                     .turn
                     .started_at
                     .and_then(|started_at| u64::try_from(started_at).ok());
             }
+            ServerNotification::TurnDiffUpdated(notification) => {
+                let turn_state = self.turns.entry(notification.turn_id.clone()).or_default();
+                turn_state.thread_id = Some(notification.thread_id);
+                turn_state.latest_diff = Some(notification.diff);
+            }
             ServerNotification::TurnCompleted(notification) => {
-                let turn_state =
-                    self.turns
-                        .entry(notification.turn.id.clone())
-                        .or_insert(TurnState {
-                            connection_id: None,
-                            thread_id: None,
-                            num_input_images: None,
-                            resolved_config: None,
-                            started_at: None,
-                            token_usage: None,
-                            completed: None,
-                            steer_count: 0,
-                        });
+                let turn_state = self.turns.entry(notification.turn.id.clone()).or_default();
                 turn_state.completed = Some(CompletedTurnState {
                     status: analytics_turn_status(notification.turn.status),
                     turn_error: notification
@@ -850,7 +1178,7 @@ impl AnalyticsReducer {
                         .and_then(|duration_ms| u64::try_from(duration_ms).ok()),
                 });
                 let turn_id = notification.turn.id;
-                self.maybe_emit_turn_event(&turn_id, out);
+                self.maybe_emit_turn_event(&turn_id, out).await;
             }
             _ => {}
         }
@@ -865,13 +1193,18 @@ impl AnalyticsReducer {
         out: &mut Vec<TrackEventRequest>,
     ) {
         let session_source: SessionSource = thread.source.into();
+        let session_id = thread.session_id;
         let thread_id = thread.id;
+        let parent_thread_id = thread.parent_thread_id;
+        let forked_from_thread_id = thread.forked_from_id;
         let Some(connection_state) = self.connections.get(&connection_id) else {
             return;
         };
         let thread_metadata = ThreadMetadataState::from_thread_metadata(
+            session_id.clone(),
             &session_source,
             thread.thread_source.map(Into::into),
+            parent_thread_id,
             initialization_mode,
         );
         self.threads.insert(
@@ -886,6 +1219,7 @@ impl AnalyticsReducer {
                 event_type: "codex_thread_initialized",
                 event_params: ThreadInitializedEventParams {
                     thread_id,
+                    session_id,
                     app_server_client: connection_state.app_server_client.clone(),
                     runtime: connection_state.runtime.clone(),
                     model,
@@ -894,6 +1228,7 @@ impl AnalyticsReducer {
                     initialization_mode,
                     subagent_source: thread_metadata.subagent_source.clone(),
                     parent_thread_id: thread_metadata.parent_thread_id,
+                    forked_from_thread_id,
                     created_at: u64::try_from(thread.created_at).unwrap_or_default(),
                 },
             },
@@ -911,6 +1246,7 @@ impl AnalyticsReducer {
                 event_type: "codex_compaction_event",
                 event_params: codex_compaction_event_params(
                     input,
+                    thread_metadata.session_id.clone(),
                     connection_state.app_server_client.clone(),
                     connection_state.runtime.clone(),
                     thread_metadata.thread_source,
@@ -919,6 +1255,48 @@ impl AnalyticsReducer {
                 ),
             },
         )));
+    }
+
+    fn ingest_guardian_review_completed(
+        &mut self,
+        notification: codex_app_server_protocol::ItemGuardianApprovalReviewCompletedNotification,
+        out: &mut Vec<TrackEventRequest>,
+    ) {
+        let Some((status, resolution)) = guardian_review_result(notification.review.status) else {
+            return;
+        };
+        let (subject_kind, subject_name, trigger) =
+            guardian_review_subject_metadata(&notification.action);
+        let Some(started_at_ms) = option_i64_to_u64(Some(notification.started_at_ms)) else {
+            return;
+        };
+        let pending_review = PendingReviewState {
+            thread_id: notification.thread_id,
+            turn_id: notification.turn_id,
+            item_id: notification.target_item_id,
+            review_id: notification.review_id,
+            subject_kind,
+            subject_name,
+            trigger,
+            started_at_ms,
+            requested_additional_permissions: guardian_review_requested_additional_permissions(
+                &notification.action,
+            ),
+            requested_network_access: guardian_review_requested_network_access(
+                &notification.action,
+            ),
+        };
+        let Some(completed_at_ms) = option_i64_to_u64(Some(notification.completed_at_ms)) else {
+            return;
+        };
+        self.emit_review_event(
+            pending_review,
+            Reviewer::Guardian,
+            status,
+            resolution,
+            completed_at_ms,
+            out,
+        );
     }
 
     fn ingest_turn_steer_response(
@@ -971,6 +1349,7 @@ impl AnalyticsReducer {
             event_type: "codex_turn_steer_event",
             event_params: CodexTurnSteerEventParams {
                 thread_id: pending_request.thread_id,
+                session_id: thread_metadata.session_id.clone(),
                 expected_turn_id: Some(pending_request.expected_turn_id),
                 accepted_turn_id,
                 app_server_client: connection_state.app_server_client.clone(),
@@ -986,13 +1365,81 @@ impl AnalyticsReducer {
         }));
     }
 
-    fn maybe_emit_turn_event(&mut self, turn_id: &str, out: &mut Vec<TrackEventRequest>) {
+    fn emit_review_event(
+        &mut self,
+        pending_review: PendingReviewState,
+        reviewer: Reviewer,
+        status: ReviewStatus,
+        resolution: ReviewResolution,
+        completed_at_ms: u64,
+        out: &mut Vec<TrackEventRequest>,
+    ) {
+        if let Some(item_key) = item_review_summary_key(&pending_review) {
+            self.record_item_review_summary(
+                item_key,
+                reviewer,
+                status,
+                resolution,
+                &pending_review,
+            );
+        }
+        let Some((connection_state, thread_metadata)) =
+            self.thread_context_or_warn(AnalyticsDropSite::review(&pending_review))
+        else {
+            return;
+        };
+        out.push(TrackEventRequest::ReviewEvent(CodexReviewEventRequest {
+            event_type: "codex_review_event",
+            event_params: CodexReviewEventParams {
+                thread_id: pending_review.thread_id,
+                turn_id: pending_review.turn_id,
+                item_id: pending_review.item_id,
+                review_id: pending_review.review_id,
+                app_server_client: connection_state.app_server_client.clone(),
+                runtime: connection_state.runtime.clone(),
+                thread_source: thread_metadata.thread_source,
+                subagent_source: thread_metadata.subagent_source.clone(),
+                parent_thread_id: thread_metadata.parent_thread_id.clone(),
+                subject_kind: pending_review.subject_kind,
+                subject_name: pending_review.subject_name,
+                reviewer,
+                trigger: pending_review.trigger,
+                status,
+                resolution,
+                started_at_ms: pending_review.started_at_ms,
+                completed_at_ms,
+                duration_ms: observed_duration_ms(pending_review.started_at_ms, completed_at_ms),
+            },
+        }));
+    }
+
+    fn record_item_review_summary(
+        &mut self,
+        item_key: ToolItemKey,
+        reviewer: Reviewer,
+        status: ReviewStatus,
+        resolution: ReviewResolution,
+        pending_review: &PendingReviewState,
+    ) {
+        let summary = self.item_review_summaries.entry(item_key).or_default();
+        summary.review_count += 1;
+        match reviewer {
+            Reviewer::Guardian => summary.guardian_review_count += 1,
+            Reviewer::User => summary.user_review_count += 1,
+        }
+        summary.final_approval_outcome = Some(final_approval_outcome(reviewer, status, resolution));
+        summary.requested_additional_permissions |= pending_review.requested_additional_permissions;
+        summary.requested_network_access |= pending_review.requested_network_access;
+    }
+
+    async fn maybe_emit_turn_event(&mut self, turn_id: &str, out: &mut Vec<TrackEventRequest>) {
         let Some(turn_state) = self.turns.get(turn_id) else {
             return;
         };
         if turn_state.thread_id.is_none()
             || turn_state.num_input_images.is_none()
             || turn_state.resolved_config.is_none()
+            || turn_state.profile.is_none()
             || turn_state.completed.is_none()
         {
             return;
@@ -1019,18 +1466,23 @@ impl AnalyticsReducer {
             warn_missing_analytics_context(&drop_site, MissingAnalyticsContext::ThreadMetadata);
             return;
         };
-        out.push(TrackEventRequest::TurnEvent(Box::new(
-            CodexTurnEventRequest {
-                event_type: "codex_turn_event",
-                event_params: codex_turn_event_params(
-                    connection_state.app_server_client.clone(),
-                    connection_state.runtime.clone(),
-                    turn_id.to_string(),
-                    turn_state,
-                    thread_metadata,
-                ),
-            },
-        )));
+        let turn_event = TrackEventRequest::TurnEvent(Box::new(CodexTurnEventRequest {
+            event_type: "codex_turn_event",
+            event_params: codex_turn_event_params(
+                connection_state.app_server_client.clone(),
+                connection_state.runtime.clone(),
+                turn_id.to_string(),
+                turn_state,
+                thread_metadata,
+            ),
+        }));
+        let accepted_line_event = accepted_line_event_input(turn_id, turn_state);
+
+        out.push(turn_event);
+        if let Some((mut input, cwd)) = accepted_line_event {
+            input.repo_hash = accepted_line_repo_hash_for_cwd(cwd.as_path()).await;
+            out.extend(accepted_line_fingerprint_event_requests(input));
+        }
         self.turns.remove(turn_id);
     }
 
@@ -1117,21 +1569,41 @@ fn tracked_tool_item_id(item: &ThreadItem) -> Option<&str> {
     }
 }
 
-fn tool_item_event(
-    thread_id: &str,
-    turn_id: &str,
-    item: &ThreadItem,
+fn item_review_summary_key(pending_review: &PendingReviewState) -> Option<ToolItemKey> {
+    match pending_review.subject_kind {
+        ReviewSubjectKind::CommandExecution
+        | ReviewSubjectKind::FileChange
+        | ReviewSubjectKind::McpToolCall => Some(ToolItemKey {
+            thread_id: pending_review.thread_id.clone(),
+            turn_id: pending_review.turn_id.clone(),
+            item_id: pending_review.item_id.clone()?,
+        }),
+        ReviewSubjectKind::Permissions | ReviewSubjectKind::NetworkAccess => None,
+    }
+}
+
+struct ToolItemEventInput<'a> {
+    thread_id: &'a str,
+    turn_id: &'a str,
+    item: &'a ThreadItem,
     started_at_ms: u64,
     completed_at_ms: u64,
-    connection_state: &ConnectionState,
-    thread_metadata: &ThreadMetadataState,
-) -> Option<TrackEventRequest> {
-    let context = ToolItemContext {
+    connection_state: &'a ConnectionState,
+    thread_metadata: &'a ThreadMetadataState,
+    review_summary: Option<&'a ItemReviewSummary>,
+}
+
+fn tool_item_event(input: ToolItemEventInput<'_>) -> Option<TrackEventRequest> {
+    let ToolItemEventInput {
+        thread_id,
+        turn_id,
+        item,
         started_at_ms,
         completed_at_ms,
         connection_state,
         thread_metadata,
-    };
+        review_summary,
+    } = input;
     match item {
         ThreadItem::CommandExecution {
             id,
@@ -1154,7 +1626,13 @@ fn tool_item_event(
                     failure_kind,
                     execution_duration_ms: option_i64_to_u64(*duration_ms),
                 },
-                context,
+                ToolItemContext {
+                    started_at_ms,
+                    completed_at_ms,
+                    connection_state,
+                    thread_metadata,
+                    review_summary,
+                },
             );
             Some(TrackEventRequest::CommandExecution(
                 CodexCommandExecutionEventRequest {
@@ -1189,7 +1667,13 @@ fn tool_item_event(
                     failure_kind,
                     execution_duration_ms: None,
                 },
-                context,
+                ToolItemContext {
+                    started_at_ms,
+                    completed_at_ms,
+                    connection_state,
+                    thread_metadata,
+                    review_summary,
+                },
             );
             Some(TrackEventRequest::FileChange(CodexFileChangeEventRequest {
                 event_type: "codex_file_change_event",
@@ -1223,7 +1707,13 @@ fn tool_item_event(
                     failure_kind,
                     execution_duration_ms: option_i64_to_u64(*duration_ms),
                 },
-                context,
+                ToolItemContext {
+                    started_at_ms,
+                    completed_at_ms,
+                    connection_state,
+                    thread_metadata,
+                    review_summary,
+                },
             );
             Some(TrackEventRequest::McpToolCall(
                 CodexMcpToolCallEventRequest {
@@ -1260,7 +1750,13 @@ fn tool_item_event(
                     failure_kind,
                     execution_duration_ms: option_i64_to_u64(*duration_ms),
                 },
-                context,
+                ToolItemContext {
+                    started_at_ms,
+                    completed_at_ms,
+                    connection_state,
+                    thread_metadata,
+                    review_summary,
+                },
             );
             Some(TrackEventRequest::DynamicToolCall(
                 CodexDynamicToolCallEventRequest {
@@ -1298,7 +1794,13 @@ fn tool_item_event(
                     failure_kind,
                     execution_duration_ms: None,
                 },
-                context,
+                ToolItemContext {
+                    started_at_ms,
+                    completed_at_ms,
+                    connection_state,
+                    thread_metadata,
+                    review_summary,
+                },
             );
             Some(TrackEventRequest::CollabAgentToolCall(
                 CodexCollabAgentToolCallEventRequest {
@@ -1347,7 +1849,13 @@ fn tool_item_event(
                     failure_kind: None,
                     execution_duration_ms: None,
                 },
-                context,
+                ToolItemContext {
+                    started_at_ms,
+                    completed_at_ms,
+                    connection_state,
+                    thread_metadata,
+                    review_summary,
+                },
             );
             Some(TrackEventRequest::WebSearch(CodexWebSearchEventRequest {
                 event_type: "codex_web_search_event",
@@ -1377,7 +1885,13 @@ fn tool_item_event(
                     failure_kind,
                     execution_duration_ms: None,
                 },
-                context,
+                ToolItemContext {
+                    started_at_ms,
+                    completed_at_ms,
+                    connection_state,
+                    thread_metadata,
+                    review_summary,
+                },
             );
             Some(TrackEventRequest::ImageGeneration(
                 CodexImageGenerationEventRequest {
@@ -1431,6 +1945,7 @@ struct ToolItemContext<'a> {
     completed_at_ms: u64,
     connection_state: &'a ConnectionState,
     thread_metadata: &'a ThreadMetadataState,
+    review_summary: Option<&'a ItemReviewSummary>,
 }
 
 fn tool_item_base(
@@ -1442,6 +1957,7 @@ fn tool_item_base(
     context: ToolItemContext<'_>,
 ) -> CodexToolItemEventBase {
     let thread_metadata = context.thread_metadata;
+    let review_summary = context.review_summary.cloned().unwrap_or_default();
     CodexToolItemEventBase {
         thread_id: thread_id.to_string(),
         turn_id: turn_id.to_string(),
@@ -1459,19 +1975,210 @@ fn tool_item_base(
         // full upstream execution time.
         duration_ms: observed_duration_ms(context.started_at_ms, context.completed_at_ms),
         execution_duration_ms: outcome.execution_duration_ms,
-        review_count: 0,
-        guardian_review_count: 0,
-        user_review_count: 0,
-        final_approval_outcome: ToolItemFinalApprovalOutcome::Unknown,
+        review_count: review_summary.review_count,
+        guardian_review_count: review_summary.guardian_review_count,
+        user_review_count: review_summary.user_review_count,
+        final_approval_outcome: review_summary
+            .final_approval_outcome
+            .unwrap_or(FinalApprovalOutcome::Unknown),
         terminal_status: outcome.terminal_status,
         failure_kind: outcome.failure_kind,
-        requested_additional_permissions: false,
-        requested_network_access: false,
+        requested_additional_permissions: review_summary.requested_additional_permissions,
+        requested_network_access: review_summary.requested_network_access,
     }
 }
 
 fn observed_duration_ms(started_at_ms: u64, completed_at_ms: u64) -> Option<u64> {
     completed_at_ms.checked_sub(started_at_ms)
+}
+
+fn user_review_id(request_id: &RequestId) -> String {
+    format!("user:{request_id}")
+}
+
+fn command_execution_review_result(
+    decision: CommandExecutionApprovalDecision,
+) -> (ReviewStatus, ReviewResolution) {
+    match decision {
+        CommandExecutionApprovalDecision::Accept => {
+            (ReviewStatus::Approved, ReviewResolution::None)
+        }
+        CommandExecutionApprovalDecision::AcceptForSession => {
+            (ReviewStatus::Approved, ReviewResolution::SessionApproval)
+        }
+        CommandExecutionApprovalDecision::AcceptWithExecpolicyAmendment { .. } => (
+            ReviewStatus::Approved,
+            ReviewResolution::ExecPolicyAmendment,
+        ),
+        CommandExecutionApprovalDecision::ApplyNetworkPolicyAmendment {
+            network_policy_amendment,
+        } => match network_policy_amendment.action {
+            NetworkPolicyRuleAction::Allow => (
+                ReviewStatus::Approved,
+                ReviewResolution::NetworkPolicyAmendment,
+            ),
+            NetworkPolicyRuleAction::Deny => (
+                ReviewStatus::Denied,
+                ReviewResolution::NetworkPolicyAmendment,
+            ),
+        },
+        CommandExecutionApprovalDecision::Decline => (ReviewStatus::Denied, ReviewResolution::None),
+        CommandExecutionApprovalDecision::Cancel => (ReviewStatus::Aborted, ReviewResolution::None),
+    }
+}
+
+fn file_change_review_result(
+    decision: FileChangeApprovalDecision,
+) -> (ReviewStatus, ReviewResolution) {
+    match decision {
+        FileChangeApprovalDecision::Accept => (ReviewStatus::Approved, ReviewResolution::None),
+        FileChangeApprovalDecision::AcceptForSession => {
+            (ReviewStatus::Approved, ReviewResolution::SessionApproval)
+        }
+        FileChangeApprovalDecision::Decline => (ReviewStatus::Denied, ReviewResolution::None),
+        FileChangeApprovalDecision::Cancel => (ReviewStatus::Aborted, ReviewResolution::None),
+    }
+}
+
+fn effective_permissions_review_result(
+    response: &CoreRequestPermissionsResponse,
+) -> (ReviewStatus, ReviewResolution) {
+    if response.permissions.is_empty() {
+        return (ReviewStatus::Denied, ReviewResolution::None);
+    }
+
+    match response.scope {
+        CorePermissionGrantScope::Turn => (ReviewStatus::Approved, ReviewResolution::None),
+        CorePermissionGrantScope::Session => {
+            (ReviewStatus::Approved, ReviewResolution::SessionApproval)
+        }
+    }
+}
+
+fn guardian_review_result(
+    status: GuardianApprovalReviewStatus,
+) -> Option<(ReviewStatus, ReviewResolution)> {
+    match status {
+        GuardianApprovalReviewStatus::InProgress => None,
+        GuardianApprovalReviewStatus::Approved => {
+            Some((ReviewStatus::Approved, ReviewResolution::None))
+        }
+        GuardianApprovalReviewStatus::Denied => {
+            Some((ReviewStatus::Denied, ReviewResolution::None))
+        }
+        GuardianApprovalReviewStatus::TimedOut => {
+            Some((ReviewStatus::TimedOut, ReviewResolution::None))
+        }
+        GuardianApprovalReviewStatus::Aborted => {
+            Some((ReviewStatus::Aborted, ReviewResolution::None))
+        }
+    }
+}
+
+fn guardian_review_subject_metadata(
+    action: &GuardianApprovalReviewAction,
+) -> (ReviewSubjectKind, String, ReviewTrigger) {
+    match action {
+        GuardianApprovalReviewAction::Command { .. } => (
+            ReviewSubjectKind::CommandExecution,
+            "command_execution".to_string(),
+            ReviewTrigger::Initial,
+        ),
+        GuardianApprovalReviewAction::Execve { .. } => (
+            ReviewSubjectKind::CommandExecution,
+            "command_execution".to_string(),
+            ReviewTrigger::ExecveIntercept,
+        ),
+        GuardianApprovalReviewAction::ApplyPatch { .. } => (
+            ReviewSubjectKind::FileChange,
+            "apply_patch".to_string(),
+            ReviewTrigger::SandboxDenial,
+        ),
+        GuardianApprovalReviewAction::NetworkAccess { .. } => (
+            ReviewSubjectKind::NetworkAccess,
+            "network_access".to_string(),
+            ReviewTrigger::NetworkPolicyDenial,
+        ),
+        GuardianApprovalReviewAction::RequestPermissions { permissions, .. } => {
+            let requested_network_access = permissions
+                .network
+                .as_ref()
+                .and_then(|network| network.enabled)
+                .unwrap_or(false);
+            let trigger = if requested_network_access {
+                ReviewTrigger::NetworkPolicyDenial
+            } else if permissions.file_system.is_some() {
+                ReviewTrigger::SandboxDenial
+            } else {
+                ReviewTrigger::Initial
+            };
+            (
+                ReviewSubjectKind::Permissions,
+                "permissions".to_string(),
+                trigger,
+            )
+        }
+        GuardianApprovalReviewAction::McpToolCall { tool_name, .. } => (
+            ReviewSubjectKind::McpToolCall,
+            tool_name.clone(),
+            ReviewTrigger::Initial,
+        ),
+    }
+}
+
+fn guardian_review_requested_additional_permissions(action: &GuardianApprovalReviewAction) -> bool {
+    match action {
+        GuardianApprovalReviewAction::ApplyPatch { .. }
+        | GuardianApprovalReviewAction::NetworkAccess { .. } => true,
+        GuardianApprovalReviewAction::RequestPermissions { permissions, .. } => {
+            guardian_review_request_permissions_network_enabled(permissions)
+                || permissions.file_system.is_some()
+        }
+        GuardianApprovalReviewAction::Command { .. }
+        | GuardianApprovalReviewAction::Execve { .. }
+        | GuardianApprovalReviewAction::McpToolCall { .. } => false,
+    }
+}
+
+fn guardian_review_requested_network_access(action: &GuardianApprovalReviewAction) -> bool {
+    match action {
+        GuardianApprovalReviewAction::NetworkAccess { .. } => true,
+        GuardianApprovalReviewAction::RequestPermissions { permissions, .. } => {
+            guardian_review_request_permissions_network_enabled(permissions)
+        }
+        GuardianApprovalReviewAction::ApplyPatch { .. }
+        | GuardianApprovalReviewAction::Command { .. }
+        | GuardianApprovalReviewAction::Execve { .. }
+        | GuardianApprovalReviewAction::McpToolCall { .. } => false,
+    }
+}
+
+fn guardian_review_request_permissions_network_enabled(
+    permissions: &RequestPermissionProfile,
+) -> bool {
+    permissions
+        .network
+        .as_ref()
+        .and_then(|network| network.enabled)
+        .unwrap_or(false)
+}
+
+fn final_approval_outcome(
+    reviewer: Reviewer,
+    status: ReviewStatus,
+    resolution: ReviewResolution,
+) -> FinalApprovalOutcome {
+    match (reviewer, status, resolution) {
+        (Reviewer::Guardian, ReviewStatus::Approved, _) => FinalApprovalOutcome::GuardianApproved,
+        (Reviewer::Guardian, ReviewStatus::Denied, _) => FinalApprovalOutcome::GuardianDenied,
+        (Reviewer::Guardian, _, _) => FinalApprovalOutcome::GuardianAborted,
+        (Reviewer::User, ReviewStatus::Approved, ReviewResolution::SessionApproval) => {
+            FinalApprovalOutcome::UserApprovedForSession
+        }
+        (Reviewer::User, ReviewStatus::Approved, _) => FinalApprovalOutcome::UserApproved,
+        (Reviewer::User, ReviewStatus::Denied, _) => FinalApprovalOutcome::UserDenied,
+        (Reviewer::User, _, _) => FinalApprovalOutcome::UserAborted,
+    }
 }
 
 fn command_execution_tool_name(source: CommandExecutionSource) -> &'static str {
@@ -1642,6 +2349,36 @@ fn web_search_query_count(query: &str, action: Option<&WebSearchAction>) -> Opti
     }
 }
 
+fn accepted_line_event_input(
+    turn_id: &str,
+    turn_state: &TurnState,
+) -> Option<(AcceptedLineFingerprintEventInput, PathBuf)> {
+    let latest_diff = turn_state.latest_diff.as_deref()?;
+    let summary = accepted_line_fingerprints_from_unified_diff(latest_diff);
+    if summary.accepted_added_lines == 0 && summary.accepted_deleted_lines == 0 {
+        return None;
+    }
+
+    let thread_id = turn_state.thread_id.clone()?;
+    let resolved_config = turn_state.resolved_config.clone()?;
+
+    Some((
+        AcceptedLineFingerprintEventInput {
+            event_type: "codex.accepted_line_fingerprints",
+            turn_id: turn_id.to_string(),
+            thread_id,
+            product_surface: Some("codex".to_string()),
+            model_slug: Some(resolved_config.model.clone()),
+            completed_at: now_unix_seconds(),
+            repo_hash: None,
+            accepted_added_lines: summary.accepted_added_lines,
+            accepted_deleted_lines: summary.accepted_deleted_lines,
+            line_fingerprints: summary.line_fingerprints,
+        },
+        resolved_config.permission_profile_cwd,
+    ))
+}
+
 fn codex_turn_event_params(
     app_server_client: CodexAppServerClientMetadata,
     runtime: CodexRuntimeMetadata,
@@ -1649,12 +2386,20 @@ fn codex_turn_event_params(
     turn_state: &TurnState,
     thread_metadata: &ThreadMetadataState,
 ) -> CodexTurnEventParams {
-    let (Some(thread_id), Some(num_input_images), Some(resolved_config), Some(completed)) = (
+    let (
+        Some(thread_id),
+        Some(num_input_images),
+        Some(resolved_config),
+        Some(profile),
+        Some(completed),
+    ) = (
         turn_state.thread_id.clone(),
         turn_state.num_input_images,
         turn_state.resolved_config.clone(),
+        turn_state.profile.clone(),
         turn_state.completed.clone(),
-    ) else {
+    )
+    else {
         unreachable!("turn event params require a fully populated turn state");
     };
     let started_at = turn_state.started_at;
@@ -1677,11 +2422,23 @@ fn codex_turn_event_params(
         sandbox_network_access,
         collaboration_mode,
         personality,
+        workspace_kind,
         is_first_turn,
     } = resolved_config;
+    let TurnProfile {
+        before_first_sampling_ms,
+        sampling_ms,
+        between_sampling_overhead_ms,
+        tool_blocking_ms,
+        after_last_sampling_ms,
+        sampling_request_count,
+        sampling_retry_count,
+    } = profile;
     let token_usage = turn_state.token_usage.clone();
+    let codex_error = turn_state.codex_error.as_ref();
     CodexTurnEventParams {
         thread_id,
+        session_id: thread_metadata.session_id.clone(),
         turn_id,
         app_server_client,
         runtime,
@@ -1707,19 +2464,22 @@ fn codex_turn_event_params(
         sandbox_network_access,
         collaboration_mode: Some(collaboration_mode_mode(collaboration_mode)),
         personality: personality_mode(personality),
+        workspace_kind,
         num_input_images,
         is_first_turn,
         status: completed.status,
         turn_error: completed.turn_error,
+        codex_error_kind: codex_error.map(|error| error.kind),
+        codex_error_http_status_code: codex_error.and_then(|error| error.http_status_code),
         steer_count: Some(turn_state.steer_count),
-        total_tool_call_count: None,
-        shell_command_count: None,
-        file_change_count: None,
-        mcp_tool_call_count: None,
-        dynamic_tool_call_count: None,
-        subagent_tool_call_count: None,
-        web_search_count: None,
-        image_generation_count: None,
+        total_tool_call_count: Some(turn_state.tool_counts.total),
+        shell_command_count: Some(turn_state.tool_counts.shell_command),
+        file_change_count: Some(turn_state.tool_counts.file_change),
+        mcp_tool_call_count: Some(turn_state.tool_counts.mcp_tool_call),
+        dynamic_tool_call_count: Some(turn_state.tool_counts.dynamic_tool_call),
+        subagent_tool_call_count: Some(turn_state.tool_counts.subagent_tool_call),
+        web_search_count: Some(turn_state.tool_counts.web_search),
+        image_generation_count: Some(turn_state.tool_counts.image_generation),
         input_tokens: token_usage
             .as_ref()
             .map(|token_usage| token_usage.input_tokens),
@@ -1735,6 +2495,13 @@ fn codex_turn_event_params(
         total_tokens: token_usage
             .as_ref()
             .map(|token_usage| token_usage.total_tokens),
+        before_first_sampling_ms,
+        sampling_ms,
+        between_sampling_overhead_ms,
+        tool_blocking_ms,
+        after_last_sampling_ms,
+        sampling_request_count,
+        sampling_retry_count,
         duration_ms: completed.duration_ms,
         started_at,
         completed_at: Some(completed.completed_at),
@@ -1872,5 +2639,14 @@ mod tests {
             sandbox_policy_mode(&permission_profile, Path::new("/")),
             "external_sandbox"
         );
+    }
+
+    #[test]
+    fn guardian_review_result_maps_terminal_statuses() {
+        assert!(guardian_review_result(GuardianApprovalReviewStatus::InProgress).is_none());
+        assert!(matches!(
+            guardian_review_result(GuardianApprovalReviewStatus::TimedOut),
+            Some((ReviewStatus::TimedOut, ReviewResolution::None))
+        ));
     }
 }

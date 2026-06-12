@@ -54,7 +54,7 @@ mod thread_processor_behavior_tests {
     use codex_app_server_protocol::ServerRequestPayload;
     use codex_app_server_protocol::ThreadItem;
     use codex_app_server_protocol::ToolRequestUserInputParams;
-    use codex_config::CloudRequirementsLoader;
+    use codex_config::CloudConfigBundleLoader;
     use codex_config::LoaderOverrides;
     use codex_config::SessionThreadConfig;
     use codex_config::StaticThreadConfigLoader;
@@ -62,15 +62,22 @@ mod thread_processor_behavior_tests {
     use codex_model_provider_info::ModelProviderInfo;
     use codex_model_provider_info::WireApi;
     use codex_protocol::ThreadId;
+    use codex_protocol::config_types::CollaborationMode;
+    use codex_protocol::config_types::ModeKind;
+    use codex_protocol::config_types::Settings;
+    use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
+    use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_READ_ONLY;
+    use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
+    use codex_protocol::models::PermissionProfile;
     use codex_protocol::openai_models::ReasoningEffort;
     use codex_protocol::permissions::FileSystemAccessMode;
     use codex_protocol::permissions::FileSystemPath;
     use codex_protocol::permissions::FileSystemSandboxEntry;
     use codex_protocol::permissions::NetworkSandboxPolicy;
     use codex_protocol::protocol::AskForApproval;
-    use codex_protocol::protocol::SandboxPolicy;
     use codex_protocol::protocol::SessionSource;
     use codex_protocol::protocol::SubAgentSource;
+    use codex_protocol::protocol::TurnEnvironmentSelections;
     use codex_state::ThreadMetadataBuilder;
     use codex_thread_store::StoredThread;
     use codex_utils_absolute_path::test_support::PathBufExt;
@@ -207,16 +214,19 @@ mod thread_processor_behavior_tests {
     fn thread_turns_list_merges_in_progress_active_turn_before_agent_status_running() {
         let persisted_items = vec![RolloutItem::EventMsg(EventMsg::UserMessage(
             codex_protocol::protocol::UserMessageEvent {
+                client_id: None,
                 message: "persisted".to_string(),
                 images: None,
                 local_images: Vec::new(),
                 text_elements: Vec::new(),
+                ..Default::default()
             },
         ))];
         let active_turn = Turn {
             id: "live-turn".to_string(),
             items: vec![ThreadItem::UserMessage {
                 id: "live-user-message".to_string(),
+                client_id: None,
                 content: vec![V2UserInput::Text {
                     text: "live".to_string(),
                     text_elements: Vec::new(),
@@ -384,8 +394,10 @@ mod thread_processor_behavior_tests {
             ThreadId::from_string("00000000-0000-0000-0000-000000000123").expect("valid thread");
         let stored_thread = StoredThread {
             thread_id,
+            extra_config: None,
             rollout_path: Some(PathBuf::from("/tmp/thread.jsonl")),
             forked_from_id: None,
+            parent_thread_id: None,
             preview: "preview".to_string(),
             name: None,
             model_provider: "openai".to_string(),
@@ -403,7 +415,7 @@ mod thread_processor_behavior_tests {
             agent_path: None,
             git_info: None,
             approval_mode: AskForApproval::OnRequest,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            permission_profile: PermissionProfile::read_only(),
             token_usage: None,
             first_user_message: Some("first user message".to_string()),
             history: None,
@@ -438,7 +450,7 @@ mod thread_processor_behavior_tests {
                         path: FileSystemPath::GlobPattern {
                             pattern: "/tmp/project/**/*.env".to_string(),
                         },
-                        access: FileSystemAccessMode::None,
+                        access: FileSystemAccessMode::Deny,
                     },
                 ]),
                 NetworkSandboxPolicy::Restricted,
@@ -467,14 +479,16 @@ mod thread_processor_behavior_tests {
         ));
         assert!(requested_permissions_trust_project(
             &ConfigOverrides {
-                default_permissions: Some(":workspace".to_string()),
+                default_permissions: Some(BUILT_IN_PERMISSION_PROFILE_WORKSPACE.to_string()),
                 ..Default::default()
             },
             cwd.as_path()
         ));
         assert!(requested_permissions_trust_project(
             &ConfigOverrides {
-                default_permissions: Some(":danger-no-sandbox".to_string()),
+                default_permissions: Some(
+                    BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS.to_string()
+                ),
                 ..Default::default()
             },
             cwd.as_path()
@@ -488,7 +502,7 @@ mod thread_processor_behavior_tests {
         ));
         assert!(!requested_permissions_trust_project(
             &ConfigOverrides {
-                default_permissions: Some(":read-only".to_string()),
+                default_permissions: Some(BUILT_IN_PERMISSION_PROFILE_READ_ONLY.to_string()),
                 ..Default::default()
             },
             cwd.as_path()
@@ -496,9 +510,9 @@ mod thread_processor_behavior_tests {
     }
 
     #[test]
-    fn config_load_error_marks_cloud_requirements_failures_for_relogin() {
-        let err = std::io::Error::other(CloudRequirementsLoadError::new(
-            CloudRequirementsLoadErrorCode::Auth,
+    fn config_load_error_marks_cloud_config_bundle_failures_for_relogin() {
+        let err = std::io::Error::other(CloudConfigBundleLoadError::new(
+            CloudConfigBundleLoadErrorCode::Auth,
             Some(401),
             "Your authentication session could not be refreshed automatically. Please log out and sign in again.",
         ));
@@ -508,7 +522,7 @@ mod thread_processor_behavior_tests {
         assert_eq!(
             error.data,
             Some(json!({
-                "reason": "cloudRequirements",
+                "reason": "cloudConfigBundle",
                 "errorCode": "Auth",
                 "action": "relogin",
                 "statusCode": 401,
@@ -523,7 +537,7 @@ mod thread_processor_behavior_tests {
     }
 
     #[test]
-    fn config_load_error_leaves_non_cloud_requirements_failures_unmarked() {
+    fn config_load_error_leaves_non_cloud_config_bundle_failures_unmarked() {
         let err = std::io::Error::other("required MCP servers failed to initialize");
 
         let error = config_load_error(&err);
@@ -537,11 +551,11 @@ mod thread_processor_behavior_tests {
     }
 
     #[test]
-    fn config_load_error_marks_non_auth_cloud_requirements_failures_without_relogin() {
-        let err = std::io::Error::other(CloudRequirementsLoadError::new(
-            CloudRequirementsLoadErrorCode::RequestFailed,
+    fn config_load_error_marks_non_auth_cloud_config_bundle_failures_without_relogin() {
+        let err = std::io::Error::other(CloudConfigBundleLoadError::new(
+            CloudConfigBundleLoadErrorCode::RequestFailed,
             /*status_code*/ None,
-            "Failed to load cloud requirements (workspace-managed policies).",
+            "Failed to load cloud config bundle (workspace-managed policies).",
         ));
 
         let error = config_load_error(&err);
@@ -549,9 +563,29 @@ mod thread_processor_behavior_tests {
         assert_eq!(
             error.data,
             Some(json!({
-                "reason": "cloudRequirements",
+                "reason": "cloudConfigBundle",
                 "errorCode": "RequestFailed",
-                "detail": "Failed to load cloud requirements (workspace-managed policies).",
+                "detail": "Failed to load cloud config bundle (workspace-managed policies).",
+            }))
+        );
+    }
+
+    #[test]
+    fn config_load_error_marks_invalid_cloud_config_bundle_failures_without_relogin() {
+        let err = std::io::Error::other(CloudConfigBundleLoadError::new(
+            CloudConfigBundleLoadErrorCode::InvalidBundle,
+            /*status_code*/ None,
+            "invalid cloud config bundle: invalid cloud config fragment Base policy (cfg_123)",
+        ));
+
+        let error = config_load_error(&err);
+
+        assert_eq!(
+            error.data,
+            Some(json!({
+                "reason": "cloudConfigBundle",
+                "errorCode": "InvalidBundle",
+                "detail": "invalid cloud config bundle: invalid cloud config fragment Base policy (cfg_123)",
             }))
         );
     }
@@ -582,7 +616,8 @@ mod thread_processor_behavior_tests {
             temp_dir.path().to_path_buf(),
             Vec::new(),
             LoaderOverrides::default(),
-            CloudRequirementsLoader::default(),
+            /*strict_config*/ false,
+            CloudConfigBundleLoader::default(),
             Arg0DispatchPaths::default(),
             Arc::new(StaticThreadConfigLoader::new(vec![
                 ThreadConfigSource::Session(SessionThreadConfig {
@@ -600,6 +635,7 @@ mod thread_processor_behavior_tests {
                 Some(HashMap::from([
                     ("model_provider".to_string(), json!("request")),
                     ("features.plugins".to_string(), json!(true)),
+                    ("bypass_hook_trust".to_string(), json!(true)),
                     (
                         "model_providers.session".to_string(),
                         json!({
@@ -616,6 +652,7 @@ mod thread_processor_behavior_tests {
         assert_eq!(config.model_provider_id, "session");
         assert_eq!(config.model_provider, session_provider);
         assert!(!config.features.enabled(Feature::Plugins));
+        assert!(config.bypass_hook_trust);
         Ok(())
     }
 
@@ -630,6 +667,7 @@ mod thread_processor_behavior_tests {
             model_provider: None,
             service_tier: Some(Some("priority".to_string())),
             cwd: None,
+            runtime_workspace_roots: None,
             approval_policy: None,
             approvals_reviewer: None,
             sandbox: None,
@@ -639,7 +677,7 @@ mod thread_processor_behavior_tests {
             developer_instructions: None,
             personality: None,
             exclude_turns: false,
-            persist_extended_history: false,
+            initial_turns_page: None,
         };
         let config_snapshot = ThreadConfigSnapshot {
             model: "gpt-5".to_string(),
@@ -649,11 +687,24 @@ mod thread_processor_behavior_tests {
             approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer::User,
             permission_profile: codex_protocol::models::PermissionProfile::Disabled,
             active_permission_profile: None,
-            cwd,
+            environments: TurnEnvironmentSelections::new(cwd, Vec::new()),
+            workspace_roots: Vec::new(),
+            profile_workspace_roots: Vec::new(),
             ephemeral: false,
             reasoning_effort: None,
+            reasoning_summary: None,
             personality: None,
+            collaboration_mode: CollaborationMode {
+                mode: ModeKind::Default,
+                settings: Settings {
+                    model: "gpt-5".to_string(),
+                    reasoning_effort: None,
+                    developer_instructions: None,
+                },
+            },
             session_source: SessionSource::Cli,
+            forked_from_thread_id: None,
+            parent_thread_id: None,
             thread_source: None,
         };
 
@@ -1086,6 +1137,7 @@ mod thread_processor_behavior_tests {
             conversation_id,
             PathBuf::from("/tmp/rollout.jsonl"),
             Some("hi".to_string()),
+            /*preview*/ None,
             "2025-09-05T16:53:11Z".to_string(),
             "2025-09-05T16:53:12Z".to_string(),
             "test-provider".to_string(),
@@ -1115,7 +1167,9 @@ mod thread_processor_behavior_tests {
         let connection = ConnectionId(1);
         let (cancel_tx, cancel_rx) = oneshot::channel();
 
-        manager.connection_initialized(connection).await;
+        manager
+            .connection_initialized(connection, ConnectionCapabilities::default())
+            .await;
         manager
             .try_ensure_connection_subscribed(
                 thread_id, connection, /*experimental_raw_events*/ false,
@@ -1130,6 +1184,7 @@ mod thread_processor_behavior_tests {
                 "turn-1",
                 &EventMsg::TurnStarted(codex_protocol::protocol::TurnStartedEvent {
                     turn_id: "turn-1".to_string(),
+                    trace_id: None,
                     started_at: None,
                     model_context_window: None,
                     collaboration_mode_kind: Default::default(),
@@ -1158,8 +1213,12 @@ mod thread_processor_behavior_tests {
         let connection_b = ConnectionId(2);
         let (cancel_tx, mut cancel_rx) = oneshot::channel();
 
-        manager.connection_initialized(connection_a).await;
-        manager.connection_initialized(connection_b).await;
+        manager
+            .connection_initialized(connection_a, ConnectionCapabilities::default())
+            .await;
+        manager
+            .connection_initialized(connection_b, ConnectionCapabilities::default())
+            .await;
         manager
             .try_ensure_connection_subscribed(
                 thread_id,
@@ -1203,8 +1262,12 @@ mod thread_processor_behavior_tests {
         let connection_a = ConnectionId(1);
         let connection_b = ConnectionId(2);
 
-        manager.connection_initialized(connection_a).await;
-        manager.connection_initialized(connection_b).await;
+        manager
+            .connection_initialized(connection_a, ConnectionCapabilities::default())
+            .await;
+        manager
+            .connection_initialized(connection_b, ConnectionCapabilities::default())
+            .await;
         manager
             .try_ensure_connection_subscribed(
                 thread_id,
@@ -1249,7 +1312,9 @@ mod thread_processor_behavior_tests {
         let thread_id = ThreadId::from_string("ad7f0408-99b8-4f6e-a46f-bd0eec433370")?;
         let connection = ConnectionId(1);
 
-        manager.connection_initialized(connection).await;
+        manager
+            .connection_initialized(connection, ConnectionCapabilities::default())
+            .await;
         let threads_to_unload = manager.remove_connection(connection).await;
         assert_eq!(threads_to_unload, Vec::<ThreadId>::new());
 
@@ -1262,6 +1327,81 @@ mod thread_processor_behavior_tests {
                 .is_none()
         );
         assert!(!manager.has_subscribers(thread_id).await);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn first_attestation_capable_connection_for_thread_only_uses_thread_subscribers()
+    -> Result<()> {
+        let manager = ThreadStateManager::new();
+        let thread_id = ThreadId::from_string("dfbd9a95-2f44-470a-8bd8-1cfc04efc243")?;
+        let other_thread_id = ThreadId::from_string("6c9a74e4-5e59-479e-90bf-5c5798bb50aa")?;
+        let unrelated_supported_connection = ConnectionId(1);
+        let earlier_supported_connection = ConnectionId(2);
+        let later_supported_connection = ConnectionId(3);
+        let unsupported_connection = ConnectionId(4);
+
+        manager
+            .connection_initialized(
+                unrelated_supported_connection,
+                ConnectionCapabilities {
+                    request_attestation: true,
+                },
+            )
+            .await;
+        manager
+            .connection_initialized(
+                earlier_supported_connection,
+                ConnectionCapabilities {
+                    request_attestation: true,
+                },
+            )
+            .await;
+        manager
+            .connection_initialized(
+                later_supported_connection,
+                ConnectionCapabilities {
+                    request_attestation: true,
+                },
+            )
+            .await;
+        manager
+            .connection_initialized(unsupported_connection, ConnectionCapabilities::default())
+            .await;
+
+        assert!(
+            manager
+                .try_add_connection_to_thread(other_thread_id, unrelated_supported_connection)
+                .await
+        );
+        assert!(
+            manager
+                .try_add_connection_to_thread(thread_id, later_supported_connection)
+                .await
+        );
+        assert!(
+            manager
+                .try_add_connection_to_thread(thread_id, earlier_supported_connection)
+                .await
+        );
+        assert!(
+            manager
+                .try_add_connection_to_thread(thread_id, unsupported_connection)
+                .await
+        );
+
+        assert_eq!(
+            manager
+                .first_attestation_capable_connection_for_thread(thread_id)
+                .await,
+            Some(earlier_supported_connection)
+        );
+        assert_eq!(
+            manager
+                .first_attestation_capable_connection_for_thread(other_thread_id)
+                .await,
+            Some(unrelated_supported_connection)
+        );
         Ok(())
     }
 }

@@ -177,6 +177,7 @@ fn main() -> anyhow::Result<()> {
                         tokens: None,
                         last_refresh: None,
                         agent_identity: None,
+                        personal_access_token: None,
                     });
 
                 let openai_cache_key = format!("profile:{}:OPENAI_API_KEY", plan.profile_id);
