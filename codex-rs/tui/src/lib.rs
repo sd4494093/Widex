@@ -2107,7 +2107,6 @@ mod tests {
     use super::*;
     use crate::legacy_core::config::ConfigBuilder;
     use crate::legacy_core::config::ConfigOverrides;
-    use crate::onboarding::startup_splash::StartupSplashMode;
     use codex_app_server_protocol::AskForApproval;
     use codex_app_server_protocol::ClientRequest;
     use codex_app_server_protocol::RequestId;
