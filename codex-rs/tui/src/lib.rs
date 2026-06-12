@@ -287,8 +287,6 @@ use crate::startup_hooks_review::maybe_run_startup_hooks_review;
 use crate::tui::Tui;
 pub use cli::Cli;
 use codex_arg0::Arg0DispatchPaths;
-use codex_login::load_auth_dot_json;
-use codex_login::read_openai_api_key_from_env;
 pub use markdown_render::render_markdown_text;
 pub use public_widgets::composer_input::ComposerAction;
 pub use public_widgets::composer_input::ComposerInput;
@@ -1398,7 +1396,8 @@ async fn run_ratatui_app(
     // Initialize high-fidelity session event logging if enabled.
     session_log::maybe_init(&initial_config);
 
-    let startup_splash_mode = startup_splash_mode(&initial_config);
+    let startup_splash_mode =
+        crate::onboarding::startup_splash::startup_splash_mode(&initial_config);
     let start_with_api_key_entry =
         match run_startup_splash(&mut tui, initial_config.animations, startup_splash_mode).await? {
             StartupSplashOutcome::Continue => false,
@@ -1467,8 +1466,8 @@ async fn run_ratatui_app(
     } else {
         LoginStatus::NotAuthenticated
     };
-    let force_widex_api_key_entry =
-        start_with_api_key_entry && is_widex_codex_home(&initial_config);
+    let force_widex_api_key_entry = start_with_api_key_entry
+        && crate::onboarding::startup_splash::is_widex_codex_home(&initial_config);
     let should_show_onboarding = should_show_onboarding(
         login_status,
         &initial_config,
@@ -2094,43 +2093,6 @@ fn should_show_onboarding(
     should_show_login_screen(login_status, config)
 }
 
-fn is_widex_codex_home(config: &Config) -> bool {
-    config
-        .codex_home
-        .file_name()
-        .is_some_and(|name| name == ".widex" || name == ".widex-codex")
-}
-
-fn widex_api_key_present(config: &Config) -> bool {
-    if read_openai_api_key_from_env().is_some() {
-        return true;
-    }
-
-    match load_auth_dot_json(&config.codex_home, config.cli_auth_credentials_store_mode) {
-        Ok(Some(auth)) => auth
-            .openai_api_key
-            .as_deref()
-            .is_some_and(|api_key| !api_key.trim().is_empty()),
-        Ok(None) => false,
-        Err(err) => {
-            tracing::warn!("failed to read auth state for startup splash: {err}");
-            false
-        }
-    }
-}
-
-fn startup_splash_mode(config: &Config) -> StartupSplashMode {
-    if is_widex_codex_home(config) && config.model_provider.requires_openai_auth {
-        if widex_api_key_present(config) {
-            StartupSplashMode::WidexKeyLoadedPrompt
-        } else {
-            StartupSplashMode::WidexAuthPrompt
-        }
-    } else {
-        StartupSplashMode::ContinuePrompt
-    }
-}
-
 fn should_show_login_screen(login_status: LoginStatus, config: &Config) -> bool {
     // Only show the login screen for providers that actually require OpenAI auth
     // (OpenAI or equivalents). For OSS/other providers, skip login entirely.
@@ -2525,34 +2487,6 @@ mod tests {
             &LoaderOverrides::default(),
             &target,
         ));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn widex_startup_splash_prompts_for_key_without_auth_json() -> std::io::Result<()> {
-        let temp_dir = TempDir::new()?;
-        let config = build_widex_config(&temp_dir).await?;
-
-        assert_eq!(
-            startup_splash_mode(&config),
-            StartupSplashMode::WidexAuthPrompt
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn widex_startup_splash_continues_with_auth_json_key() -> std::io::Result<()> {
-        let temp_dir = TempDir::new()?;
-        let config = build_widex_config(&temp_dir).await?;
-        std::fs::write(
-            config.codex_home.join("auth.json"),
-            r#"{"OPENAI_API_KEY":"sk-test","auth_mode":"apikey"}"#,
-        )?;
-
-        assert_eq!(
-            startup_splash_mode(&config),
-            StartupSplashMode::WidexKeyLoadedPrompt
-        );
         Ok(())
     }
 

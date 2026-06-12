@@ -326,11 +326,6 @@ pub async fn run_main(cli: Cli, default_codex_cmd: PathBuf) -> anyhow::Result<()
     }
 }
 
-pub(crate) fn widex_cmd_hint() -> &'static str {
-    // Widex fork: user-facing hints should always prefer `widex`.
-    "widex"
-}
-
 async fn start_background(
     cwd: &std::path::Path,
     cmd: &std::path::Path,

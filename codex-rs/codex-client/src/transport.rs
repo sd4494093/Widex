@@ -79,14 +79,6 @@ impl ReqwestTransport {
     }
 }
 
-fn request_body_for_trace(req: &Request) -> String {
-    match req.body.as_ref() {
-        Some(RequestBody::Json(body)) => body.to_string(),
-        Some(RequestBody::Raw(body)) => format!("<raw body: {} bytes>", body.len()),
-        None => String::new(),
-    }
-}
-
 #[async_trait]
 impl HttpTransport for ReqwestTransport {
     async fn execute(&self, req: Request) -> Result<Response, TransportError> {

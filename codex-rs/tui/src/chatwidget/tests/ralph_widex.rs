@@ -5,7 +5,7 @@ use codex_ralph_widex::widex_overlay;
 fn ralph_widex_command_prefers_current_widex_exe() {
     let exe = std::path::PathBuf::from("/tmp/widex.exe");
     assert_eq!(
-        super::super::ralph_widex_command_for_current_exe(Some(exe.clone())),
+        super::super::ralph_widex_tui::ralph_widex_command_for_current_exe(Some(exe.clone())),
         exe.display().to_string()
     );
 }
@@ -13,9 +13,9 @@ fn ralph_widex_command_prefers_current_widex_exe() {
 #[test]
 fn ralph_widex_command_falls_back_to_codex_for_unknown_binary() {
     assert_eq!(
-        super::super::ralph_widex_command_for_current_exe(Some(std::path::PathBuf::from(
-            "/tmp/not-widex",
-        ))),
+        super::super::ralph_widex_tui::ralph_widex_command_for_current_exe(Some(
+            std::path::PathBuf::from("/tmp/not-widex",)
+        )),
         "codex"
     );
 }

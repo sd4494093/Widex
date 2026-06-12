@@ -13,7 +13,11 @@ use ratatui::widgets::Wrap;
 
 use color_eyre::eyre::Result;
 
+use codex_login::load_auth_dot_json;
+use codex_login::read_openai_api_key_from_env;
+
 use crate::ascii_animation::AsciiAnimation;
+use crate::legacy_core::config::Config;
 use crate::tui::FrameRequester;
 use crate::tui::Tui;
 use crate::tui::TuiEvent;
@@ -196,6 +200,45 @@ pub(crate) async fn run_startup_splash(
     Ok(StartupSplashOutcome::Continue)
 }
 
+/// True when the configured `codex_home` is a Widex-managed home directory.
+pub(crate) fn is_widex_codex_home(config: &Config) -> bool {
+    config
+        .codex_home
+        .file_name()
+        .is_some_and(|name| name == ".widex" || name == ".widex-codex")
+}
+
+fn widex_api_key_present(config: &Config) -> bool {
+    if read_openai_api_key_from_env().is_some() {
+        return true;
+    }
+
+    match load_auth_dot_json(&config.codex_home, config.cli_auth_credentials_store_mode) {
+        Ok(Some(auth)) => auth
+            .openai_api_key
+            .as_deref()
+            .is_some_and(|api_key| !api_key.trim().is_empty()),
+        Ok(None) => false,
+        Err(err) => {
+            tracing::warn!("failed to read auth state for startup splash: {err}");
+            false
+        }
+    }
+}
+
+/// Select the Widex startup splash variant for the current auth state.
+pub(crate) fn startup_splash_mode(config: &Config) -> StartupSplashMode {
+    if is_widex_codex_home(config) && config.model_provider.requires_openai_auth {
+        if widex_api_key_present(config) {
+            StartupSplashMode::WidexKeyLoadedPrompt
+        } else {
+            StartupSplashMode::WidexAuthPrompt
+        }
+    } else {
+        StartupSplashMode::ContinuePrompt
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,5 +344,41 @@ mod tests {
         assert!(rendered.contains("Detected an existing Widex Key."));
         assert!(rendered.contains("Press any key to continue"));
         assert!(rendered.contains("Press e to replace the current Widex Key."));
+    }
+    #[tokio::test]
+    async fn widex_startup_splash_prompts_for_key_without_auth_json() -> std::io::Result<()> {
+        let temp_dir = tempfile::TempDir::new()?;
+        let config = build_widex_config(&temp_dir).await?;
+
+        assert_eq!(
+            startup_splash_mode(&config),
+            StartupSplashMode::WidexAuthPrompt
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn widex_startup_splash_continues_with_auth_json_key() -> std::io::Result<()> {
+        let temp_dir = tempfile::TempDir::new()?;
+        let config = build_widex_config(&temp_dir).await?;
+        std::fs::write(
+            config.codex_home.join("auth.json"),
+            r#"{"OPENAI_API_KEY":"sk-test","auth_mode":"apikey"}"#,
+        )?;
+
+        assert_eq!(
+            startup_splash_mode(&config),
+            StartupSplashMode::WidexKeyLoadedPrompt
+        );
+        Ok(())
+    }
+
+    async fn build_widex_config(temp_dir: &tempfile::TempDir) -> std::io::Result<Config> {
+        let codex_home = temp_dir.path().join(".widex");
+        std::fs::create_dir_all(&codex_home)?;
+        crate::legacy_core::config::ConfigBuilder::default()
+            .codex_home(codex_home)
+            .build()
+            .await
     }
 }

@@ -1048,7 +1048,7 @@ fn append_ralph_tui_log_line(path: &Path, level: &str, message: &str) -> std::io
     Ok(())
 }
 
-fn ralph_widex_command_for_current_exe(current_exe: Option<PathBuf>) -> String {
+pub(crate) fn ralph_widex_command_for_current_exe(current_exe: Option<PathBuf>) -> String {
     current_exe
         .filter(|path| {
             path.file_stem()

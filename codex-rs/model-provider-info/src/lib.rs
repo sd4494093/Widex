@@ -27,7 +27,9 @@ const DEFAULT_STREAM_IDLE_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_STREAM_MAX_RETRIES: u64 = 5;
 const DEFAULT_REQUEST_MAX_RETRIES: u64 = 4;
 pub const DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS: u64 = 15_000;
+/// Hard cap for user-configured `stream_max_retries`.
 const MAX_STREAM_MAX_RETRIES: u64 = 100;
+/// Hard cap for user-configured `request_max_retries`.
 const MAX_REQUEST_MAX_RETRIES: u64 = 100;
 
 const OPENAI_PROVIDER_NAME: &str = "OpenAI";
@@ -45,9 +47,11 @@ const CHAT_WIRE_API_REMOVED_ERROR: &str = "`wire_api = \"chat\"` is no longer su
 pub const LEGACY_OLLAMA_CHAT_PROVIDER_ID: &str = "ollama-chat";
 pub const OLLAMA_CHAT_PROVIDER_REMOVED_ERROR: &str = "`ollama-chat` is no longer supported.\nHow to fix: replace `ollama-chat` with `ollama` in `model_provider`, `oss_provider`, or `--local-provider`.\nMore info: https://github.com/openai/codex/discussions/7782";
 
+/// Wire protocol that the provider speaks.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum WireApi {
+    /// The Responses API exposed by OpenAI at `/v1/responses`.
     #[default]
     Responses,
 }
@@ -82,25 +86,52 @@ pub struct ModelProviderInfo {
     /// Friendly display name.
     #[serde(default)]
     pub name: String,
+    /// Base URL for the provider's OpenAI-compatible API.
     pub base_url: Option<String>,
+    /// Environment variable that stores the user's API key for this provider.
     pub env_key: Option<String>,
+
+    /// Optional instructions to help the user get a valid value for the
+    /// variable and set it.
     pub env_key_instructions: Option<String>,
+    /// Value to use with `Authorization: Bearer <token>` header. Use of this
+    /// config is discouraged in favor of `env_key` for security reasons, but
+    /// this may be necessary when using this programmatically.
     pub experimental_bearer_token: Option<String>,
+    /// Command-backed bearer-token configuration for this provider.
     pub auth: Option<ModelProviderAuthInfo>,
     /// AWS SigV4 auth configuration for this provider.
     pub aws: Option<ModelProviderAwsAuthInfo>,
     /// Which wire protocol this provider expects.
     #[serde(default)]
     pub wire_api: WireApi,
+    /// Optional query parameters to append to the base URL.
     pub query_params: Option<HashMap<String, String>>,
+    /// Additional HTTP headers to include in requests to this provider where
+    /// the (key, value) pairs are the header name and value.
     pub http_headers: Option<HashMap<String, String>>,
+    /// Optional HTTP headers to include in requests to this provider where the
+    /// (key, value) pairs are the header name and _environment variable_ whose
+    /// value should be used. If the environment variable is not set, or the
+    /// value is empty, the header will not be included in the request.
     pub env_http_headers: Option<HashMap<String, String>>,
+    /// Maximum number of times to retry a failed HTTP request to this provider.
     pub request_max_retries: Option<u64>,
+    /// Number of times to retry reconnecting a dropped streaming response before failing.
     pub stream_max_retries: Option<u64>,
+    /// Idle timeout (in milliseconds) to wait for activity on a streaming response before treating
+    /// the connection as lost.
     pub stream_idle_timeout_ms: Option<u64>,
+    /// Maximum time (in milliseconds) to wait for a websocket connection attempt before treating
+    /// it as failed.
     pub websocket_connect_timeout_ms: Option<u64>,
+    /// Does this provider require an OpenAI API Key or ChatGPT login token? If true,
+    /// user is presented with login screen on first run, and login preference and token/key
+    /// are stored in auth.json. If false (which is the default), login screen is skipped,
+    /// and API key (if needed) comes from the "env_key" environment variable.
     #[serde(default)]
     pub requires_openai_auth: bool,
+    /// Whether this provider supports the Responses API WebSocket transport.
     #[serde(default)]
     pub supports_websockets: bool,
 }
@@ -180,7 +211,6 @@ impl ModelProviderInfo {
         let capacity = self.http_headers.as_ref().map_or(0, HashMap::len)
             + self.env_http_headers.as_ref().map_or(0, HashMap::len);
         let mut headers = HeaderMap::with_capacity(capacity);
-
         if let Some(extra) = &self.http_headers {
             for (k, v) in extra {
                 if let (Ok(name), Ok(value)) = (HeaderName::try_from(k), HeaderValue::try_from(v)) {
@@ -218,15 +248,17 @@ impl ModelProviderInfo {
         } else {
             "https://api.openai.com/v1"
         };
-
         let base_url = self
             .base_url
             .clone()
             .unwrap_or_else(|| default_base_url.to_string());
+
         let headers = self.build_header_map()?;
         let retry = ApiRetryConfig {
             max_attempts: self.request_max_retries(),
             base_delay: Duration::from_millis(200),
+            // Widex: WellAU's vectorengine.ai gateway intermittently returns 429s
+            // that are safe to retry.
             retry_429: base_url.contains("vectorengine.ai"),
             retry_5xx: true,
             retry_transport: true,
@@ -242,12 +274,15 @@ impl ModelProviderInfo {
         })
     }
 
+    /// If `env_key` is Some, returns the API key for this provider if present
+    /// (and non-empty) in the environment. If `env_key` is required but
+    /// cannot be found, returns an error.
     pub fn api_key(&self) -> CodexResult<Option<String>> {
         match &self.env_key {
             Some(env_key) => {
                 let api_key = std::env::var(env_key)
                     .ok()
-                    .filter(|value| !value.trim().is_empty())
+                    .filter(|v| !v.trim().is_empty())
                     .ok_or_else(|| {
                         CodexErr::EnvVar(EnvVarError {
                             var: env_key.clone(),
@@ -260,24 +295,28 @@ impl ModelProviderInfo {
         }
     }
 
+    /// Effective maximum number of request retries for this provider.
     pub fn request_max_retries(&self) -> u64 {
         self.request_max_retries
             .unwrap_or(DEFAULT_REQUEST_MAX_RETRIES)
             .min(MAX_REQUEST_MAX_RETRIES)
     }
 
+    /// Effective maximum number of stream reconnection attempts for this provider.
     pub fn stream_max_retries(&self) -> u64 {
         self.stream_max_retries
             .unwrap_or(DEFAULT_STREAM_MAX_RETRIES)
             .min(MAX_STREAM_MAX_RETRIES)
     }
 
+    /// Effective idle timeout for streaming responses.
     pub fn stream_idle_timeout(&self) -> Duration {
         self.stream_idle_timeout_ms
             .map(Duration::from_millis)
             .unwrap_or(Duration::from_millis(DEFAULT_STREAM_IDLE_TIMEOUT_MS))
     }
 
+    /// Effective timeout for websocket connect attempts.
     pub fn websocket_connect_timeout(&self) -> Duration {
         self.websocket_connect_timeout_ms
             .map(Duration::from_millis)
@@ -311,6 +350,7 @@ impl ModelProviderInfo {
                 .into_iter()
                 .collect(),
             ),
+            // Use global defaults for retry/timeout unless overridden in config.toml.
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
@@ -373,6 +413,7 @@ pub const DEFAULT_OLLAMA_PORT: u16 = 11434;
 pub const LMSTUDIO_OSS_PROVIDER_ID: &str = "lmstudio";
 pub const OLLAMA_OSS_PROVIDER_ID: &str = "ollama";
 
+/// Built-in default provider list.
 pub fn built_in_model_providers(
     openai_base_url: Option<String>,
 ) -> HashMap<String, ModelProviderInfo> {
@@ -380,6 +421,10 @@ pub fn built_in_model_providers(
     let openai_provider = P::create_openai_provider(openai_base_url);
     let amazon_bedrock_provider = P::create_amazon_bedrock_provider(/*aws*/ None);
 
+    // We do not want to be in the business of adjucating which third-party
+    // providers are bundled with Codex CLI, so we only include the OpenAI and
+    // open source ("oss") providers by default. Users are encouraged to add to
+    // `model_providers` in config.toml to add their own providers.
     [
         (OPENAI_PROVIDER_ID, openai_provider),
         (AMAZON_BEDROCK_PROVIDER_ID, amazon_bedrock_provider),
@@ -393,7 +438,7 @@ pub fn built_in_model_providers(
         ),
     ]
     .into_iter()
-    .map(|(id, provider)| (id.to_string(), provider))
+    .map(|(k, v)| (k.to_string(), v))
     .collect()
 }
 
@@ -436,6 +481,8 @@ pub fn merge_configured_model_providers(
 }
 
 pub fn create_oss_provider(default_provider_port: u16, wire_api: WireApi) -> ModelProviderInfo {
+    // These CODEX_OSS_ environment variables are experimental: we may
+    // switch to reading values from config.toml instead.
     let default_codex_oss_base_url = format!(
         "http://localhost:{codex_oss_port}/v1",
         codex_oss_port = std::env::var("CODEX_OSS_PORT")
@@ -447,7 +494,7 @@ pub fn create_oss_provider(default_provider_port: u16, wire_api: WireApi) -> Mod
 
     let codex_oss_base_url = std::env::var("CODEX_OSS_BASE_URL")
         .ok()
-        .filter(|value| !value.trim().is_empty())
+        .filter(|v| !v.trim().is_empty())
         .unwrap_or(default_codex_oss_base_url);
     create_oss_provider_with_base_url(&codex_oss_base_url, wire_api)
 }

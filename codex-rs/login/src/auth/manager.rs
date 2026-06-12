@@ -517,7 +517,6 @@ impl ChatgptAuth {
 
 pub const OPENAI_API_KEY_ENV_VAR: &str = "OPENAI_API_KEY";
 pub const CODEX_API_KEY_ENV_VAR: &str = "CODEX_API_KEY";
-pub const CODEX_AGENT_IDENTITY_ENV_VAR: &str = "CODEX_AGENT_IDENTITY";
 pub const CODEX_ACCESS_TOKEN_ENV_VAR: &str = "CODEX_ACCESS_TOKEN";
 const DISALLOWED_WIDEX_SEED_API_KEY_PREFIX: &str = "wellau-live-";
 

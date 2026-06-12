@@ -8872,8 +8872,11 @@ mod tests {
             InputResult::None => {
                 panic!("expected CommandWithArgs result for '/ralph-widex start'")
             }
+            InputResult::ServiceTierCommand(_) => {
+                panic!("expected command dispatch, got service tier command")
+            }
         }
-        assert!(composer.textarea.is_empty());
+        assert!(composer.draft.textarea.is_empty());
     }
 
     #[test]
