@@ -63,6 +63,24 @@ jobs:
             pkg-config \
             zstd
 
+      # The 0.139 dependency tree (notably static V8) makes hosted 16 GB
+      # runners hit the OOM killer during peak compilation, which shows up as
+      # exit code 143 / runner shutdown. Give Linux jobs generous swap.
+      - name: Add swap space on Linux
+        if: ${{ runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          swap_dir=/mnt
+          if ! sudo test -w "$swap_dir"; then
+            swap_dir=/
+          fi
+          sudo fallocate -l 16G "$swap_dir/widex-swapfile"
+          sudo chmod 600 "$swap_dir/widex-swapfile"
+          sudo mkswap "$swap_dir/widex-swapfile"
+          sudo swapon "$swap_dir/widex-swapfile"
+          free -h
+
       - name: Install zstd on macOS
         if: ${{ runner.os == 'macOS' }}
         shell: bash
