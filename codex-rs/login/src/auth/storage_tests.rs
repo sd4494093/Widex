@@ -98,6 +98,8 @@ async fn file_storage_round_trips_personal_access_token_auth() -> anyhow::Result
     let auth_dot_json = AuthDotJson {
         auth_mode: Some(AuthMode::PersonalAccessToken),
         openai_api_key: None,
+        gemini_api_key: None,
+        widex_saved_api_keys: Default::default(),
         tokens: None,
         last_refresh: None,
         agent_identity: None,

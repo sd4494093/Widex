@@ -517,7 +517,6 @@ impl ChatgptAuth {
 
 pub const OPENAI_API_KEY_ENV_VAR: &str = "OPENAI_API_KEY";
 pub const CODEX_API_KEY_ENV_VAR: &str = "CODEX_API_KEY";
-pub const GEMINI_API_KEY_ENV_VAR: &str = "GEMINI_API_KEY";
 pub const CODEX_AGENT_IDENTITY_ENV_VAR: &str = "CODEX_AGENT_IDENTITY";
 pub const CODEX_ACCESS_TOKEN_ENV_VAR: &str = "CODEX_ACCESS_TOKEN";
 const DISALLOWED_WIDEX_SEED_API_KEY_PREFIX: &str = "wellau-live-";
@@ -577,12 +576,6 @@ pub fn read_codex_api_key_from_env() -> Option<String> {
         .and_then(sanitize_api_key_value)
 }
 
-pub fn read_gemini_api_key_from_env() -> Option<String> {
-    env::var(GEMINI_API_KEY_ENV_VAR)
-        .ok()
-        .and_then(sanitize_api_key_value)
-}
-
 pub fn read_codex_access_token_from_env() -> Option<String> {
     read_non_empty_env_var(CODEX_ACCESS_TOKEN_ENV_VAR)
 }
@@ -592,33 +585,6 @@ fn read_non_empty_env_var(key: &str) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-}
-
-/// Read Gemini API key from auth storage (auth.json or keyring, depending on
-/// configuration). Returns `None` if no usable key is available.
-///
-/// When a dedicated Gemini key is not present, this falls back to the OpenAI
-/// API key stored in auth.json. This supports deployments where a proxy
-/// accepts the OpenAI key for Gemini traffic.
-pub fn read_gemini_api_key_from_auth_json(
-    codex_home: &Path,
-    auth_credentials_store_mode: AuthCredentialsStoreMode,
-) -> Option<String> {
-    let auth = load_auth_dot_json(codex_home, auth_credentials_store_mode)
-        .ok()
-        .flatten()?;
-
-    let key = auth
-        .gemini_api_key
-        .filter(|k| !k.trim().is_empty())
-        .or(auth.openai_api_key.filter(|k| !k.trim().is_empty()))?;
-
-    let trimmed = key.trim().to_string();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed)
-    }
 }
 
 async fn verified_agent_identity_record(
@@ -1591,10 +1557,6 @@ impl AuthManager {
     /// Current cached auth (clone) without attempting a refresh.
     pub fn auth_cached(&self) -> Option<CodexAuth> {
         self.inner.read().ok().and_then(|c| c.auth.clone())
-    }
-
-    pub fn gemini_api_key_from_storage(&self) -> Option<String> {
-        read_gemini_api_key_from_auth_json(&self.codex_home, self.auth_credentials_store_mode)
     }
 
     /// Subscribes to cached auth changes that can affect request recovery.

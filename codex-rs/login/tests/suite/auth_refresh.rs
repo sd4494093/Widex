@@ -187,6 +187,8 @@ async fn auth_refreshes_when_access_token_is_near_expiry() -> Result<()> {
     let initial_auth = AuthDotJson {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
+        gemini_api_key: None,
+        widex_saved_api_keys: Default::default(),
         tokens: Some(initial_tokens.clone()),
         last_refresh: Some(initial_last_refresh),
         agent_identity: None,
@@ -238,6 +240,8 @@ async fn auth_skips_access_token_outside_refresh_window() -> Result<()> {
     let initial_auth = AuthDotJson {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
+        gemini_api_key: None,
+        widex_saved_api_keys: Default::default(),
         tokens: Some(initial_tokens.clone()),
         last_refresh: Some(initial_last_refresh),
         agent_identity: None,
@@ -788,6 +792,8 @@ async fn refresh_token_does_not_retry_after_bad_request_reused_failure() -> Resu
     let initial_auth = AuthDotJson {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
+        gemini_api_key: None,
+        widex_saved_api_keys: Default::default(),
         tokens: Some(initial_tokens.clone()),
         last_refresh: Some(initial_last_refresh),
         agent_identity: None,

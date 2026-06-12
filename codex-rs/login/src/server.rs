@@ -1319,6 +1319,8 @@ mod tests {
         AuthDotJson {
             auth_mode: Some(AuthMode::Chatgpt),
             openai_api_key: None,
+            gemini_api_key: None,
+            widex_saved_api_keys: Default::default(),
             tokens: Some(TokenData {
                 id_token: parse_chatgpt_jwt_claims(&jwt_for_account(account_id))
                     .expect("test JWT should parse"),

@@ -162,6 +162,8 @@ async fn login_with_access_token_writes_only_personal_access_token() {
         AuthDotJson {
             auth_mode: None,
             openai_api_key: None,
+            gemini_api_key: None,
+            widex_saved_api_keys: Default::default(),
             tokens: None,
             last_refresh: None,
             agent_identity: None,
@@ -1176,6 +1178,8 @@ async fn enforce_login_restrictions_logs_out_for_agent_identity_workspace_mismat
         &AuthDotJson {
             auth_mode: Some(ApiAuthMode::AgentIdentity),
             openai_api_key: None,
+            gemini_api_key: None,
+            widex_saved_api_keys: Default::default(),
             tokens: None,
             last_refresh: None,
             agent_identity: Some(agent_identity),
