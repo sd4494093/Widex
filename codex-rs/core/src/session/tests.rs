@@ -814,9 +814,11 @@ async fn managed_network_proxy_decider_survives_full_access_start() -> anyhow::R
     use tokio::io::AsyncWriteExt as _;
 
     let mut stream = tokio::net::TcpStream::connect(started_proxy.proxy().http_addr()).await?;
+    // Use a literal IP so the proxy decision does not depend on DNS being
+    // reachable in offline/sandboxed test environments.
     stream
         .write_all(
-            b"GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n",
+            b"GET http://93.184.216.34/ HTTP/1.1\r\nHost: 93.184.216.34\r\nConnection: close\r\n\r\n",
         )
         .await?;
     let mut buffer = [0_u8; 4096];

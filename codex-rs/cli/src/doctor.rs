@@ -3466,6 +3466,8 @@ mod tests {
         let auth = AuthDotJson {
             auth_mode: Some(codex_app_server_protocol::AuthMode::ApiKey),
             openai_api_key: None,
+            gemini_api_key: None,
+            widex_saved_api_keys: Default::default(),
             tokens: None,
             last_refresh: None,
             agent_identity: None,
@@ -3484,6 +3486,8 @@ mod tests {
         let auth = AuthDotJson {
             auth_mode: None,
             openai_api_key: None,
+            gemini_api_key: None,
+            widex_saved_api_keys: Default::default(),
             tokens: None,
             last_refresh: None,
             agent_identity: None,
@@ -3504,6 +3508,8 @@ mod tests {
         let mut auth = AuthDotJson {
             auth_mode: None,
             openai_api_key: None,
+            gemini_api_key: None,
+            widex_saved_api_keys: Default::default(),
             tokens: None,
             last_refresh: None,
             agent_identity: None,
@@ -3526,6 +3532,8 @@ mod tests {
         let api_key_auth = AuthDotJson {
             auth_mode: Some(codex_app_server_protocol::AuthMode::ApiKey),
             openai_api_key: Some("sk-test".to_string()),
+            gemini_api_key: None,
+            widex_saved_api_keys: Default::default(),
             tokens: None,
             last_refresh: None,
             agent_identity: None,
