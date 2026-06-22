@@ -4,14 +4,12 @@ use crate::error::TransportError;
 use crate::request::Request;
 use crate::request::RequestBody;
 use crate::request::Response;
-use async_trait::async_trait;
 use bytes::Bytes;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use http::HeaderMap;
 use http::Method;
 use http::StatusCode;
-use serde_json::Value;
 use tracing::Level;
 use tracing::enabled;
 use tracing::trace;
@@ -24,10 +22,15 @@ pub struct StreamResponse {
     pub bytes: ByteStream,
 }
 
-#[async_trait]
 pub trait HttpTransport: Send + Sync {
-    async fn execute(&self, req: Request) -> Result<Response, TransportError>;
-    async fn stream(&self, req: Request) -> Result<StreamResponse, TransportError>;
+    fn execute(
+        &self,
+        req: Request,
+    ) -> impl std::future::Future<Output = Result<Response, TransportError>> + Send;
+    fn stream(
+        &self,
+        req: Request,
+    ) -> impl std::future::Future<Output = Result<StreamResponse, TransportError>> + Send;
 }
 
 #[derive(Clone, Debug)]
@@ -79,25 +82,26 @@ impl ReqwestTransport {
     }
 }
 
-#[async_trait]
+fn request_body_for_trace(req: &Request) -> String {
+    match req.body.as_ref() {
+        Some(RequestBody::Json(body)) => body.to_string(),
+        Some(RequestBody::EncodedJson(body)) => {
+            String::from_utf8_lossy(body.trace_bytes()).into_owned()
+        }
+        Some(RequestBody::Raw(body)) => format!("<raw body: {} bytes>", body.len()),
+        None => String::new(),
+    }
+}
+
 impl HttpTransport for ReqwestTransport {
     async fn execute(&self, req: Request) -> Result<Response, TransportError> {
         if enabled!(Level::TRACE) {
-            match req.body.as_ref() {
-                Some(RequestBody::Json(body)) => trace!(
-                    method = %req.method,
-                    url = %req.url,
-                    body_keys = ?json_body_keys(body),
-                    "HTTP request"
-                ),
-                Some(RequestBody::Raw(body)) => trace!(
-                    method = %req.method,
-                    url = %req.url,
-                    raw_body_bytes = body.len(),
-                    "HTTP request"
-                ),
-                None => trace!(method = %req.method, url = %req.url, "HTTP request"),
-            }
+            trace!(
+                "{} to {}: {}",
+                req.method,
+                req.url,
+                request_body_for_trace(&req)
+            );
         }
 
         let url = req.url.clone();
@@ -124,21 +128,12 @@ impl HttpTransport for ReqwestTransport {
 
     async fn stream(&self, req: Request) -> Result<StreamResponse, TransportError> {
         if enabled!(Level::TRACE) {
-            match req.body.as_ref() {
-                Some(RequestBody::Json(body)) => trace!(
-                    method = %req.method,
-                    url = %req.url,
-                    body_keys = ?json_body_keys(body),
-                    "HTTP request"
-                ),
-                Some(RequestBody::Raw(body)) => trace!(
-                    method = %req.method,
-                    url = %req.url,
-                    raw_body_bytes = body.len(),
-                    "HTTP request"
-                ),
-                None => trace!(method = %req.method, url = %req.url, "HTTP request"),
-            }
+            trace!(
+                "{} to {}: {}",
+                req.method,
+                req.url,
+                request_body_for_trace(&req)
+            );
         }
 
         let url = req.url.clone();
@@ -163,34 +158,5 @@ impl HttpTransport for ReqwestTransport {
             headers,
             bytes: Box::pin(stream),
         })
-    }
-}
-
-fn json_body_keys(body: &Value) -> Vec<String> {
-    match body.as_object() {
-        Some(obj) => {
-            let mut keys = obj.keys().cloned().collect::<Vec<_>>();
-            keys.sort();
-            keys
-        }
-        None => Vec::new(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn json_body_keys_returns_only_top_level_keys() {
-        let secret = "secret-token-should-not-appear-in-keys";
-        let keys = json_body_keys(&json!({
-            "model": "grok-4.1",
-            "messages": [{"role": "user", "content": secret}],
-        }));
-
-        assert_eq!(keys, vec!["messages".to_string(), "model".to_string()]);
-        assert!(!keys.iter().any(|k| k.contains(secret)));
     }
 }

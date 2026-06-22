@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Stage and optionally package the @wellau/widex npm module."""
 
+from __future__ import annotations
+
 import argparse
 import json
 import shutil
@@ -19,14 +21,19 @@ WIDEX_NPM_NAME = "@wellau/widex"
 
 # `npm_name` is the real package name published for each platform package.
 WIDEX_PLATFORM_PACKAGES: dict[str, dict[str, object]] = {
-    "widex-linux-x64": {
-        "npm_name": "@wellau/widex-linux-x64",
-        "npm_tag": "linux-x64",
+    "widex-linux-x64-gnu": {
+        "npm_name": "@wellau/widex-linux-x64-gnu",
+        "npm_tag": "linux-x64-gnu",
         "target_triple": "x86_64-unknown-linux-gnu",
-        "source_target_triples": [
-            "x86_64-unknown-linux-gnu",
-            "x86_64-unknown-linux-musl",
-        ],
+        "source_target_triples": ["x86_64-unknown-linux-gnu"],
+        "os": "linux",
+        "cpu": "x64",
+    },
+    "widex-linux-x64-musl": {
+        "npm_name": "@wellau/widex-linux-x64-musl",
+        "npm_tag": "linux-x64-musl",
+        "target_triple": "x86_64-unknown-linux-musl",
+        "source_target_triples": ["x86_64-unknown-linux-musl"],
         "os": "linux",
         "cpu": "x64",
     },
@@ -73,7 +80,8 @@ PACKAGE_EXPANSIONS: dict[str, list[str]] = {
 
 PACKAGE_NATIVE_COMPONENTS: dict[str, list[str]] = {
     "widex": [],
-    "widex-linux-x64": ["bwrap", "codex", "rg"],
+    "widex-linux-x64-gnu": ["bwrap", "codex", "rg"],
+    "widex-linux-x64-musl": ["bwrap", "codex", "rg"],
     "widex-linux-arm64": ["bwrap", "codex", "rg"],
     "widex-darwin-x64": ["codex", "rg"],
     "widex-darwin-arm64": ["codex", "rg"],

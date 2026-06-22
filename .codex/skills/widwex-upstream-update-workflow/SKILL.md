@@ -56,7 +56,9 @@ Use this workflow when Widex needs to catch up to upstream while keeping only th
    - push `origin widex`
    - run `npm pack --dry-run`
    - publish when requested
-   - for `widex-linux-x64`, ensure the vendor tree includes `x86_64-unknown-linux-gnu`; do not rely on musl-only vendor contents
+   - for `widex-linux-x64-gnu` / `widex-linux-x64-musl`, ensure each vendor tree
+     includes its matching `x86_64-unknown-linux-gnu` or `x86_64-unknown-linux-musl`
+     target; do not merge both libc variants into one npm platform package
 
 ## Merge Heuristics
 

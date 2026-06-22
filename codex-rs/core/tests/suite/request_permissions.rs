@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used)]
 
 use anyhow::Result;
 use codex_core::config::Constrained;
@@ -1147,7 +1147,7 @@ async fn request_permissions_grants_apply_to_later_exec_command_calls() -> Resul
     let exec_output = responses
         .function_call_output_text("exec-call")
         .map(|output| json!({ "output": output }))
-        .unwrap_or_else(|| panic!("expected exec-call output"));
+        .expect("expected exec-call output");
     let result = parse_result(&exec_output);
     assert_eq!(result.exit_code, Some(0));
     assert_eq!(result.stdout.trim(), "sticky-grant-ok");
@@ -1261,7 +1261,7 @@ async fn request_permissions_preapprove_explicit_exec_permissions_outside_on_req
     let exec_output = responses
         .function_call_output_text("exec-call")
         .map(|output| json!({ "output": output }))
-        .unwrap_or_else(|| panic!("expected exec-call output"));
+        .expect("expected exec-call output");
     let result = parse_result(&exec_output);
     assert!(
         result.exit_code.is_none_or(|exit_code| exit_code == 0),
@@ -1378,7 +1378,7 @@ async fn request_permissions_grants_apply_to_later_shell_command_calls() -> Resu
     let shell_output = responses
         .function_call_output_text("shell-call")
         .map(|output| json!({ "output": output }))
-        .unwrap_or_else(|| panic!("expected shell-call output"));
+        .expect("expected shell-call output");
     let result = parse_result(&shell_output);
     assert!(
         result.exit_code.is_none_or(|exit_code| exit_code == 0),
@@ -1491,7 +1491,7 @@ async fn request_permissions_grants_apply_to_later_shell_command_calls_without_i
     let shell_output = responses
         .function_call_output_text("shell-call")
         .map(|output| json!({ "output": output }))
-        .unwrap_or_else(|| panic!("expected shell-call output"));
+        .expect("expected shell-call output");
     let result = parse_result(&shell_output);
     assert!(
         result.exit_code.is_none_or(|exit_code| exit_code == 0),
@@ -1631,15 +1631,15 @@ async fn partial_request_permissions_grants_do_not_preapprove_new_permissions() 
     let approval_permissions = approval
         .additional_permissions
         .clone()
-        .unwrap_or_else(|| panic!("expected merged additional permissions"));
+        .expect("expected merged additional permissions");
     assert_eq!(approval_permissions.network, None);
 
     let approval_file_system = approval_permissions
         .file_system
-        .unwrap_or_else(|| panic!("expected filesystem permissions"));
+        .expect("expected filesystem permissions");
     let (approval_reads, approval_writes) = approval_file_system
         .legacy_read_write_roots()
-        .unwrap_or_else(|| panic!("expected legacy-compatible permissions"));
+        .expect("expected legacy-compatible permissions");
     assert!(approval_reads.as_ref().is_none_or(Vec::is_empty));
 
     let mut approval_writes = approval_writes.unwrap_or_default();
@@ -1647,9 +1647,9 @@ async fn partial_request_permissions_grants_do_not_preapprove_new_permissions() 
 
     let (_, expected_writes) = merged_permissions
         .file_system
-        .unwrap_or_else(|| panic!("expected merged filesystem permissions"))
+        .expect("expected merged filesystem permissions")
         .legacy_read_write_roots()
-        .unwrap_or_else(|| panic!("expected legacy-compatible permissions"));
+        .expect("expected legacy-compatible permissions");
     let mut expected_writes = expected_writes.unwrap_or_default();
     expected_writes.sort_by_key(|path| path.display().to_string());
 
@@ -1666,7 +1666,7 @@ async fn partial_request_permissions_grants_do_not_preapprove_new_permissions() 
     let exec_output = responses
         .function_call_output_text("exec-call")
         .map(|output| json!({ "output": output }))
-        .unwrap_or_else(|| panic!("expected exec-call output"));
+        .expect("expected exec-call output");
     let result = parse_result(&exec_output);
     assert_eq!(result.exit_code, Some(0));
     assert_eq!(result.stdout.trim(), "partial-grant-ok");
@@ -1784,7 +1784,7 @@ async fn request_permissions_grants_do_not_carry_across_turns() -> Result<()> {
 
     let output = second_turn
         .function_call_output_text("exec-call")
-        .unwrap_or_else(|| panic!("expected exec-call output"));
+        .expect("expected exec-call output");
     assert!(output.contains("missing `additional_permissions`"));
 
     Ok(())
@@ -1920,7 +1920,7 @@ async fn request_permissions_session_grants_carry_across_turns() -> Result<()> {
     let exec_output = second_turn
         .function_call_output_text("exec-call")
         .map(|output| json!({ "output": output }))
-        .unwrap_or_else(|| panic!("expected exec-call output"));
+        .expect("expected exec-call output");
     let result = parse_result(&exec_output);
     assert_eq!(result.exit_code, Some(0));
     assert_eq!(result.stdout.trim(), "session-sticky-ok");

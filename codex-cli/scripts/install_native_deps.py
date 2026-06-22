@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Install Codex native binaries (Rust CLI, bwrap, and ripgrep helpers)."""
 
+from __future__ import annotations
+
 import argparse
 from contextlib import contextmanager
 import json
@@ -21,10 +23,11 @@ from urllib.request import urlopen
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 CODEX_CLI_ROOT = SCRIPT_DIR.parent
+REPO_ROOT = CODEX_CLI_ROOT.parent
 DEFAULT_WORKFLOW_URL = "https://github.com/openai/codex/actions/runs/17952349351"  # rust-v0.40.0
 DEFAULT_GITHUB_REPO = "openai/codex"
 VENDOR_DIR_NAME = "vendor"
-RG_MANIFEST = CODEX_CLI_ROOT / "bin" / "rg"
+RG_MANIFEST = REPO_ROOT / "scripts" / "codex_package" / "rg"
 BINARY_TARGETS = (
     "x86_64-unknown-linux-gnu",
     "x86_64-unknown-linux-musl",
@@ -711,7 +714,10 @@ def extract_archive(
                 raise RuntimeError(
                     f"Entry '{archive_member}' not found in archive {archive_path}."
                 ) from exc
-            tar.extract(member, path=archive_path.parent, filter="data")
+            extract_kwargs: dict[str, str] = {}
+            if sys.version_info >= (3, 12):
+                extract_kwargs["filter"] = "data"
+            tar.extract(member, path=archive_path.parent, **extract_kwargs)
         extracted = archive_path.parent / archive_member
         shutil.move(str(extracted), dest)
         return

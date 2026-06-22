@@ -52,6 +52,14 @@ def parse_args() -> argparse.Namespace:
         help="Directory where npm tarballs should be written (default: dist/npm).",
     )
     parser.add_argument(
+        "--artifacts-dir",
+        type=Path,
+        help=(
+            "Accepted for compatibility with the upstream release workflow. "
+            "Widex staging downloads native artifacts through install_native_deps.py."
+        ),
+    )
+    parser.add_argument(
         "--keep-staging-dirs",
         action="store_true",
         help="Retain temporary staging directories instead of deleting them.",
@@ -106,7 +114,9 @@ def resolve_release_workflow(version: str) -> dict:
     )
     workflow = json.loads(stdout or "null")
     if not workflow:
-        raise RuntimeError(f"Unable to find rust-release workflow for version {version}.")
+        raise RuntimeError(
+            f"Unable to find rust-release workflow for version {version}."
+        )
     return workflow
 
 
@@ -129,7 +139,9 @@ def collect_required_targets(packages: list[str]) -> list[str]:
         if isinstance(source_targets, list):
             package_targets = source_targets
         else:
-            target = platform_package.get("source_target_triple") or platform_package.get("target_triple")
+            target = platform_package.get(
+                "source_target_triple"
+            ) or platform_package.get("target_triple")
             if not isinstance(target, str):
                 continue
             package_targets = [target]
@@ -196,7 +208,9 @@ def main() -> int:
             workflow_url, resolved_head_sha = resolve_workflow_url(
                 args.release_version, args.workflow_url
             )
-            vendor_temp_root = Path(tempfile.mkdtemp(prefix="npm-native-", dir=runner_temp))
+            vendor_temp_root = Path(
+                tempfile.mkdtemp(prefix="npm-native-", dir=runner_temp)
+            )
             install_native_components(
                 workflow_url,
                 native_components_to_install,
@@ -209,8 +223,12 @@ def main() -> int:
             print(f"should `git checkout {resolved_head_sha}`")
 
         for package in packages:
-            staging_dir = Path(tempfile.mkdtemp(prefix=f"npm-stage-{package}-", dir=runner_temp))
-            pack_output = output_dir / tarball_name_for_package(package, args.release_version)
+            staging_dir = Path(
+                tempfile.mkdtemp(prefix=f"npm-stage-{package}-", dir=runner_temp)
+            )
+            pack_output = output_dir / tarball_name_for_package(
+                package, args.release_version
+            )
 
             cmd = [
                 str(BUILD_SCRIPT),

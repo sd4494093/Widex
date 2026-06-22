@@ -13,6 +13,7 @@ use ratatui::widgets::Wrap;
 
 use color_eyre::eyre::Result;
 
+use codex_login::AuthKeyringBackendKind;
 use codex_login::load_auth_dot_json;
 use codex_login::read_openai_api_key_from_env;
 
@@ -31,9 +32,9 @@ pub(crate) enum StartupSplashOutcome {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StartupSplashMode {
-    ContinuePrompt,
-    WidexKeyLoadedPrompt,
-    WidexAuthPrompt,
+    Continue,
+    WidexKeyLoaded,
+    WidexAuth,
 }
 
 pub(crate) struct StartupSplashWidget {
@@ -95,7 +96,7 @@ impl WidgetRef for &StartupSplashWidget {
             ", the intelligent coding engine".into(),
         ]));
         match self.mode {
-            StartupSplashMode::ContinuePrompt => {
+            StartupSplashMode::Continue => {
                 lines.push(Line::from(vec![
                     "  ".into(),
                     "Press any key to continue".dim(),
@@ -103,7 +104,7 @@ impl WidgetRef for &StartupSplashWidget {
                     "(Ctrl+C to quit)".dim(),
                 ]));
             }
-            StartupSplashMode::WidexKeyLoadedPrompt => {
+            StartupSplashMode::WidexKeyLoaded => {
                 lines.push("".into());
                 lines.push("  Detected an existing Widex Key.".into());
                 lines.push(Line::from(vec![
@@ -114,7 +115,7 @@ impl WidgetRef for &StartupSplashWidget {
                 ]));
                 lines.push("  Press e to replace the current Widex Key.".dim().into());
             }
-            StartupSplashMode::WidexAuthPrompt => {
+            StartupSplashMode::WidexAuth => {
                 lines.push("".into());
                 lines.push(Line::from(vec![
                     "  ".into(),
@@ -162,12 +163,12 @@ pub(crate) async fn run_startup_splash(
                     return Ok(StartupSplashOutcome::Exit);
                 }
                 match mode {
-                    StartupSplashMode::ContinuePrompt => return Ok(StartupSplashOutcome::Continue),
-                    StartupSplashMode::WidexKeyLoadedPrompt => match key_event.code {
+                    StartupSplashMode::Continue => return Ok(StartupSplashOutcome::Continue),
+                    StartupSplashMode::WidexKeyLoaded => match key_event.code {
                         KeyCode::Char('e') => return Ok(StartupSplashOutcome::EnterApiKey),
                         _ => return Ok(StartupSplashOutcome::Continue),
                     },
-                    StartupSplashMode::WidexAuthPrompt => match key_event.code {
+                    StartupSplashMode::WidexAuth => match key_event.code {
                         KeyCode::Enter | KeyCode::Char('1') | KeyCode::Char('e') => {
                             return Ok(StartupSplashOutcome::EnterApiKey);
                         }
@@ -179,10 +180,10 @@ pub(crate) async fn run_startup_splash(
                 }
             }
             TuiEvent::Paste(_) => match mode {
-                StartupSplashMode::ContinuePrompt | StartupSplashMode::WidexKeyLoadedPrompt => {
+                StartupSplashMode::Continue | StartupSplashMode::WidexKeyLoaded => {
                     return Ok(StartupSplashOutcome::Continue);
                 }
-                StartupSplashMode::WidexAuthPrompt => continue,
+                StartupSplashMode::WidexAuth => continue,
             },
             TuiEvent::Draw => {
                 let _ = tui.draw(u16::MAX, |frame| {
@@ -213,7 +214,11 @@ fn widex_api_key_present(config: &Config) -> bool {
         return true;
     }
 
-    match load_auth_dot_json(&config.codex_home, config.cli_auth_credentials_store_mode) {
+    match load_auth_dot_json(
+        &config.codex_home,
+        config.cli_auth_credentials_store_mode,
+        AuthKeyringBackendKind::default(),
+    ) {
         Ok(Some(auth)) => auth
             .openai_api_key
             .as_deref()
@@ -230,12 +235,12 @@ fn widex_api_key_present(config: &Config) -> bool {
 pub(crate) fn startup_splash_mode(config: &Config) -> StartupSplashMode {
     if is_widex_codex_home(config) && config.model_provider.requires_openai_auth {
         if widex_api_key_present(config) {
-            StartupSplashMode::WidexKeyLoadedPrompt
+            StartupSplashMode::WidexKeyLoaded
         } else {
-            StartupSplashMode::WidexAuthPrompt
+            StartupSplashMode::WidexAuth
         }
     } else {
-        StartupSplashMode::ContinuePrompt
+        StartupSplashMode::Continue
     }
 }
 
@@ -250,7 +255,7 @@ mod tests {
         let widget = StartupSplashWidget::new(
             FrameRequester::test_dummy(),
             true,
-            StartupSplashMode::ContinuePrompt,
+            StartupSplashMode::Continue,
         );
         let frame = widget.animation.current_frame();
         let (frame_width, frame_height) = frame_dimensions(frame);
@@ -264,7 +269,7 @@ mod tests {
         let widget = StartupSplashWidget::new(
             FrameRequester::test_dummy(),
             true,
-            StartupSplashMode::ContinuePrompt,
+            StartupSplashMode::Continue,
         );
         let frame = widget.animation.current_frame();
         let (frame_width, frame_height) = frame_dimensions(frame);
@@ -278,7 +283,7 @@ mod tests {
         let widget = StartupSplashWidget::new(
             FrameRequester::test_dummy(),
             false,
-            StartupSplashMode::ContinuePrompt,
+            StartupSplashMode::Continue,
         );
         let area = Rect::new(0, 0, 80, 8);
         let mut buf = Buffer::empty(area);
@@ -302,7 +307,7 @@ mod tests {
         let widget = StartupSplashWidget::new(
             FrameRequester::test_dummy(),
             false,
-            StartupSplashMode::WidexAuthPrompt,
+            StartupSplashMode::WidexAuth,
         );
         let area = Rect::new(0, 0, 80, 12);
         let mut buf = Buffer::empty(area);
@@ -326,7 +331,7 @@ mod tests {
         let widget = StartupSplashWidget::new(
             FrameRequester::test_dummy(),
             false,
-            StartupSplashMode::WidexKeyLoadedPrompt,
+            StartupSplashMode::WidexKeyLoaded,
         );
         let area = Rect::new(0, 0, 80, 10);
         let mut buf = Buffer::empty(area);
@@ -350,10 +355,7 @@ mod tests {
         let temp_dir = tempfile::TempDir::new()?;
         let config = build_widex_config(&temp_dir).await?;
 
-        assert_eq!(
-            startup_splash_mode(&config),
-            StartupSplashMode::WidexAuthPrompt
-        );
+        assert_eq!(startup_splash_mode(&config), StartupSplashMode::WidexAuth);
         Ok(())
     }
 
@@ -368,7 +370,7 @@ mod tests {
 
         assert_eq!(
             startup_splash_mode(&config),
-            StartupSplashMode::WidexKeyLoadedPrompt
+            StartupSplashMode::WidexKeyLoaded
         );
         Ok(())
     }

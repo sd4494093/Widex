@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Unified entry point for the Widex CLI.
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { createRequire } from "node:module";
 import os from "os";
@@ -14,8 +14,8 @@ const __dirname = path.dirname(__filename);
 const require = createRequire(import.meta.url);
 
 const PLATFORM_PACKAGE_BY_TARGET = {
-  "x86_64-unknown-linux-gnu": "@wellau/widex-linux-x64",
-  "x86_64-unknown-linux-musl": "@wellau/widex-linux-x64",
+  "x86_64-unknown-linux-gnu": "@wellau/widex-linux-x64-gnu",
+  "x86_64-unknown-linux-musl": "@wellau/widex-linux-x64-musl",
   "aarch64-unknown-linux-musl": "@wellau/widex-linux-arm64",
   "x86_64-apple-darwin": "@wellau/widex-darwin-x64",
   "aarch64-apple-darwin": "@wellau/widex-darwin-arm64",
@@ -32,8 +32,8 @@ switch (platform) {
     switch (arch) {
       case "x64":
         targetTriples = [
-          "x86_64-unknown-linux-musl",
           "x86_64-unknown-linux-gnu",
+          "x86_64-unknown-linux-musl",
         ];
         break;
       case "arm64":
@@ -75,65 +75,74 @@ if (targetTriples.length === 0) {
   throw new Error(`Unsupported platform: ${platform} (${arch})`);
 }
 
-const platformPackage = PLATFORM_PACKAGE_BY_TARGET[targetTriples[0]];
-if (!platformPackage) {
-  throw new Error(`Unsupported target triple: ${targetTriples[0]}`);
-}
-
 const codexBinaryName = process.platform === "win32" ? "codex.exe" : "codex";
 const localVendorRoot = path.join(__dirname, "..", "vendor");
 
+function codexBinaryPath(vendorRoot, targetTriple) {
+  return path.join(vendorRoot, targetTriple, "codex", codexBinaryName);
+}
+
 function resolveTargetTriple(vendorRoot) {
   return targetTriples.find((targetTriple) =>
-    existsSync(path.join(vendorRoot, targetTriple, "codex", codexBinaryName)),
+    existsSync(codexBinaryPath(vendorRoot, targetTriple)),
   );
 }
 
-let vendorRoot;
-try {
-  const packageJsonPath = require.resolve(`${platformPackage}/package.json`);
-  vendorRoot = path.join(path.dirname(packageJsonPath), "vendor");
-} catch {
-  if (resolveTargetTriple(localVendorRoot)) {
-    vendorRoot = localVendorRoot;
-  } else {
-    const packageManager = detectPackageManager();
-    const updateCommand =
-      packageManager === "bun"
-        ? "bun install -g @wellau/widex@latest"
-        : "npm install -g @wellau/widex@latest";
-    throw new Error(
-      `Missing optional dependency ${platformPackage}. Reinstall Widex: ${updateCommand}`,
-    );
+function resolveInstalledPlatforms() {
+  const platforms = [];
+  for (const targetTriple of targetTriples) {
+    const platformPackage = PLATFORM_PACKAGE_BY_TARGET[targetTriple];
+    if (!platformPackage) {
+      continue;
+    }
+
+    try {
+      const packageJsonPath = require.resolve(`${platformPackage}/package.json`);
+      const candidateVendorRoot = path.join(path.dirname(packageJsonPath), "vendor");
+      if (existsSync(codexBinaryPath(candidateVendorRoot, targetTriple))) {
+        platforms.push({
+          vendorRoot: candidateVendorRoot,
+          resolvedTargetTriple: targetTriple,
+          platformPackage,
+        });
+      }
+    } catch {
+      // Optional platform package not installed.
+    }
   }
+
+  const resolvedTargetTriple = resolveTargetTriple(localVendorRoot);
+  if (resolvedTargetTriple) {
+    platforms.push({
+      vendorRoot: localVendorRoot,
+      resolvedTargetTriple,
+      platformPackage: PLATFORM_PACKAGE_BY_TARGET[resolvedTargetTriple],
+    });
+  }
+
+  return platforms;
 }
 
-if (!vendorRoot) {
+function missingPlatformPackagesMessage() {
+  const platformPackages = [
+    ...new Set(
+      targetTriples
+        .map((targetTriple) => PLATFORM_PACKAGE_BY_TARGET[targetTriple])
+        .filter(Boolean),
+    ),
+  ];
   const packageManager = detectPackageManager();
   const updateCommand =
     packageManager === "bun"
       ? "bun install -g @wellau/widex@latest"
       : "npm install -g @wellau/widex@latest";
-  throw new Error(
-    `Missing optional dependency ${platformPackage}. Reinstall Widex: ${updateCommand}`,
-  );
+  return `Missing optional dependencies (${platformPackages.join(", ")}). Reinstall Widex: ${updateCommand}`;
 }
 
-const resolvedTargetTriple = resolveTargetTriple(vendorRoot);
-if (!resolvedTargetTriple) {
-  throw new Error(
-    `Missing compatible binary for ${platform} (${arch}) in ${vendorRoot}`,
-  );
+const installedPlatforms = resolveInstalledPlatforms();
+if (installedPlatforms.length === 0) {
+  throw new Error(missingPlatformPackagesMessage());
 }
-
-const archRoot = path.join(vendorRoot, resolvedTargetTriple);
-const binaryPath = path.join(archRoot, "codex", codexBinaryName);
-
-// Use an asynchronous spawn instead of spawnSync so that Node is able to
-// respond to signals (e.g. Ctrl-C / SIGINT) while the native binary is
-// executing. This allows us to forward those signals to the child process
-// and guarantees that when either the child terminates or the parent
-// receives a fatal signal, both processes exit in a predictable manner.
 
 function getUpdatedPath(newDirs) {
   const pathSep = process.platform === "win32" ? ";" : ":";
@@ -169,13 +178,6 @@ function detectPackageManager() {
 
   return userAgent ? "npm" : null;
 }
-
-const additionalDirs = [];
-const pathDir = path.join(archRoot, "path");
-if (existsSync(pathDir)) {
-  additionalDirs.push(pathDir);
-}
-const updatedPath = getUpdatedPath(additionalDirs);
 
 function widexDefaultConfig() {
   return `model_provider = "custom"
@@ -291,18 +293,60 @@ function resolveWidexCodexHome() {
 const codexHome = resolveWidexCodexHome();
 ensureWidexConfig(codexHome);
 
-const env = {
-  ...process.env,
-  PATH: updatedPath,
-  CODEX_HOME: codexHome,
-  WIDEX_CMD: process.env.WIDEX_CMD || "widex",
-  CODEX_CMD: process.env.CODEX_CMD || "widex",
-};
-const packageManagerEnvVar =
-  detectPackageManager() === "bun"
-    ? "CODEX_MANAGED_BY_BUN"
-    : "CODEX_MANAGED_BY_NPM";
-env[packageManagerEnvVar] = "1";
+function executionContextForPlatform(installedPlatform) {
+  const { vendorRoot, resolvedTargetTriple } = installedPlatform;
+  const archRoot = path.join(vendorRoot, resolvedTargetTriple);
+  const binaryPath = path.join(archRoot, "codex", codexBinaryName);
+
+  const additionalDirs = [];
+  const pathDir = path.join(archRoot, "path");
+  if (existsSync(pathDir)) {
+    additionalDirs.push(pathDir);
+  }
+
+  const env = {
+    ...process.env,
+    PATH: getUpdatedPath(additionalDirs),
+    CODEX_HOME: codexHome,
+    WIDEX_CMD: process.env.WIDEX_CMD || "widex",
+    CODEX_CMD: process.env.CODEX_CMD || "widex",
+  };
+  const packageManagerEnvVar =
+    detectPackageManager() === "bun"
+      ? "CODEX_MANAGED_BY_BUN"
+      : "CODEX_MANAGED_BY_NPM";
+  env[packageManagerEnvVar] = "1";
+
+  return { binaryPath, env };
+}
+
+function selectRunnablePlatform() {
+  const failures = [];
+  for (const installedPlatform of installedPlatforms) {
+    const { binaryPath, env } = executionContextForPlatform(installedPlatform);
+    const result = spawnSync(binaryPath, ["--version"], {
+      env,
+      encoding: "utf8",
+    });
+    if (result.status === 0) {
+      return { ...installedPlatform, binaryPath, env };
+    }
+
+    const message = [result.error?.message, result.stderr, result.stdout]
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+    failures.push(
+      `${installedPlatform.resolvedTargetTriple}: ${message || `exit ${result.status ?? "unknown"}`}`,
+    );
+  }
+
+  throw new Error(
+    `No runnable Widex native binary found for ${platform} (${arch}).\n${failures.join("\n")}`,
+  );
+}
+
+const { binaryPath, env } = selectRunnablePlatform();
 
 const child = spawn(binaryPath, process.argv.slice(2), {
   stdio: "inherit",
